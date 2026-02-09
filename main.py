@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
-from .database import get_db
-from . import models
-from .agent import scheduling_agent # Import your agent
+from database import get_db # Changed to absolute import
+import models # Changed to absolute import
+from agent import scheduling_agent # Changed to absolute import
 
 app = FastAPI(title="Clinic Staff Admin Portal")
 

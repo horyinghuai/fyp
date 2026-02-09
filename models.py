@@ -3,7 +3,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import uuid
 import datetime
-from .database import Base # Import shared Base
+from database import Base # Changed to absolute import
 
 class Doctor(Base):
     __tablename__ = "doctors"
