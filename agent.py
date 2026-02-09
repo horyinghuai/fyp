@@ -1,21 +1,24 @@
-from typing import TypedDict, Annotated, List
+from typing import TypedDict
 from langgraph.graph import StateGraph, END
 
 class AgentState(TypedDict):
-    patient_id: str
+    appt_type: str
     requested_time: str
-    stage_name: str
+    prev_stage_status: str # Added for multi-stage checks
     is_valid: bool
     reason: str
 
 def heuristic_check_node(state: AgentState):
-    # logic for "load balancing" and "conflict avoidance"
-    # Example: Check if doctor is available at requested_time
-    if "09:00" in state['requested_time']: # Simplified logic
-        return {"is_valid": True, "reason": "Slot available"}
-    return {"is_valid": False, "reason": "Time slot fully booked"}
+    # Rule 1: Conflict Avoidance
+    if "23:00" in state['requested_time']: 
+        return {"is_valid": False, "reason": "Clinic is closed during night hours."}
+    
+    # Rule 2: Multi-stage dependency
+    if "Dose 2" in state['appt_type'] and state['prev_stage_status'] != 'completed':
+        return {"is_valid": False, "reason": "Dose 1 must be completed first."}
 
-# Build the Graph
+    return {"is_valid": True, "reason": "Slot available and rules met."}
+
 workflow = StateGraph(AgentState)
 workflow.add_node("validate", heuristic_check_node)
 workflow.set_entry_point("validate")
