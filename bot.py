@@ -1,7 +1,7 @@
 import os
 import httpx
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, 
     CallbackQueryHandler, ConversationHandler, MessageHandler, filters
@@ -11,149 +11,142 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_BASE = "http://127.0.0.1:8000"
 
-# Conversation states
-NAME, IC_NUMBER, PHONE, RESCHEDULE_TIME = range(4)
+# --- Fixed States ---
+SERVICE, IC_ENTRY, REG_NAME, REG_PHONE, V_SELECT, V_D1_QTY, V_D2_QTY, BT_SELECT, BT_ADDON = range(9)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("📝 Register / Update Info", callback_data='reg_start')],
-        [InlineKeyboardButton("📅 Book Appointment", callback_data='book')],
-        [InlineKeyboardButton("✏️ Modify Booking", callback_data='modify')],
-        [InlineKeyboardButton("❌ Cancel Booking", callback_data='cancel')],
-        [InlineKeyboardButton("📋 My Status", callback_data='status')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('Welcome to the Clinic Assistant. Choose an option:', reply_markup=reply_markup)
+    reply_keyboard = [['Vaccine', 'Blood Test', 'Others']]
+    await update.message.reply_text(
+        "Welcome to the AI Clinic! What service do you need today?",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+    )
+    return SERVICE
 
-# --- Registration Flow (Now includes IC) ---
+async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['service'] = update.message.text
+    await update.message.reply_text("Please enter your IC Number (XXXXXX-XX-XXXX):")
+    return IC_ENTRY
 
-async def reg_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("Please enter your Full Name:")
-    return NAME
+async def ic_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ic = update.message.text
+    context.user_data['ic'] = ic
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(f"{API_BASE}/patient/ic/{ic}")
+            if res.status_code == 200:
+                return await proceed_to_service(update, context)
+        except Exception:
+            await update.message.reply_text("⚠️ Server connection failed.")
+            return ConversationHandler.END
+            
+    await update.message.reply_text("IC not found. Please enter your Full Name to register:")
+    return REG_NAME
 
-async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['name'] = update.message.text
-    await update.message.reply_text(f"Hi {update.message.text}, please enter your IC Number:")
-    return IC_NUMBER
+    await update.message.reply_text("Please enter your Phone Number:")
+    return REG_PHONE
 
-async def get_ic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['ic_number'] = update.message.text
-    await update.message.reply_text("Great. Finally, please enter your Phone Number:")
-    return PHONE
-
-async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    phone = update.message.text
-    name = context.user_data['name']
-    ic = context.user_data['ic_number']
-    tid = update.effective_user.id
-
+async def reg_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['phone'] = update.message.text
     async with httpx.AsyncClient() as client:
-        response = await client.post(f"{API_BASE}/register-patient", 
-                                     json={"name": name, "ic_number": ic, "phone": phone, "telegram_id": tid})
-    
-    await update.message.reply_text(f"✅ Registration complete! Name: {name}, IC: {ic}")
-    return ConversationHandler.END
+        await client.post(f"{API_BASE}/register-patient", json={
+            "name": context.user_data['name'], "ic_number": context.user_data['ic'],
+            "phone": context.user_data['phone'], "telegram_id": update.effective_user.id
+        })
+    return await proceed_to_service(update, context)
 
-# --- Booking & Modification Logic ---
+async def proceed_to_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    service = context.user_data['service']
+    async with httpx.AsyncClient() as client:
+        if service == 'Vaccine':
+            res = await client.get(f"{API_BASE}/vaccines")
+            btns = [[InlineKeyboardButton(f"{v['name']} (RM{v['price']})", callback_data=f"v_{v['name']}")] for v in res.json()]
+            await (update.message.reply_text if update.message else update.callback_query.message.reply_text)(
+                "Choose a vaccine:", reply_markup=InlineKeyboardMarkup(btns))
+            return V_SELECT
+        else:
+            test_type = 'package' if service == 'Blood Test' else 'single'
+            res = await client.get(f"{API_BASE}/blood-tests/{test_type}")
+            btns = [[InlineKeyboardButton(f"{t['name']} (RM{t['price']})", callback_data=f"bt_{t['name']}")] for t in res.json()]
+            if service == 'Blood Test': btns.append([InlineKeyboardButton("OTHERS (Single Tests)", callback_data="bt_others")])
+            await (update.message.reply_text if update.message else update.callback_query.message.reply_text)(
+                "Select a package or test:", reply_markup=InlineKeyboardMarkup(btns))
+            return BT_SELECT
 
-async def handle_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Vaccine Quantity Flow ---
+async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    tid = update.effective_user.id
+    if query: await query.answer()
+    context.user_data['v_name'] = query.data.replace("v_", "")
+    await query.edit_message_text(f"Selected: {context.user_data['v_name']}. How many people need Dose 1?")
+    return V_D1_QTY
 
+async def v_d1_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['d1'] = int(update.message.text)
+    await update.message.reply_text("How many people need Dose 2?")
+    return V_D2_QTY
+
+async def v_d2_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    d2 = int(update.message.text)
+    total = context.user_data['d1'] + d2
     async with httpx.AsyncClient() as client:
-        # Hardcoded booking for demo purposes
-        params = {
-            "appt_type": "Vaccination Dose 1",
-            "requested_time": "2026-02-12 10:00",
-            "telegram_id": tid
-        }
-        response = await client.post(f"{API_BASE}/book-appointment", params=params)
-        
-    res = response.json()
-    msg = res.get("detail", res.get("message"))
-    
-    if response.status_code == 200:
-        await query.edit_message_text(f"✅ {msg}")
+        res = await client.post(f"{API_BASE}/book-appointment", json={
+            "telegram_id": update.effective_user.id, "service_type": "Vaccine",
+            "details": {"vaccine_name": context.user_data['v_name'], "dose1": context.user_data['d1'], "dose2": d2, "total_qty": total}
+        })
+    if res.status_code == 200:
+        await update.message.reply_text(f"✅ Confirmed: {context.user_data['v_name']} for {total} pax.")
     else:
-        await query.edit_message_text(f"❌ {msg}")
-
-async def start_modify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("Please enter the new Date & Time (Format: YYYY-MM-DD HH:MM):")
-    return RESCHEDULE_TIME
-
-async def process_reschedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_time = update.message.text
-    tid = update.effective_user.id
-    
-    await update.message.reply_text("Consulting AI Agent for availability...")
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{API_BASE}/reschedule-appointment", 
-            params={"telegram_id": tid, "new_time": new_time}
-        )
-
-    res = response.json()
-    if response.status_code == 200:
-        await update.message.reply_text(f"✅ Success: {res['message']}")
-    else:
-        # This displays the Agent's reason/suggestion
-        reason = res.get('detail', 'Unknown error')
-        await update.message.reply_text(f"⚠️ Agent Suggestion: {reason}")
-    
+        await update.message.reply_text(f"❌ {res.json()['detail']}")
     return ConversationHandler.END
 
-async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Blood Test / Others Flow ---
+async def bt_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    tid = update.effective_user.id
+    if query: await query.answer()
+    context.user_data['bt_main'] = query.data.replace("bt_", "")
     
-    await query.edit_message_text("Cancelling your appointment...")
+    if context.user_data['bt_main'] == "others":
+        context.user_data['service'] = "Others" # Shift logic
+        return await proceed_to_service(update, context)
 
-    async with httpx.AsyncClient() as client:
-        response = await client.delete(f"{API_BASE}/cancel-appointment", params={"telegram_id": tid})
-    
-    res = response.json()
-    msg = res.get("detail", res.get("message"))
-    await context.bot.send_message(chat_id=tid, text=f"🗑️ {msg}")
+    btns = [[InlineKeyboardButton("Add Single Test", callback_data="add_yes"), InlineKeyboardButton("No, Finish", callback_data="add_no")]]
+    await query.edit_message_text(f"Selected: {context.user_data['bt_main']}. Add single tests?", reply_markup=InlineKeyboardMarkup(btns))
+    return BT_ADDON
 
-async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation cancelled.")
-    return ConversationHandler.END
+async def bt_addon_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query: await query.answer()
+    if query.data == "add_no":
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{API_BASE}/book-appointment", json={
+                "telegram_id": query.from_user.id, "service_type": "Blood Test",
+                "details": {"package": context.user_data['bt_main']}
+            })
+        await query.edit_message_text("✅ Booking confirmed.")
+        return ConversationHandler.END
+    # Logic for add-ons can be expanded here
+    return BT_ADDON
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Registration Handler
-    reg_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(reg_start, pattern='reg_start'), CommandHandler('register', reg_start)],
+    conv = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
         states={
-            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            IC_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_ic)],
-            PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
+            SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, service_choice)],
+            IC_ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ic_check)],
+            REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
+            REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_finish)],
+            V_SELECT: [CallbackQueryHandler(vaccine_selected)],
+            V_D1_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, v_d1_qty)],
+            V_D2_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, v_d2_qty)],
+            BT_SELECT: [CallbackQueryHandler(bt_selected)],
+            BT_ADDON: [CallbackQueryHandler(bt_addon_handler)],
         },
-        fallbacks=[CommandHandler('cancel', cancel_conversation)],
+        fallbacks=[CommandHandler('start', start)],
     )
-
-    # Modification Handler
-    modify_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_modify, pattern='modify')],
-        states={
-            RESCHEDULE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_reschedule)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel_conversation)],
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(reg_handler)
-    app.add_handler(modify_handler)
-    app.add_handler(CallbackQueryHandler(handle_booking, pattern='^book$'))
-    app.add_handler(CallbackQueryHandler(handle_cancel, pattern='^cancel$'))
-    
+    app.add_handler(conv)
+    app.add_handler(CommandHandler('cancel', lambda u, c: ConversationHandler.END))
     print("Bot is running...")
     app.run_polling()
