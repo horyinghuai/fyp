@@ -12,8 +12,8 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_BASE = "http://127.0.0.1:8000"
 
-# States
-SERVICE, IC_ENTRY, REG_NAME, REG_PHONE, V_SELECT, V_QTY, BT_FLOW, BOOK_TIME = range(8)
+# States [cite: 2]
+SERVICE, IC_ENTRY, REG_NAME, REG_PHONE, V_SELECT, V_DOSE, BT_FLOW, BOOK_TIME, CONFIRM_BOOK, FINAL_HELP = range(10)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     btns = [[InlineKeyboardButton("Vaccines", callback_data="svc_Vaccine")],
@@ -39,6 +39,9 @@ async def ic_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with httpx.AsyncClient() as client:
         res = await client.get(f"{API_BASE}/patient/ic/{ic}")
         if res.status_code == 200:
+            patient = res.json()
+            context.user_data['name'] = patient['name']
+            context.user_data['phone'] = patient['phone']
             return await proceed_to_service(update, context)
         
     await update.message.reply_text("New user detected. Please enter your Full Name:")
@@ -51,11 +54,7 @@ async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reg_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['phone'] = update.message.text
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{API_BASE}/register-patient", json={
-            "name": context.user_data['name'], "ic_number": context.user_data['ic'],
-            "phone": context.user_data['phone'], "telegram_id": update.effective_user.id
-        })
+    # Note: Registration is now deferred until the final confirmation to keep DB clean
     return await proceed_to_service(update, context)
 
 async def proceed_to_service(update, context):
@@ -65,7 +64,9 @@ async def proceed_to_service(update, context):
         if service == 'Vaccine':
             res = await client.get(f"{API_BASE}/vaccines")
             btns = [[InlineKeyboardButton(f"{v['name']} (RM{v['price']})", callback_data=f"v_{v['name']}")] for v in res.json()]
-            await (update.message.reply_text if update.message else update.callback_query.message.reply_text)("Choose a vaccine:", reply_markup=InlineKeyboardMarkup(btns))
+            msg = "Choose a vaccine:"
+            if update.message: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+            else: await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
             return V_SELECT
         else:
             return await show_blood_tests(update, context, "package")
@@ -88,32 +89,34 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-
     if data == "bt_others": return await show_blood_tests(update, context, "single")
-    
     if data.startswith("sel_"):
         item = data.replace("sel_", "")
         context.user_data['selected_items'].append(item)
         btns = [[InlineKeyboardButton("Yes, add extra", callback_data="add_more"), InlineKeyboardButton("No thanks, finish", callback_data="add_done")]]
         await query.edit_message_text(f"Added: {item}. Would you like to add more tests?", reply_markup=InlineKeyboardMarkup(btns))
         return BT_FLOW
-
     if data == "add_more": return await show_blood_tests(update, context, "single")
     if data == "add_done":
         await query.edit_message_text("Please enter your preferred Date & Time (YYYY-MM-DD HH:MM):")
         return BOOK_TIME
 
-# --- Vaccine Logic ---
 async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data['selected_items'] = [query.data.replace("v_", "")]
-    await query.edit_message_text(f"Selected: {context.user_data['selected_items'][0]}. How many people are coming?")
-    return V_QTY
+    # Added Dose Selection
+    btns = [[InlineKeyboardButton("Dose 1", callback_data="dose_Dose 1"), 
+             InlineKeyboardButton("Dose 2", callback_data="dose_Dose 2")],
+            [InlineKeyboardButton("Booster", callback_data="dose_Booster")]]
+    await query.edit_message_text(f"Selected: {context.user_data['selected_items'][0]}. Which dose are you taking?", reply_markup=InlineKeyboardMarkup(btns))
+    return V_DOSE
 
-async def vaccine_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['qty'] = update.message.text
-    await update.message.reply_text("Please enter your preferred Date & Time (YYYY-MM-DD HH:MM):")
+async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['dose'] = query.data.replace("dose_", "")
+    await query.edit_message_text("Please enter your preferred Date & Time (YYYY-MM-DD HH:MM):")
     return BOOK_TIME
 
 async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,17 +131,72 @@ async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return BOOK_TIME
 
     context.user_data['book_time'] = time_str
+    
+    # Generate Summary for Confirmation
+    name = context.user_data['name']
+    ic = context.user_data['ic']
+    phone = context.user_data['phone']
+    date_part, time_part = time_str.split(" ")
+    service = context.user_data['service']
+    
+    if service == 'Vaccine':
+        details = f"{context.user_data['selected_items'][0]} ({context.user_data['dose']})"
+    else:
+        details = ", ".join(context.user_data['selected_items'])
+
+    summary = (
+        f"📋 *Booking Summary*\n"
+        f"Name: {name}\n"
+        f"IC: {ic}\n"
+        f"Phone: {phone}\n"
+        f"Date: {date_part}\n"
+        f"Time: {time_part}\n"
+        f"Service: {service}\n"
+        f"Details: {details}\n\n"
+        f"Is this information correct?"
+    )
+    
+    btns = [[InlineKeyboardButton("Yes, Confirm", callback_data="conf_yes"), 
+             InlineKeyboardButton("No, Rebook", callback_data="conf_no")]]
+    await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+    return CONFIRM_BOOK
+
+async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "conf_no":
+        await query.edit_message_text("No problem. Let's start over.")
+        return await start(update, context)
+
+    # Proceed with storing in DB
     async with httpx.AsyncClient() as client:
+        # 1. Ensure patient is registered (handle multiple IDs per telegram_id)
+        await client.post(f"{API_BASE}/register-patient", json={
+            "name": context.user_data['name'], "ic_number": context.user_data['ic'],
+            "phone": context.user_data['phone'], "telegram_id": update.effective_user.id
+        })
+        # 2. Book appointment
         await client.post(f"{API_BASE}/book-appointment", json={
             "telegram_id": update.effective_user.id,
+            "ic_number": context.user_data['ic'], # Added IC to specify which patient profile
             "service_type": context.user_data['service'],
-            "details": {"items": context.user_data['selected_items'], "qty": context.user_data.get('qty', 1)},
-            "scheduled_time": time_str
+            "details": {"items": context.user_data['selected_items'], "dose": context.user_data.get('dose')},
+            "scheduled_time": context.user_data['book_time']
         })
     
-    summary = f"✅ Booking Confirmed!\nDate/Time: {time_str}\nService: {context.user_data['service']}\nDetails: {', '.join(context.user_data['selected_items'])}"
-    await update.message.reply_text(summary)
-    return ConversationHandler.END
+    btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+    await query.edit_message_text("✅ Booking successfully confirmed! Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+    return FINAL_HELP
+
+async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "help_yes":
+        return await start(update, context)
+    else:
+        await query.edit_message_text("Thank you for using AI Clinic. Have a great day!")
+        return ConversationHandler.END
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
@@ -150,12 +208,13 @@ if __name__ == '__main__':
             REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
             REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_finish)],
             V_SELECT: [CallbackQueryHandler(vaccine_selected, pattern="^v_")],
-            V_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, vaccine_qty)],
+            V_DOSE: [CallbackQueryHandler(vaccine_dose, pattern="^dose_")],
             BT_FLOW: [CallbackQueryHandler(bt_logic)],
             BOOK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_time)],
+            CONFIRM_BOOK: [CallbackQueryHandler(process_confirmation, pattern="^conf_")],
+            FINAL_HELP: [CallbackQueryHandler(final_help_logic, pattern="^help_")],
         },
         fallbacks=[CommandHandler('start', start)],
     )
     app.add_handler(conv)
-    print("Bot is running...")
     app.run_polling()
