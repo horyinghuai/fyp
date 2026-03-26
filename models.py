@@ -25,19 +25,19 @@ class Patient(Base):
     __tablename__ = "patients"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255))
-    ic_number = Column(String(20), unique=True)
-    telegram_id = Column(BigInteger) # Removed unique=True to allow multi-IC management
+    ic_passport_number = Column(String(20), unique=True) # Updated field
+    telegram_id = Column(BigInteger) 
     phone = Column(String(20))
-    address = Column(String) # Added to store MyKad OCR address
-    gender = Column(String(10)) # Added for gender detection
-    nationality = Column(String(50)) # Added for nationality detection
+    address = Column(String) 
+    gender = Column(String(10)) 
+    nationality = Column(String(50)) 
 
 class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"))
     appt_type = Column(String(50)) 
-    details = Column(JSON) # Stores quantities (D1/D2) or test selections
+    details = Column(JSON)
     
     stages = relationship("ApptStage", back_populates="appointment", cascade="all, delete-orphan")
 

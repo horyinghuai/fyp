@@ -11,7 +11,7 @@ app = FastAPI(title="Clinic Smart Assistant Backend")
 
 class Booking(BaseModel):
     telegram_id: int
-    ic_number: str # Added to distinguish between patient profiles
+    ic_passport_number: str # Updated to reflect DB
     service_type: str
     details: Dict[str, Any]
     scheduled_time: str
@@ -24,16 +24,15 @@ def get_vaccines(db: Session = Depends(get_db)):
 def get_blood_tests(test_type: str, db: Session = Depends(get_db)):
     return db.query(models.BloodTest).filter(models.BloodTest.test_type == test_type).all()
 
-@app.get("/patient/ic/{ic}")
-def get_patient_by_ic(ic: str, db: Session = Depends(get_db)):
-    patient = db.query(models.Patient).filter(models.Patient.ic_number == ic).first()
+@app.get("/patient/id/{ic_passport}")
+def get_patient_by_id(ic_passport: str, db: Session = Depends(get_db)):
+    patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == ic_passport).first()
     if not patient: raise HTTPException(status_code=404)
     return patient
 
 @app.post("/register-patient")
 def register_patient(data: Dict[str, Any], db: Session = Depends(get_db)):
-    # Check if this specific IC is already registered
-    existing = db.query(models.Patient).filter(models.Patient.ic_number == data['ic_number']).first()
+    existing = db.query(models.Patient).filter(models.Patient.ic_passport_number == data['ic_passport_number']).first()
     if existing:
         return {"status": "already_registered"}
     
@@ -49,8 +48,7 @@ def check_availability(requested_time: str):
 
 @app.post("/book-appointment")
 def book_appointment(booking: Booking, db: Session = Depends(get_db)):
-    # Identify patient by IC instead of Telegram ID for multi-profile support
-    patient = db.query(models.Patient).filter(models.Patient.ic_number == booking.ic_number).first()
+    patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == booking.ic_passport_number).first()
     if not patient: raise HTTPException(status_code=404, detail="Patient profile not found")
 
     new_appt = models.Appointment(
@@ -63,8 +61,7 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
 
     new_stage = models.ApptStage(
         appointment_id=new_appt.id,
-        stage_name=booking.details.get("dose", booking.service_type), # Use dose name if available
-        # Updated to parse YYYY-MM-DD HH:MM:SS
+        stage_name=booking.details.get("dose", booking.service_type),
         scheduled_time=datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
     )
     db.add(new_stage)

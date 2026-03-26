@@ -16,7 +16,6 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_BASE = "http://127.0.0.1:8000"
 
-# Global variable for lazy loading
 ocr_reader = None
 
 def get_ocr_reader():
@@ -27,10 +26,9 @@ def get_ocr_reader():
     return ocr_reader
 
 # Fully mapped States
-SERVICE, NAT_CHOICE, MAN_NAME, MAN_IC, MAN_PASSPORT, MAN_GENDER, MAN_NAT, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, CONFIRM_OCR, V_SELECT, V_DOSE, BT_FLOW, BOOK_DATE, BOOK_TIME, CONFIRM_BOOK, FINAL_HELP = range(18)
+SERVICE, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_NAME, MAN_IC, MAN_PASSPORT, MAN_GENDER, MAN_NAT, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, CONFIRM_OCR, V_SELECT, V_DOSE, BT_FLOW, BOOK_DATE, BOOK_TIME, CONFIRM_BOOK, FINAL_HELP = range(20)
 
 def extract_ic_info(image_path: str):
-    """Modular function to extract MyKad info using EasyOCR & Heuristics."""
     reader = get_ocr_reader()
     results = reader.readtext(image_path)
     if not results: return None, None, None, None, None
@@ -97,8 +95,39 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")],
             [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
-    await query.message.reply_text("Please upload a clear photo of your MyKad for auto-fill, OR select your nationality for manual entry:", reply_markup=InlineKeyboardMarkup(btns))
+    await query.message.reply_text("Please select your nationality:", reply_markup=InlineKeyboardMarkup(btns))
     return NAT_CHOICE
+
+async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    is_my = (query.data == "nat_my")
+    context.user_data['is_malaysian'] = is_my
+    
+    await query.edit_message_text("Malaysian" if is_my else "Non-Malaysian")
+    
+    # Restrict OCR to Malaysians only
+    if is_my:
+        btns = [[InlineKeyboardButton("Upload MyKad", callback_data="meth_photo")],
+                [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
+        await query.message.reply_text("Would you like to auto-fill your details by uploading your MyKad, or enter them manually?", reply_markup=InlineKeyboardMarkup(btns))
+        return MY_METHOD_CHOICE
+    else:
+        await query.message.reply_text("Please enter your Full Name:")
+        return MAN_NAME
+
+async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "meth_photo":
+        await query.edit_message_text("Upload MyKad")
+        await query.message.reply_text("Please upload a clear photo of your MyKad:")
+        return UPLOAD_IC
+    else:
+        await query.edit_message_text("Enter Manually")
+        await query.message.reply_text("Please enter your Full Name:")
+        return MAN_NAME
 
 async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()
@@ -120,9 +149,8 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await processing_msg.delete()
         
     if not ic:
-        btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")], [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
-        await update.message.reply_text("❌ Could not detect MyKad. Please upload a clearer photo OR choose manual entry:", reply_markup=InlineKeyboardMarkup(btns))
-        return NAT_CHOICE
+        await update.message.reply_text("❌ Could not detect MyKad. Please upload a clearer photo OR enter your Full Name to proceed manually:")
+        return MAN_NAME
         
     context.user_data['ocr_name'] = name
     context.user_data['ocr_ic'] = ic
@@ -141,7 +169,6 @@ async def confirm_ocr_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "ocr_no":
-        context.user_data['is_malaysian'] = True # Assume Malaysian since they tried MyKad
         await query.edit_message_text("Let's enter it manually. Please enter your Full Name:")
         return MAN_NAME
         
@@ -154,26 +181,15 @@ async def confirm_ocr_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['gender'] = context.user_data['ocr_gender']
     context.user_data['nationality'] = context.user_data['ocr_nationality']
     
-    # If they are existing, skip phone collection
     async with httpx.AsyncClient() as client:
-        res = await client.get(f"{API_BASE}/patient/ic/{ic}")
+        res = await client.get(f"{API_BASE}/patient/id/{ic}")
         if res.status_code == 200:
             patient = res.json()
             context.user_data['phone'] = patient['phone']
             return await proceed_to_service(update, context)
             
-    await query.message.reply_text(f"Welcome {context.user_data['name']}! Please enter your Phone Number (e.g. 0123456789):")
+    await query.message.reply_text(f"Welcome {context.user_data['name']}! Please enter your Phone Number:")
     return MAN_PHONE
-
-async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    is_my = (query.data == "nat_my")
-    context.user_data['is_malaysian'] = is_my
-    
-    await query.edit_message_text("Malaysian" if is_my else "Non-Malaysian")
-    await query.message.reply_text("Please enter your Full Name:")
-    return MAN_NAME
 
 async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['name'] = update.message.text.upper()
@@ -194,8 +210,6 @@ async def man_ic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     formatted_ic = f"{ic_digits[:6]}-{ic_digits[6:8]}-{ic_digits[8:]}"
     context.user_data['ic'] = formatted_ic
-    
-    # Determine gender accurately based on the last digit
     last_digit = int(ic_digits[-1])
     context.user_data['gender'] = "FEMALE" if last_digit % 2 == 0 else "MALE"
     context.user_data['nationality'] = "MALAYSIA"
@@ -335,18 +349,18 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please enter your preferred Time:")
         return BOOK_TIME
     except Exception:
-        await update.message.reply_text("❌ Could not understand the date format. Please try again (e.g., 2026/07/08, 08-07-2026, 8th July 2026):")
+        await update.message.reply_text("❌ Could not understand the date format. Please try again:")
         return BOOK_DATE
 
 async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        parsed_time = date_parser.parse(update.message.text)
+        time_text = update.message.text.lower().replace('.', ':')
+        parsed_time = date_parser.parse(time_text)
         time_str = parsed_time.strftime("%H:%M:%S")
     except Exception:
-        await update.message.reply_text("❌ Could not understand the time format. Please try again (e.g., 14:00 or 2:00 PM):")
+        await update.message.reply_text("❌ Could not understand the time format. Please try again:")
         return BOOK_TIME
 
-    # Formatting exactly as requested: '2026-05-01 10:00:00'
     full_time_str = f"{context.user_data['book_date']} {time_str}"
     
     async with httpx.AsyncClient() as client:
@@ -355,8 +369,8 @@ async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not data['is_valid']:
         sug_str = "\nSuggestions: " + ", ".join(data['suggestions']) if data['suggestions'] else ""
-        await update.message.reply_text(f"❌ {data['reason']}{sug_str}\nPlease choose a different Date (e.g., 2026/07/08):")
-        return BOOK_DATE # Loop back to Date in case they need to switch days
+        await update.message.reply_text(f"❌ {data['reason']}{sug_str}\nPlease choose a different Date:")
+        return BOOK_DATE 
 
     context.user_data['book_time'] = full_time_str
     
@@ -370,7 +384,7 @@ async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         details = ", ".join(context.user_data['selected_items'])
 
-    summary = (f"📋 *Booking Summary*\nName: {name}\nIC: {ic}\nPhone: {phone}\n"
+    summary = (f"📋 *Booking Summary*\nName: {name}\nID/IC: {ic}\nPhone: {phone}\n"
                f"Date: {context.user_data['book_date']}\nTime: {time_str}\n"
                f"Service: {service}\nDetails: {details}\n\nIs this information correct?")
     
@@ -396,7 +410,7 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
     async with httpx.AsyncClient() as client:
         await client.post(f"{API_BASE}/register-patient", json={
             "name": context.user_data['name'], 
-            "ic_number": context.user_data['ic'],
+            "ic_passport_number": context.user_data['ic'], 
             "phone": context.user_data['phone'], 
             "telegram_id": update.effective_user.id,
             "address": context.user_data.get('address'), 
@@ -406,7 +420,7 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
         
         await client.post(f"{API_BASE}/book-appointment", json={
             "telegram_id": update.effective_user.id,
-            "ic_number": context.user_data['ic'], 
+            "ic_passport_number": context.user_data['ic'], 
             "service_type": context.user_data['service'],
             "details": {"items": context.user_data['selected_items'], "dose": context.user_data.get('dose')},
             "scheduled_time": context.user_data['book_time']
@@ -421,7 +435,7 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
         details = ", ".join(context.user_data['selected_items'])
 
     confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
-                         f"Name: {context.user_data['name']}\nIC: {context.user_data['ic']}\n"
+                         f"Name: {context.user_data['name']}\nID/IC: {context.user_data['ic']}\n"
                          f"Phone: {context.user_data['phone']}\nDate: {date_part}\nTime: {time_part}\n"
                          f"Service: {service}\nDetails: {details}\n")
     
@@ -452,10 +466,9 @@ if __name__ == '__main__':
         entry_points=[CommandHandler('start', start)],
         states={
             SERVICE: [CallbackQueryHandler(service_choice, pattern="^svc_")],
-            NAT_CHOICE: [
-                CallbackQueryHandler(nat_choice_logic, pattern="^nat_"),
-                MessageHandler(filters.PHOTO, handle_ic_photo)
-            ],
+            NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],
+            MY_METHOD_CHOICE: [CallbackQueryHandler(my_method_logic, pattern="^meth_")],
+            UPLOAD_IC: [MessageHandler(filters.PHOTO, handle_ic_photo)],
             MAN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_name)],
             MAN_IC: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_ic)],
             MAN_PASSPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_passport)],
