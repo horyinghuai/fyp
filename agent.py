@@ -3,7 +3,8 @@ from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
-from langchain_openai import ChatOpenAI
+# FIXED: Changed the import from langchain_openai to langchain_google_genai
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 
 # --- AI Extraction Logic ---
