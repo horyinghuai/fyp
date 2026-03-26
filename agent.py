@@ -1,11 +1,25 @@
 import os
+import json
+import re
+import requests
+import urllib3
 from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
-# FIXED: Changed the import from langchain_openai to langchain_google_genai
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
+from dotenv import load_dotenv
+
+# --- LOAD ENV VARIABLES ---
+load_dotenv()
+
+# --- CONFIGURATION ---
+# Checks for GEMINI_API_KEY first, falls back to GOOGLE_API_KEY
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
+if not GEMINI_API_KEY:
+    GEMINI_API_KEY = os.getenv('GOOGLE_API_KEY', '').strip()
+
+# Disable SSL Warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- AI Extraction Logic ---
 class AppointmentExtraction(BaseModel):
@@ -15,23 +29,73 @@ class AppointmentExtraction(BaseModel):
     doctor_preference: Optional[str] = Field(description="Name of the preferred doctor, or null if missing.")
 
 def extract_appointment_details(user_text: str, current_time_str: str):
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return {"error": "Missing GOOGLE_API_KEY. AI extraction disabled."}
-        
-    # Use Gemini 1.5 Flash instead of OpenAI
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0, google_api_key=api_key)
-    structured_llm = llm.with_structured_output(AppointmentExtraction)
+    if not GEMINI_API_KEY:
+        return {"error": "Server missing GEMINI_API_KEY in .env file."}
+
+    # Format the prompt to enforce strict JSON output
+    prompt = f"""
+    You are an AI Clinic Assistant extracting data. The current date and time is {current_time_str}. 
+    If the user uses relative terms like 'tomorrow' or 'next monday', calculate the exact YYYY-MM-DD date. 
+    Convert times like '5pm' into 17:00:00.
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an AI Clinic Assistant extracting data. The current date and time is {current_time}. "
-                   "If the user uses relative terms like 'tomorrow' or 'next monday', calculate the exact YYYY-MM-DD date. "
-                   "Convert times like '5pm' into 17:00:00."),
-        ("human", "{user_text}")
-    ])
+    User Text: "{user_text}"
+
+    Extract the information into the following strictly valid JSON format. Return ONLY the JSON object, with no markdown formatting and no conversational text:
+    {{
+        "intent": "booking",
+        "date_preference": "YYYY-MM-DD",
+        "time_preference": "HH:MM:SS",
+        "doctor_preference": "Dr. Name"
+    }}
+    """
+
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json"},
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
+    }
+
+    # Bulletproof Fallback Matrix: Scans both API versions and all active models
+    api_versions = ["v1beta", "v1"]
+    valid_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]
     
-    chain = prompt | structured_llm
-    return chain.invoke({"user_text": user_text, "current_time": current_time_str})
+    errors = []
+
+    for version in api_versions:
+        for model in valid_models:
+            url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:generateContent?key={GEMINI_API_KEY}"
+            
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=15, verify=False)
+                if response.status_code == 200:
+                    result = response.json()
+                    if 'candidates' in result and len(result['candidates']) > 0:
+                        raw_text = result['candidates'][0]['content']['parts'][0]['text'].strip()
+                        
+                        # Robust Regex to extract only the JSON dictionary, ignoring extra markdown/text
+                        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+                        if not json_match:
+                            return {"error": "AI did not return a valid JSON object."}
+                        
+                        clean_json = json_match.group(0)
+                        parsed_data = json.loads(clean_json)
+                        
+                        return AppointmentExtraction(**parsed_data)
+                else:
+                    # Log the exact error code (e.g. 404 or 400) for debugging
+                    errors.append(f"{version}/{model} ({response.status_code})")
+                    
+            except Exception as e:
+                errors.append(f"{version}/{model} Exception")
+                continue 
+            
+    return {"error": f"All endpoints failed. Traces: {', '.join(errors)}"}
 
 # --- Scheduling Agent Logic ---
 class AgentState(TypedDict):

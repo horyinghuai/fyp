@@ -264,7 +264,6 @@ async def proceed_to_service(update, context):
         if service == 'Vaccine':
             res = await client.get(f"{API_BASE}/vaccines")
             vaccines = res.json()
-            # Cache vaccines to memory to calculate buttons later
             context.user_data['vaccines_list'] = vaccines
             
             btns = [[InlineKeyboardButton(f"{v['name']} (RM{float(v['price']):.2f})", callback_data=f"v_{v['name']}")] for v in vaccines]
@@ -318,7 +317,6 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['selected_items'] = [vaccine_name]
     await query.edit_message_text(f"{vaccine_name}")
     
-    # Dynamically generate Dose buttons based on the specific Vaccine's total_doses in the DB
     vaccines = context.user_data.get('vaccines_list', [])
     selected_vac = next((v for v in vaccines if v['name'] == vaccine_name), None)
     total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
@@ -330,7 +328,7 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dose_row = []
         for i in range(1, total_doses + 1):
             dose_row.append(InlineKeyboardButton(f"Dose {i}", callback_data=f"dose_Dose {i}"))
-            if len(dose_row) == 2: # Keep buttons looking neat (2 columns max)
+            if len(dose_row) == 2: 
                 btns.append(dose_row)
                 dose_row = []
         if dose_row:
@@ -381,8 +379,11 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         
         if res.status_code == 200:
             ext = res.json()
+            
+            # FIXED: Print the actual error message from the backend so we can debug it
             if "error" in ext:
-                await update.message.reply_text("AI features are disabled (Missing API Key). Please use the calendar buttons:", reply_markup=generate_date_picker())
+                real_error = ext.get("error", "Unknown error")
+                await update.message.reply_text(f"⚠️ AI Process Error: {real_error}\n\nPlease use the calendar buttons instead:", reply_markup=generate_date_picker())
                 return BOOK_DATE_TIME
 
             intent = ext.get('intent')
@@ -457,7 +458,6 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await query.edit_message_text("Yes, Confirm")
     
-    # Secure dynamic stages and dose calculations
     vaccines = context.user_data.get('vaccines_list', [])
     selected_vac_name = context.user_data['selected_items'][0] if context.user_data['selected_items'] else None
     selected_vac = next((v for v in vaccines if v['name'] == selected_vac_name), None)
