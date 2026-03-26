@@ -31,7 +31,6 @@ SERVICE, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_NAME, MAN_IC, MAN_PASSPORT
 def generate_date_picker():
     keyboard = []
     today = dt.datetime.now()
-    # Create a 2-week calendar grid
     for i in range(0, 14, 2):
         d1 = today + dt.timedelta(days=i)
         d2 = today + dt.timedelta(days=i+1)
@@ -51,7 +50,6 @@ def generate_time_picker():
         ])
     keyboard.append([InlineKeyboardButton("🔙 Back to Date Selection", callback_data="back_date")])
     return InlineKeyboardMarkup(keyboard)
-
 
 def extract_ic_info(image_path: str):
     reader = get_ocr_reader()
@@ -171,7 +169,6 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Could not detect MyKad. Please upload a clearer photo OR enter your Full Name to proceed manually:")
         return MAN_NAME
         
-    # Silently save OCR details and jump directly to Phone
     context.user_data['name'] = name
     context.user_data['ic'] = ic
     context.user_data['address'] = address
@@ -266,7 +263,11 @@ async def proceed_to_service(update, context):
     async with httpx.AsyncClient() as client:
         if service == 'Vaccine':
             res = await client.get(f"{API_BASE}/vaccines")
-            btns = [[InlineKeyboardButton(f"{v['name']} (RM{float(v['price']):.2f})", callback_data=f"v_{v['name']}")] for v in res.json()]
+            vaccines = res.json()
+            # Cache vaccines to memory to calculate buttons later
+            context.user_data['vaccines_list'] = vaccines
+            
+            btns = [[InlineKeyboardButton(f"{v['name']} (RM{float(v['price']):.2f})", callback_data=f"v_{v['name']}")] for v in vaccines]
             msg = "Choose a vaccine:"
             if update.message: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
             else: await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
@@ -313,13 +314,30 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    vaccine = query.data.replace("v_", "")
-    context.user_data['selected_items'] = [vaccine]
-    await query.edit_message_text(f"{vaccine}")
+    vaccine_name = query.data.replace("v_", "")
+    context.user_data['selected_items'] = [vaccine_name]
+    await query.edit_message_text(f"{vaccine_name}")
     
-    btns = [[InlineKeyboardButton("Dose 1", callback_data="dose_Dose 1"), 
-             InlineKeyboardButton("Dose 2", callback_data="dose_Dose 2")],
-            [InlineKeyboardButton("Booster", callback_data="dose_Booster")]]
+    # Dynamically generate Dose buttons based on the specific Vaccine's total_doses in the DB
+    vaccines = context.user_data.get('vaccines_list', [])
+    selected_vac = next((v for v in vaccines if v['name'] == vaccine_name), None)
+    total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
+    
+    btns = []
+    if total_doses <= 1:
+        btns.append([InlineKeyboardButton("Single Dose", callback_data="dose_Single Dose")])
+    else:
+        dose_row = []
+        for i in range(1, total_doses + 1):
+            dose_row.append(InlineKeyboardButton(f"Dose {i}", callback_data=f"dose_Dose {i}"))
+            if len(dose_row) == 2: # Keep buttons looking neat (2 columns max)
+                btns.append(dose_row)
+                dose_row = []
+        if dose_row:
+            btns.append(dose_row)
+            
+    btns.append([InlineKeyboardButton("Booster", callback_data="dose_Booster")])
+
     await query.message.reply_text("Which dose are you taking?", reply_markup=InlineKeyboardMarkup(btns))
     return V_DOSE
 
@@ -332,9 +350,7 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text("Please select a Date using the calendar below, \nOR type your request naturally (e.g., 'Tomorrow at 10am with Dr. Tan'):", reply_markup=generate_date_picker())
     return BOOK_DATE_TIME
 
-# New Dynamic AI vs Picker Flow
 async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 1. User clicked an Inline Button (Picker)
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -354,7 +370,6 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             full_time_str = f"{context.user_data['book_date']} {time_str}"
             return await process_availability(update, context, full_time_str)
 
-    # 2. User Typed Naturally (AI Understanding)
     elif update.message and update.message.text:
         text = update.message.text
         processing_msg = await update.message.reply_text("🤖 AI is reading your request...")
@@ -381,17 +396,14 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             if intent == 'reschedule':
                 await update.message.reply_text("I see you want to reschedule. Currently, this bot focuses on new bookings. Let's make a new booking!")
             
-            # If AI found BOTH date and time
             if date_pref and time_pref:
                 full_time_str = f"{date_pref} {time_pref}"
                 context.user_data['book_date'] = date_pref
                 return await process_availability(update, context, full_time_str)
-            # If AI found ONLY date
             elif date_pref:
                 context.user_data['book_date'] = date_pref
                 await update.message.reply_text(f"I understood you want {date_pref}. What time?", reply_markup=generate_time_picker())
                 return BOOK_DATE_TIME
-            # If AI found nothing useful
             else:
                 await update.message.reply_text("I couldn't fully extract the date and time. Please use the calendar picker:", reply_markup=generate_date_picker())
                 return BOOK_DATE_TIME
@@ -445,8 +457,17 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await query.edit_message_text("Yes, Confirm")
     
-    # Store dynamic doctor preference inside details JSON block so backend saves it automatically
-    details_block = {"items": context.user_data['selected_items'], "dose": context.user_data.get('dose')}
+    # Secure dynamic stages and dose calculations
+    vaccines = context.user_data.get('vaccines_list', [])
+    selected_vac_name = context.user_data['selected_items'][0] if context.user_data['selected_items'] else None
+    selected_vac = next((v for v in vaccines if v['name'] == selected_vac_name), None)
+    total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
+
+    details_block = {
+        "items": context.user_data['selected_items'], 
+        "dose": context.user_data.get('dose'),
+        "total_doses": total_doses
+    }
     if context.user_data.get('doctor_pref'):
         details_block['doctor_pref'] = context.user_data.get('doctor_pref')
 
@@ -524,7 +545,6 @@ if __name__ == '__main__':
             V_SELECT: [CallbackQueryHandler(vaccine_selected, pattern="^v_")],
             V_DOSE: [CallbackQueryHandler(vaccine_dose, pattern="^dose_")],
             BT_FLOW: [CallbackQueryHandler(bt_logic)],
-            # Replaced manual Date and Time states with single advanced AI/Picker state
             BOOK_DATE_TIME: [
                 CallbackQueryHandler(handle_date_time_selection),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_time_selection)

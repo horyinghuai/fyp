@@ -19,6 +19,8 @@ class Vaccine(Base):
     price = Column(Numeric(10, 2))
     stock_quantity = Column(Integer)
     low_stock_threshold = Column(Integer)
+    total_doses = Column(Integer, default=1) # Added mapping
+    dose_durations = Column(JSON) # Added mapping
 
 class BloodTest(Base):
     __tablename__ = "blood_tests"
@@ -45,6 +47,7 @@ class Appointment(Base):
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"))
     doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id"), nullable=True) # Optional
     appt_type = Column(String(50)) 
+    total_stages = Column(Integer, default=1)
     details = Column(JSON)
     
     stages = relationship("ApptStage", back_populates="appointment", cascade="all, delete-orphan")

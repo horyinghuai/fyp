@@ -23,7 +23,6 @@ class TextExtractRequest(BaseModel):
 def ai_extract(req: TextExtractRequest):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     extracted = extract_appointment_details(req.text, now_str)
-    # Check if dict (error) or BaseModel
     if isinstance(extracted, dict) and "error" in extracted:
         return extracted
     return extracted.dict()
@@ -61,9 +60,20 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == booking.ic_passport_number).first()
     if not patient: raise HTTPException(status_code=404, detail="Patient profile not found")
 
+    mapped_appt_type = 'single-visit'
+    total_stages = 1
+    
+    # Check dynamically for doses to fulfill database CHECK constraints
+    if booking.service_type == 'Vaccine':
+        dose_text = str(booking.details.get('dose', ''))
+        if dose_text.startswith('Dose'):
+            mapped_appt_type = 'multi-stage'
+            total_stages = booking.details.get('total_doses', 1)
+
     new_appt = models.Appointment(
         patient_id=patient.id,
-        appt_type=booking.service_type,
+        appt_type=mapped_appt_type,
+        total_stages=total_stages, # Dynamic stages
         details=booking.details
     )
     db.add(new_appt)
