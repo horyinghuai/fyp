@@ -26,8 +26,9 @@ class Patient(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255))
     ic_number = Column(String(20), unique=True)
-    telegram_id = Column(BigInteger, unique=True)
+    telegram_id = Column(BigInteger) # Removed unique=True to allow multi-IC management
     phone = Column(String(20))
+    address = Column(String) # Added to store MyKad OCR address
 
 class Appointment(Base):
     __tablename__ = "appointments"
