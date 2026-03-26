@@ -64,7 +64,8 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     new_stage = models.ApptStage(
         appointment_id=new_appt.id,
         stage_name=booking.details.get("dose", booking.service_type), # Use dose name if available
-        scheduled_time=datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M")
+        # Updated to parse YYYY-MM-DD HH:MM:SS
+        scheduled_time=datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
     )
     db.add(new_stage)
     db.commit()

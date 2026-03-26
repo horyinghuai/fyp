@@ -10,7 +10,7 @@ class AgentState(TypedDict):
 
 def scheduling_agent_node(state: AgentState):
     try:
-        req_dt = datetime.strptime(state['requested_time'], "%Y-%m-%d %H:%M")
+        req_dt = datetime.strptime(state['requested_time'], "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return {"is_valid": False, "reason": "Invalid format.", "suggestions": []}
 
@@ -19,17 +19,17 @@ def scheduling_agent_node(state: AgentState):
         return {
             "is_valid": False, 
             "reason": "Clinic is only open 09:00 - 17:00.",
-            "suggestions": [req_dt.replace(hour=9, minute=0).strftime("%Y-%m-%d %H:%M")]
+            "suggestions": [req_dt.replace(hour=9, minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")]
         }
 
     # Rule 2: Weekend Check
     if req_dt.weekday() == 6: # Sunday
-        next_mon = (req_dt + timedelta(days=1)).replace(hour=9, minute=0)
-        return {"is_valid": False, "reason": "Closed on Sundays.", "suggestions": [next_mon.strftime("%Y-%m-%d %H:%M")]}
+        next_mon = (req_dt + timedelta(days=1)).replace(hour=9, minute=0, second=0)
+        return {"is_valid": False, "reason": "Closed on Sundays.", "suggestions": [next_mon.strftime("%Y-%m-%d %H:%M:%S")]}
 
     # Rule 3: Simulated "Full Slot" (e.g., specific busy hours)
     if req_dt.hour == 14: # Simulate 2 PM as always full
-        sug = (req_dt + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M")
+        sug = (req_dt + timedelta(hours=1)).replace(minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")
         return {"is_valid": False, "reason": "That slot is currently full.", "suggestions": [sug]}
 
     return {"is_valid": True, "reason": "Slot available.", "suggestions": []}
