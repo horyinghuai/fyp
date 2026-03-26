@@ -178,7 +178,7 @@ async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['name'] = update.message.text.upper()
     if context.user_data.get('is_malaysian'):
-        await update.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
+        await update.message.reply_text("Please enter your IC Number:")
         return MAN_IC
     else:
         await update.message.reply_text("Please enter your Passport Number:")
@@ -189,7 +189,7 @@ async def man_ic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ic_digits = re.sub(r'\D', '', ic_input)
 
     if len(ic_digits) != 12:
-        await update.message.reply_text("❌ Wrong format! Please enter your IC Number again (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
+        await update.message.reply_text("❌ Wrong format! Please enter your IC Number again:")
         return MAN_IC
 
     formatted_ic = f"{ic_digits[:6]}-{ic_digits[6:8]}-{ic_digits[8:]}"
@@ -205,7 +205,7 @@ async def man_ic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def man_passport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['ic'] = update.message.text.upper()
-    await update.message.reply_text("Please enter your Gender (MALE / FEMALE):")
+    await update.message.reply_text("Please enter your Gender (Male / Female):")
     return MAN_GENDER
 
 async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,7 +220,7 @@ async def man_nat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def man_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['address'] = update.message.text.upper()
-    await update.message.reply_text("Please enter your Phone Number (e.g., 011-24200546 or 0122200402):")
+    await update.message.reply_text("Please enter your Phone Number:")
     return MAN_PHONE
 
 async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -233,7 +233,7 @@ async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         formatted_phone = f"+60{digits[1:3]}-{digits[3:]}"
         context.user_data['phone'] = formatted_phone
     else:
-        await update.message.reply_text("❌ Wrong format! Please enter your phone number again (e.g., 011-24200546 or 0122200402):")
+        await update.message.reply_text("❌ Wrong format! Please enter your phone number again:")
         return MAN_PHONE
 
     msg = (f"📋 *Please confirm your details:*\nName: {context.user_data['name']}\n"
@@ -302,7 +302,7 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_blood_tests(update, context, "single")
     if data == "add_done":
         await query.edit_message_text("No thanks, finish")
-        await query.message.reply_text("Please enter your preferred Date (e.g., 2026/07/08, 08-07-2026, 6th Jan 2026):")
+        await query.message.reply_text("Please enter your preferred Date:")
         return BOOK_DATE
 
 async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -325,17 +325,17 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['dose'] = dose
     await query.edit_message_text(f"{dose}")
     
-    await query.message.reply_text("Please enter your preferred Date (e.g., 2026/07/08, 08-07-2026, 6th Jan 2026):")
+    await query.message.reply_text("Please enter your preferred Date:")
     return BOOK_DATE
 
 async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parsed_date = date_parser.parse(update.message.text, dayfirst=True)
         context.user_data['book_date'] = parsed_date.strftime("%Y-%m-%d")
-        await update.message.reply_text("Please enter your preferred Time (e.g., 14:00 or 2:00 PM):")
+        await update.message.reply_text("Please enter your preferred Time:")
         return BOOK_TIME
     except Exception:
-        await update.message.reply_text("❌ Could not understand the date format. Please try again (e.g., 2026/07/08, 08-07-2026, 6th Jan 2026):")
+        await update.message.reply_text("❌ Could not understand the date format. Please try again (e.g., 2026/07/08, 08-07-2026, 8th July 2026):")
         return BOOK_DATE
 
 async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
