@@ -4,7 +4,7 @@ import re
 import asyncio
 import tempfile
 import easyocr
-from dateutil import parser as date_parser
+import datetime as dt
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -25,8 +25,33 @@ def get_ocr_reader():
         ocr_reader = easyocr.Reader(['en', 'ms'])
     return ocr_reader
 
-# Fully mapped States
-SERVICE, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_NAME, MAN_IC, MAN_PASSPORT, MAN_GENDER, MAN_NAT, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, CONFIRM_OCR, V_SELECT, V_DOSE, BT_FLOW, BOOK_DATE, BOOK_TIME, CONFIRM_BOOK, FINAL_HELP = range(20)
+SERVICE, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_NAME, MAN_IC, MAN_PASSPORT, MAN_GENDER, MAN_NAT, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, V_SELECT, V_DOSE, BT_FLOW, BOOK_DATE_TIME, CONFIRM_BOOK, FINAL_HELP = range(18)
+
+# UI Generators
+def generate_date_picker():
+    keyboard = []
+    today = dt.datetime.now()
+    # Create a 2-week calendar grid
+    for i in range(0, 14, 2):
+        d1 = today + dt.timedelta(days=i)
+        d2 = today + dt.timedelta(days=i+1)
+        keyboard.append([
+            InlineKeyboardButton(d1.strftime("%d %b %Y"), callback_data=f"date_{d1.strftime('%Y-%m-%d')}"),
+            InlineKeyboardButton(d2.strftime("%d %b %Y"), callback_data=f"date_{d2.strftime('%Y-%m-%d')}")
+        ])
+    return InlineKeyboardMarkup(keyboard)
+
+def generate_time_picker():
+    keyboard = []
+    times = ["09:00:00", "10:00:00", "11:00:00", "12:00:00", "13:00:00", "14:00:00", "15:00:00", "16:00:00"]
+    for i in range(0, len(times), 2):
+        keyboard.append([
+            InlineKeyboardButton(times[i][:5], callback_data=f"time_{times[i]}"),
+            InlineKeyboardButton(times[i+1][:5], callback_data=f"time_{times[i+1]}")
+        ])
+    keyboard.append([InlineKeyboardButton("🔙 Back to Date Selection", callback_data="back_date")])
+    return InlineKeyboardMarkup(keyboard)
+
 
 def extract_ic_info(image_path: str):
     reader = get_ocr_reader()
@@ -37,7 +62,6 @@ def extract_ic_info(image_path: str):
     ic_num = None
     ic_index = -1
     ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}')
-    
     cleaned_results = [(bbox, text.upper().strip(), prob) for bbox, text, prob in results]
 
     for i, (bbox, text, prob) in enumerate(cleaned_results):
@@ -69,8 +93,7 @@ def extract_ic_info(image_path: str):
     stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA"]
     for i in range(address_start_idx, len(cleaned_results)):
         text = cleaned_results[i][1]
-        if any(sw in text for sw in stop_words) or len(text) < 3:
-            continue
+        if any(sw in text for sw in stop_words) or len(text) < 3: continue
         address_lines.append(text)
         
     address = ", ".join(address_lines) if address_lines else "UNKNOWN"
@@ -90,7 +113,6 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     service = query.data.replace("svc_", "")
     context.user_data['service'] = service
-    
     await query.edit_message_text(f"{service}")
     
     btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")],
@@ -103,10 +125,8 @@ async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     is_my = (query.data == "nat_my")
     context.user_data['is_malaysian'] = is_my
-    
     await query.edit_message_text("Malaysian" if is_my else "Non-Malaysian")
     
-    # Restrict OCR to Malaysians only
     if is_my:
         btns = [[InlineKeyboardButton("Upload MyKad", callback_data="meth_photo")],
                 [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
@@ -119,7 +139,6 @@ async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     if query.data == "meth_photo":
         await query.edit_message_text("Upload MyKad")
         await query.message.reply_text("Please upload a clear photo of your MyKad:")
@@ -152,34 +171,12 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Could not detect MyKad. Please upload a clearer photo OR enter your Full Name to proceed manually:")
         return MAN_NAME
         
-    context.user_data['ocr_name'] = name
-    context.user_data['ocr_ic'] = ic
-    context.user_data['ocr_address'] = address
-    context.user_data['ocr_gender'] = gender
-    context.user_data['ocr_nationality'] = nationality
-    
-    msg = (f"✅ *Extracted Info*\nName: {name}\nIC: {ic}\nGender: {gender}\n"
-           f"Nationality: {nationality}\nAddress: {address}\n\nIs this correct?")
-    btns = [[InlineKeyboardButton("Yes, this is correct", callback_data="ocr_yes")],
-            [InlineKeyboardButton("No, re-enter manually", callback_data="ocr_no")]]
-    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
-    return CONFIRM_OCR
-
-async def confirm_ocr_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == "ocr_no":
-        await query.edit_message_text("Let's enter it manually. Please enter your Full Name:")
-        return MAN_NAME
-        
-    await query.edit_message_text("✅ IC Information confirmed.")
-    
-    ic = context.user_data['ocr_ic']
+    # Silently save OCR details and jump directly to Phone
+    context.user_data['name'] = name
     context.user_data['ic'] = ic
-    context.user_data['name'] = context.user_data['ocr_name']
-    context.user_data['address'] = context.user_data['ocr_address']
-    context.user_data['gender'] = context.user_data['ocr_gender']
-    context.user_data['nationality'] = context.user_data['ocr_nationality']
+    context.user_data['address'] = address
+    context.user_data['gender'] = gender
+    context.user_data['nationality'] = nationality
     
     async with httpx.AsyncClient() as client:
         res = await client.get(f"{API_BASE}/patient/id/{ic}")
@@ -187,8 +184,8 @@ async def confirm_ocr_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             patient = res.json()
             context.user_data['phone'] = patient['phone']
             return await proceed_to_service(update, context)
-            
-    await query.message.reply_text(f"Welcome {context.user_data['name']}! Please enter your Phone Number:")
+
+    await update.message.reply_text("✅ MyKad Scanned! Please enter your Phone Number to confirm your profile:")
     return MAN_PHONE
 
 async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -208,12 +205,9 @@ async def man_ic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Wrong format! Please enter your IC Number again:")
         return MAN_IC
 
-    formatted_ic = f"{ic_digits[:6]}-{ic_digits[6:8]}-{ic_digits[8:]}"
-    context.user_data['ic'] = formatted_ic
-    last_digit = int(ic_digits[-1])
-    context.user_data['gender'] = "FEMALE" if last_digit % 2 == 0 else "MALE"
+    context.user_data['ic'] = f"{ic_digits[:6]}-{ic_digits[6:8]}-{ic_digits[8:]}"
+    context.user_data['gender'] = "FEMALE" if int(ic_digits[-1]) % 2 == 0 else "MALE"
     context.user_data['nationality'] = "MALAYSIA"
-
     await update.message.reply_text("Please enter your Home Address:")
     return MAN_ADDRESS
 
@@ -240,12 +234,10 @@ async def man_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone_input = update.message.text.upper()
     digits = re.sub(r'\D', '', phone_input)
-
     if digits.startswith('60'): digits = '0' + digits[2:]
 
     if digits.startswith('01') and len(digits) in [10, 11]:
-        formatted_phone = f"+60{digits[1:3]}-{digits[3:]}"
-        context.user_data['phone'] = formatted_phone
+        context.user_data['phone'] = f"+60{digits[1:3]}-{digits[3:]}"
     else:
         await update.message.reply_text("❌ Wrong format! Please enter your phone number again:")
         return MAN_PHONE
@@ -300,7 +292,6 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
     if data == "bt_others": 
         await query.edit_message_text("OTHERS (Single Tests)")
         return await show_blood_tests(update, context, "single")
@@ -316,8 +307,8 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_blood_tests(update, context, "single")
     if data == "add_done":
         await query.edit_message_text("No thanks, finish")
-        await query.message.reply_text("Please enter your preferred Date:")
-        return BOOK_DATE
+        await query.message.reply_text("Please select a Date using the calendar below, \nOR type your request naturally (e.g., 'Tomorrow at 10am with Dr. Tan'):", reply_markup=generate_date_picker())
+        return BOOK_DATE_TIME
 
 async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -335,62 +326,109 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    dose = query.data.replace("dose_", "")
-    context.user_data['dose'] = dose
-    await query.edit_message_text(f"{dose}")
+    context.user_data['dose'] = query.data.replace("dose_", "")
+    await query.edit_message_text(f"{context.user_data['dose']}")
     
-    await query.message.reply_text("Please enter your preferred Date:")
-    return BOOK_DATE
+    await query.message.reply_text("Please select a Date using the calendar below, \nOR type your request naturally (e.g., 'Tomorrow at 10am with Dr. Tan'):", reply_markup=generate_date_picker())
+    return BOOK_DATE_TIME
 
-async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        parsed_date = date_parser.parse(update.message.text, dayfirst=True)
-        context.user_data['book_date'] = parsed_date.strftime("%Y-%m-%d")
-        await update.message.reply_text("Please enter your preferred Time:")
-        return BOOK_TIME
-    except Exception:
-        await update.message.reply_text("❌ Could not understand the date format. Please try again:")
-        return BOOK_DATE
+# New Dynamic AI vs Picker Flow
+async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 1. User clicked an Inline Button (Picker)
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        data = query.data
 
-async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        time_text = update.message.text.lower().replace('.', ':')
-        parsed_time = date_parser.parse(time_text)
-        time_str = parsed_time.strftime("%H:%M:%S")
-    except Exception:
-        await update.message.reply_text("❌ Could not understand the time format. Please try again:")
-        return BOOK_TIME
+        if data.startswith("date_"):
+            context.user_data['book_date'] = data.replace("date_", "")
+            await query.edit_message_text("Date selected. Now, please select your preferred Time:", reply_markup=generate_time_picker())
+            return BOOK_DATE_TIME
 
-    full_time_str = f"{context.user_data['book_date']} {time_str}"
-    
+        elif data == "back_date":
+            await query.edit_message_text("Please select your preferred Date:", reply_markup=generate_date_picker())
+            return BOOK_DATE_TIME
+
+        elif data.startswith("time_"):
+            time_str = data.replace("time_", "")
+            full_time_str = f"{context.user_data['book_date']} {time_str}"
+            return await process_availability(update, context, full_time_str)
+
+    # 2. User Typed Naturally (AI Understanding)
+    elif update.message and update.message.text:
+        text = update.message.text
+        processing_msg = await update.message.reply_text("🤖 AI is reading your request...")
+        
+        async with httpx.AsyncClient() as client:
+            res = await client.post(f"{API_BASE}/ai-extract", json={"text": text})
+            
+        await processing_msg.delete()
+        
+        if res.status_code == 200:
+            ext = res.json()
+            if "error" in ext:
+                await update.message.reply_text("AI features are disabled (Missing API Key). Please use the calendar buttons:", reply_markup=generate_date_picker())
+                return BOOK_DATE_TIME
+
+            intent = ext.get('intent')
+            date_pref = ext.get('date_preference')
+            time_pref = ext.get('time_preference')
+            doc_pref = ext.get('doctor_preference')
+            
+            if doc_pref: 
+                context.user_data['doctor_pref'] = doc_pref
+                
+            if intent == 'reschedule':
+                await update.message.reply_text("I see you want to reschedule. Currently, this bot focuses on new bookings. Let's make a new booking!")
+            
+            # If AI found BOTH date and time
+            if date_pref and time_pref:
+                full_time_str = f"{date_pref} {time_pref}"
+                context.user_data['book_date'] = date_pref
+                return await process_availability(update, context, full_time_str)
+            # If AI found ONLY date
+            elif date_pref:
+                context.user_data['book_date'] = date_pref
+                await update.message.reply_text(f"I understood you want {date_pref}. What time?", reply_markup=generate_time_picker())
+                return BOOK_DATE_TIME
+            # If AI found nothing useful
+            else:
+                await update.message.reply_text("I couldn't fully extract the date and time. Please use the calendar picker:", reply_markup=generate_date_picker())
+                return BOOK_DATE_TIME
+
+async def process_availability(update, context, full_time_str):
     async with httpx.AsyncClient() as client:
         res = await client.post(f"{API_BASE}/check-availability", params={"requested_time": full_time_str})
         data = res.json()
     
     if not data['is_valid']:
         sug_str = "\nSuggestions: " + ", ".join(data['suggestions']) if data['suggestions'] else ""
-        await update.message.reply_text(f"❌ {data['reason']}{sug_str}\nPlease choose a different Date:")
-        return BOOK_DATE 
+        msg = f"❌ {data['reason']}{sug_str}\nPlease choose a different Date:"
+        if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=generate_date_picker())
+        else: await update.message.reply_text(msg, reply_markup=generate_date_picker())
+        return BOOK_DATE_TIME
 
     context.user_data['book_time'] = full_time_str
-    
     name = context.user_data['name']
     ic = context.user_data['ic']
     phone = context.user_data['phone']
     service = context.user_data['service']
+    doc_pref = f"\nDoctor: {context.user_data.get('doctor_pref')}" if context.user_data.get('doctor_pref') else ""
     
     if service == 'Vaccine':
-        details = f"{context.user_data['selected_items'][0]} ({context.user_data['dose']})"
+        details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
     else:
         details = ", ".join(context.user_data['selected_items'])
 
     summary = (f"📋 *Booking Summary*\nName: {name}\nID/IC: {ic}\nPhone: {phone}\n"
-               f"Date: {context.user_data['book_date']}\nTime: {time_str}\n"
-               f"Service: {service}\nDetails: {details}\n\nIs this information correct?")
+               f"Date: {context.user_data['book_date']}\nTime: {full_time_str.split(' ')[1]}\n"
+               f"Service: {service}\nDetails: {details}{doc_pref}\n\nIs this information correct?")
     
     btns = [[InlineKeyboardButton("Yes, Confirm", callback_data="conf_yes"), 
              InlineKeyboardButton("No, Rebook", callback_data="conf_no")]]
-    await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+    
+    if update.callback_query: await update.callback_query.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+    else: await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
     return CONFIRM_BOOK
 
 async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -407,6 +445,11 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await query.edit_message_text("Yes, Confirm")
     
+    # Store dynamic doctor preference inside details JSON block so backend saves it automatically
+    details_block = {"items": context.user_data['selected_items'], "dose": context.user_data.get('dose')}
+    if context.user_data.get('doctor_pref'):
+        details_block['doctor_pref'] = context.user_data.get('doctor_pref')
+
     async with httpx.AsyncClient() as client:
         await client.post(f"{API_BASE}/register-patient", json={
             "name": context.user_data['name'], 
@@ -422,7 +465,7 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
             "telegram_id": update.effective_user.id,
             "ic_passport_number": context.user_data['ic'], 
             "service_type": context.user_data['service'],
-            "details": {"items": context.user_data['selected_items'], "dose": context.user_data.get('dose')},
+            "details": details_block,
             "scheduled_time": context.user_data['book_time']
         })
     
@@ -433,11 +476,12 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
         details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
     else:
         details = ", ".join(context.user_data['selected_items'])
+    doc_pref = f"\nDoctor: {context.user_data.get('doctor_pref')}" if context.user_data.get('doctor_pref') else ""
 
     confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
                          f"Name: {context.user_data['name']}\nID/IC: {context.user_data['ic']}\n"
                          f"Phone: {context.user_data['phone']}\nDate: {date_part}\nTime: {time_part}\n"
-                         f"Service: {service}\nDetails: {details}\n")
+                         f"Service: {service}\nDetails: {details}{doc_pref}\n")
     
     await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
     btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
@@ -477,12 +521,14 @@ if __name__ == '__main__':
             MAN_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_address)],
             MAN_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_phone)],
             CONFIRM_PROFILE: [CallbackQueryHandler(confirm_profile_logic, pattern="^prof_")],
-            CONFIRM_OCR: [CallbackQueryHandler(confirm_ocr_logic, pattern="^ocr_")],
             V_SELECT: [CallbackQueryHandler(vaccine_selected, pattern="^v_")],
             V_DOSE: [CallbackQueryHandler(vaccine_dose, pattern="^dose_")],
             BT_FLOW: [CallbackQueryHandler(bt_logic)],
-            BOOK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date)],
-            BOOK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_time)],
+            # Replaced manual Date and Time states with single advanced AI/Picker state
+            BOOK_DATE_TIME: [
+                CallbackQueryHandler(handle_date_time_selection),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_time_selection)
+            ],
             CONFIRM_BOOK: [CallbackQueryHandler(process_confirmation, pattern="^conf_")],
             FINAL_HELP: [CallbackQueryHandler(final_help_logic, pattern="^help_")],
         },

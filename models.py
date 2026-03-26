@@ -5,6 +5,13 @@ import uuid
 import datetime
 from database import Base
 
+class Doctor(Base):
+    __tablename__ = "doctors"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    specialization = Column(String(100))
+    availability_slots = Column(JSON)
+
 class Vaccine(Base):
     __tablename__ = "vaccines"
     id = Column(Integer, primary_key=True)
@@ -19,13 +26,13 @@ class BloodTest(Base):
     name = Column(String(100))
     price = Column(Numeric(10, 2))
     description = Column(String)
-    test_type = Column(String(20)) # 'package' or 'single'
+    test_type = Column(String(20)) 
 
 class Patient(Base):
     __tablename__ = "patients"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255))
-    ic_passport_number = Column(String(20), unique=True) # Updated field
+    ic_passport_number = Column(String(20), unique=True) 
     telegram_id = Column(BigInteger) 
     phone = Column(String(20))
     address = Column(String) 
@@ -36,6 +43,7 @@ class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id"))
+    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id"), nullable=True) # Optional
     appt_type = Column(String(50)) 
     details = Column(JSON)
     
