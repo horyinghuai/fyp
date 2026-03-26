@@ -15,27 +15,40 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_BASE = "http://127.0.0.1:8000"
 
-# Initialize EasyOCR Reader globally so it doesn't reload on every upload
-ocr_reader = easyocr.Reader(['en', 'ms'])
+# Global variable for lazy loading
+ocr_reader = None
 
-# States (Added CONFIRM_OCR)
+def get_ocr_reader():
+    """Lazy loads the EasyOCR model only when it's first needed."""
+    global ocr_reader
+    if ocr_reader is None:
+        print("Loading EasyOCR Model for the first time... this may take a moment.")
+        ocr_reader = easyocr.Reader(['en', 'ms'])
+    return ocr_reader
+
+# States
 SERVICE, IC_ENTRY, CONFIRM_OCR, REG_NAME, REG_PHONE, V_SELECT, V_DOSE, BT_FLOW, BOOK_TIME, CONFIRM_BOOK, FINAL_HELP = range(11)
 
 def extract_ic_info(image_path: str):
     """Modular function to extract MyKad info using EasyOCR & Heuristics."""
-    results = ocr_reader.readtext(image_path)
+    reader = get_ocr_reader()
+    results = reader.readtext(image_path)
     if not results:
-        return None, None, None
+        return None, None, None, None, None
         
-    # Sort vertically to read top-to-bottom
+    # Sort vertically to read top-to-bottom based on Y-coordinate
     results = sorted(results, key=lambda r: r[0][0][1])
     
     ic_num = None
     ic_index = -1
     ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}')
+    
+    cleaned_results = []
+    for bbox, text, prob in results:
+        cleaned_results.append((bbox, text.upper().strip(), prob))
 
     # 1. Find IC Number
-    for i, (bbox, text, prob) in enumerate(results):
+    for i, (bbox, text, prob) in enumerate(cleaned_results):
         match = ic_pattern.search(text)
         if match:
             ic_num = match.group(0)
@@ -43,30 +56,48 @@ def extract_ic_info(image_path: str):
             break
 
     if not ic_num:
-        return None, None, None
+        return None, None, None, None, None
 
-    # 2. Heuristic for Name (Usually the immediate lines preceding the IC)
-    ignore_words = ["MALAYSIA", "KAD", "PENGENALAN", "WARGANEGARA", "IDENTITY", "CARD"]
+    # 2. Heuristic for Gender (100% accurate rule: Last digit Even = Female, Odd = Male)
+    last_digit = int(ic_num[-1])
+    gender = "Female" if last_digit % 2 == 0 else "Male"
+
+    # 3. Heuristic for Nationality (Scan entire document for WARGANEGARA)
+    nationality = "Unknown"
+    for _, text, _ in cleaned_results:
+        if "WARGANEGARA" in text or "WARGA" in text or "NEGARA" in text:
+            nationality = "MALAYSIA"
+            break
+
+    # 4. Heuristic for Name (On MyKad, Name is directly BELOW the IC Number)
     name = "Unknown"
-    for i in range(ic_index - 1, -1, -1):
-        text = results[i][1].upper().strip()
-        # Ensure it has chars and is not a header word
-        if len(text) > 3 and not any(w in text for w in ignore_words):
-            name = text
-            break
+    address_start_idx = ic_index + 1
+    
+    if ic_index + 1 < len(cleaned_results):
+        raw_name = cleaned_results[ic_index + 1][1]
+        # Clean up noise: only keep letters and spaces
+        name = re.sub(r'[^A-Z\s]', '', raw_name).strip()
+        address_start_idx = ic_index + 2
 
-    # 3. Heuristic for Address (Usually the lines immediately following the IC)
+    # 5. Heuristic for Address (Lines following the name)
     address_lines = []
-    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN"]
-    for i in range(ic_index + 1, min(ic_index + 6, len(results))):
-        text = results[i][1].upper().strip()
-        if text in stop_words or "KUMPULAN DARAH" in text:
-            break
+    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA"]
+    for i in range(address_start_idx, len(cleaned_results)):
+        text = cleaned_results[i][1]
+        
+        # Stop collecting if we hit a known non-address keyword
+        if any(sw in text for sw in stop_words):
+            continue
+            
+        # Ignore random 1-2 character OCR noise
+        if len(text) < 3:
+            continue
+            
         address_lines.append(text)
         
     address = ", ".join(address_lines) if address_lines else "Unknown"
 
-    return name, ic_num, address
+    return name, ic_num, address, gender, nationality
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,6 +136,8 @@ async def ic_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['name'] = patient['name']
             context.user_data['phone'] = patient['phone']
             context.user_data['address'] = patient.get('address')
+            context.user_data['gender'] = patient.get('gender')
+            context.user_data['nationality'] = patient.get('nationality')
             return await proceed_to_service(update, context)
         
     await update.message.reply_text("New user detected. Please enter your Full Name:")
@@ -118,13 +151,18 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.close(fd)
     
     await photo_file.download_to_drive(path)
-    processing_msg = await update.message.reply_text("🔍 Analyzing MyKad, please wait...")
+    
+    loading_text = "🔍 Analyzing MyKad, please wait..."
+    if ocr_reader is None:
+         loading_text = "🔍 Setting up AI scanner for the first time (this takes a few seconds) and analyzing MyKad..."
+    
+    processing_msg = await update.message.reply_text(loading_text)
     
     try:
         # Run OCR in a separate thread so it doesn't block async execution
-        name, ic, address = await asyncio.to_thread(extract_ic_info, path)
+        name, ic, address, gender, nationality = await asyncio.to_thread(extract_ic_info, path)
     except Exception as e:
-        name, ic, address = None, None, None
+        name, ic, address, gender, nationality = None, None, None, None, None
         print(f"OCR Error: {e}")
     finally:
         # Securely delete the image for privacy
@@ -141,11 +179,15 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['ocr_name'] = name
     context.user_data['ocr_ic'] = ic
     context.user_data['ocr_address'] = address
+    context.user_data['ocr_gender'] = gender
+    context.user_data['ocr_nationality'] = nationality
     
     msg = (
         f"✅ *Extracted Info*\n"
         f"Name: {name}\n"
         f"IC: {ic}\n"
+        f"Gender: {gender}\n"
+        f"Nationality: {nationality}\n"
         f"Address: {address}\n\n"
         f"Is this correct?"
     )
@@ -170,6 +212,8 @@ async def confirm_ocr_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['ic'] = ic
     context.user_data['name'] = context.user_data['ocr_name']
     context.user_data['address'] = context.user_data['ocr_address']
+    context.user_data['gender'] = context.user_data['ocr_gender']
+    context.user_data['nationality'] = context.user_data['ocr_nationality']
     
     # Check if this IC already exists in the Database
     async with httpx.AsyncClient() as client:
@@ -331,13 +375,15 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text("Yes, Confirm")
     
     async with httpx.AsyncClient() as client:
-        # Includes the newly extracted 'address' payload dynamically 
+        # Includes the newly extracted payloads dynamically 
         await client.post(f"{API_BASE}/register-patient", json={
             "name": context.user_data['name'], 
             "ic_number": context.user_data['ic'],
             "phone": context.user_data['phone'], 
             "telegram_id": update.effective_user.id,
-            "address": context.user_data.get('address') # Safely passes Address if present
+            "address": context.user_data.get('address'), 
+            "gender": context.user_data.get('gender'), 
+            "nationality": context.user_data.get('nationality') 
         })
         
         await client.post(f"{API_BASE}/book-appointment", json={
@@ -397,7 +443,6 @@ if __name__ == '__main__':
         entry_points=[CommandHandler('start', start)],
         states={
             SERVICE: [CallbackQueryHandler(service_choice, pattern="^svc_")],
-            # Accept both TEXT (manual entry) and PHOTO (OCR extraction)
             IC_ENTRY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ic_check),
                 MessageHandler(filters.PHOTO, handle_ic_photo)

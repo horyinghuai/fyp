@@ -29,6 +29,8 @@ class Patient(Base):
     telegram_id = Column(BigInteger) # Removed unique=True to allow multi-IC management
     phone = Column(String(20))
     address = Column(String) # Added to store MyKad OCR address
+    gender = Column(String(10)) # Added for gender detection
+    nationality = Column(String(50)) # Added for nationality detection
 
 class Appointment(Base):
     __tablename__ = "appointments"
