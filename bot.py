@@ -5,6 +5,7 @@ import asyncio
 import tempfile
 import easyocr
 import datetime as dt
+from dateutil import parser as date_parser
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,6 +17,11 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_BASE = "http://127.0.0.1:8000"
 
+# MULTI-TENANT: Load the Clinic ID from the .env file.
+CLINIC_ID = os.getenv("CLINIC_ID")
+if not CLINIC_ID:
+    print("WARNING: CLINIC_ID is missing from .env. API calls will fail.")
+
 ocr_reader = None
 
 def get_ocr_reader():
@@ -25,7 +31,8 @@ def get_ocr_reader():
         ocr_reader = easyocr.Reader(['en', 'ms'])
     return ocr_reader
 
-SERVICE, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_NAME, MAN_IC, MAN_PASSPORT, MAN_GENDER, MAN_NAT, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, V_SELECT, V_DOSE, BT_FLOW, BOOK_DATE_TIME, CONFIRM_BOOK, FINAL_HELP = range(18)
+# Optimized States Map
+SERVICE, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, V_SELECT, V_DOSE, BT_FLOW, BOOK_DATE_TIME, CONFIRM_BOOK, FINAL_HELP = range(17)
 
 # UI Generators
 def generate_date_picker():
@@ -131,8 +138,8 @@ async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Would you like to auto-fill your details by uploading your MyKad, or enter them manually?", reply_markup=InlineKeyboardMarkup(btns))
         return MY_METHOD_CHOICE
     else:
-        await query.message.reply_text("Please enter your Full Name:")
-        return MAN_NAME
+        await query.message.reply_text("Please enter your Passport Number:")
+        return MAN_ID_CHECK
 
 async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -143,8 +150,8 @@ async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return UPLOAD_IC
     else:
         await query.edit_message_text("Enter Manually")
-        await query.message.reply_text("Please enter your Full Name:")
-        return MAN_NAME
+        await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
+        return MAN_ID_CHECK
 
 async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()
@@ -166,8 +173,8 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await processing_msg.delete()
         
     if not ic:
-        await update.message.reply_text("❌ Could not detect MyKad. Please upload a clearer photo OR enter your Full Name to proceed manually:")
-        return MAN_NAME
+        await update.message.reply_text("❌ Could not detect MyKad. Please enter your IC Number manually:")
+        return MAN_ID_CHECK
         
     context.user_data['name'] = name
     context.user_data['ic'] = ic
@@ -176,7 +183,7 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['nationality'] = nationality
     
     async with httpx.AsyncClient() as client:
-        res = await client.get(f"{API_BASE}/patient/id/{ic}")
+        res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{ic}")
         if res.status_code == 200:
             patient = res.json()
             context.user_data['phone'] = patient['phone']
@@ -185,33 +192,45 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ MyKad Scanned! Please enter your Phone Number to confirm your profile:")
     return MAN_PHONE
 
+async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.upper()
+    is_my = context.user_data.get('is_malaysian')
+
+    if is_my:
+        ic_digits = re.sub(r'\D', '', text)
+        if len(ic_digits) != 12:
+            await update.message.reply_text("❌ Wrong format! Please enter your IC Number again:")
+            return MAN_ID_CHECK
+        formatted_id = f"{ic_digits[:6]}-{ic_digits[6:8]}-{ic_digits[8:]}"
+        context.user_data['ic'] = formatted_id
+        context.user_data['gender'] = "FEMALE" if int(ic_digits[-1]) % 2 == 0 else "MALE"
+        context.user_data['nationality'] = "MALAYSIA"
+    else:
+        formatted_id = text
+        context.user_data['ic'] = formatted_id
+
+    # Database Check: Skips info collection if they already exist in this clinic
+    async with httpx.AsyncClient() as client:
+        res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{formatted_id}")
+        if res.status_code == 200:
+            patient = res.json()
+            context.user_data['name'] = patient['name']
+            context.user_data['phone'] = patient['phone']
+            await update.message.reply_text(f"Welcome back, {patient['name']}! Let's continue.")
+            return await proceed_to_service(update, context)
+
+    # New User Flow
+    await update.message.reply_text("Please enter your Full Name:")
+    return MAN_NAME
+
 async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['name'] = update.message.text.upper()
     if context.user_data.get('is_malaysian'):
-        await update.message.reply_text("Please enter your IC Number:")
-        return MAN_IC
+        await update.message.reply_text("Please enter your Home Address:")
+        return MAN_ADDRESS
     else:
-        await update.message.reply_text("Please enter your Passport Number:")
-        return MAN_PASSPORT
-
-async def man_ic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ic_input = update.message.text.upper()
-    ic_digits = re.sub(r'\D', '', ic_input)
-
-    if len(ic_digits) != 12:
-        await update.message.reply_text("❌ Wrong format! Please enter your IC Number again:")
-        return MAN_IC
-
-    context.user_data['ic'] = f"{ic_digits[:6]}-{ic_digits[6:8]}-{ic_digits[8:]}"
-    context.user_data['gender'] = "FEMALE" if int(ic_digits[-1]) % 2 == 0 else "MALE"
-    context.user_data['nationality'] = "MALAYSIA"
-    await update.message.reply_text("Please enter your Home Address:")
-    return MAN_ADDRESS
-
-async def man_passport(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['ic'] = update.message.text.upper()
-    await update.message.reply_text("Please enter your Gender (Male / Female):")
-    return MAN_GENDER
+        await update.message.reply_text("Please enter your Gender (Male / Female):")
+        return MAN_GENDER
 
 async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['gender'] = update.message.text.upper()
@@ -262,7 +281,7 @@ async def proceed_to_service(update, context):
     context.user_data['selected_items'] = []
     async with httpx.AsyncClient() as client:
         if service == 'Vaccine':
-            res = await client.get(f"{API_BASE}/vaccines")
+            res = await client.get(f"{API_BASE}/vaccines/{CLINIC_ID}")
             vaccines = res.json()
             context.user_data['vaccines_list'] = vaccines
             
@@ -276,7 +295,7 @@ async def proceed_to_service(update, context):
 
 async def show_blood_tests(update, context, t_type):
     async with httpx.AsyncClient() as client:
-        res = await client.get(f"{API_BASE}/blood-tests/{t_type}")
+        res = await client.get(f"{API_BASE}/blood-tests/{CLINIC_ID}/{t_type}")
         tests = res.json()
         selected = context.user_data.get('selected_items', [])
         btns = [[InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"sel_{t['name']}")] for t in tests if t['name'] not in selected]
@@ -319,7 +338,10 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     vaccines = context.user_data.get('vaccines_list', [])
     selected_vac = next((v for v in vaccines if v['name'] == vaccine_name), None)
+    
+    # Fully Dynamic Doses based on AI/Database configuration
     total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
+    has_booster = selected_vac.get('has_booster', False) if selected_vac else False
     
     btns = []
     if total_doses <= 1:
@@ -334,7 +356,8 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if dose_row:
             btns.append(dose_row)
             
-    btns.append([InlineKeyboardButton("Booster", callback_data="dose_Booster")])
+    if has_booster:
+        btns.append([InlineKeyboardButton("Booster", callback_data="dose_Booster")])
 
     await query.message.reply_text("Which dose are you taking?", reply_markup=InlineKeyboardMarkup(btns))
     return V_DOSE
@@ -379,8 +402,6 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         
         if res.status_code == 200:
             ext = res.json()
-            
-            # FIXED: Print the actual error message from the backend so we can debug it
             if "error" in ext:
                 real_error = ext.get("error", "Unknown error")
                 await update.message.reply_text(f"⚠️ AI Process Error: {real_error}\n\nPlease use the calendar buttons instead:", reply_markup=generate_date_picker())
@@ -391,8 +412,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             time_pref = ext.get('time_preference')
             doc_pref = ext.get('doctor_preference')
             
-            if doc_pref: 
-                context.user_data['doctor_pref'] = doc_pref
+            if doc_pref: context.user_data['doctor_pref'] = doc_pref
                 
             if intent == 'reschedule':
                 await update.message.reply_text("I see you want to reschedule. Currently, this bot focuses on new bookings. Let's make a new booking!")
@@ -473,6 +493,7 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
 
     async with httpx.AsyncClient() as client:
         await client.post(f"{API_BASE}/register-patient", json={
+            "clinic_id": CLINIC_ID,
             "name": context.user_data['name'], 
             "ic_passport_number": context.user_data['ic'], 
             "phone": context.user_data['phone'], 
@@ -483,6 +504,7 @@ async def process_confirmation(update: Update, context: ContextTypes.DEFAULT_TYP
         })
         
         await client.post(f"{API_BASE}/book-appointment", json={
+            "clinic_id": CLINIC_ID,
             "telegram_id": update.effective_user.id,
             "ic_passport_number": context.user_data['ic'], 
             "service_type": context.user_data['service'],
@@ -534,9 +556,8 @@ if __name__ == '__main__':
             NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],
             MY_METHOD_CHOICE: [CallbackQueryHandler(my_method_logic, pattern="^meth_")],
             UPLOAD_IC: [MessageHandler(filters.PHOTO, handle_ic_photo)],
+            MAN_ID_CHECK: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_id_check)],
             MAN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_name)],
-            MAN_IC: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_ic)],
-            MAN_PASSPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_passport)],
             MAN_GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_gender)],
             MAN_NAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_nat)],
             MAN_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_address)],
