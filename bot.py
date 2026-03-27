@@ -5,7 +5,6 @@ import asyncio
 import tempfile
 import easyocr
 import datetime as dt
-from dateutil import parser as date_parser
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -17,7 +16,6 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_BASE = "http://127.0.0.1:8000"
 
-# MULTI-TENANT: Load the Clinic ID from the .env file.
 CLINIC_ID = os.getenv("CLINIC_ID")
 if not CLINIC_ID:
     print("WARNING: CLINIC_ID is missing from .env. API calls will fail.")
@@ -31,10 +29,8 @@ def get_ocr_reader():
         ocr_reader = easyocr.Reader(['en', 'ms'])
     return ocr_reader
 
-# Optimized States Map
 SERVICE, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, V_SELECT, V_DOSE, BT_FLOW, BOOK_DATE_TIME, CONFIRM_BOOK, FINAL_HELP = range(17)
 
-# UI Generators
 def generate_date_picker():
     keyboard = []
     today = dt.datetime.now()
@@ -209,7 +205,6 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         formatted_id = text
         context.user_data['ic'] = formatted_id
 
-    # Database Check: Skips info collection if they already exist in this clinic
     async with httpx.AsyncClient() as client:
         res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{formatted_id}")
         if res.status_code == 200:
@@ -219,7 +214,6 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Welcome back, {patient['name']}! Let's continue.")
             return await proceed_to_service(update, context)
 
-    # New User Flow
     await update.message.reply_text("Please enter your Full Name:")
     return MAN_NAME
 
@@ -297,11 +291,22 @@ async def show_blood_tests(update, context, t_type):
     async with httpx.AsyncClient() as client:
         res = await client.get(f"{API_BASE}/blood-tests/{CLINIC_ID}/{t_type}")
         tests = res.json()
-        selected = context.user_data.get('selected_items', [])
-        btns = [[InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"sel_{t['name']}")] for t in tests if t['name'] not in selected]
-        if t_type == "package": btns.append([InlineKeyboardButton("OTHERS (Single Tests)", callback_data="bt_others")])
+        context.user_data[f'bt_cache_{t_type}'] = tests
         
-        msg = "Choose a package:" if t_type == "package" else "Choose a single test:"
+        selected = context.user_data.get('selected_items', [])
+        btns = []
+        
+        # Secure UI Rendering: Uses Database ID to bypass Telegram's 64-byte character limit
+        for t in tests:
+            if t['name'] not in selected:
+                btns.append([InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"selbt_{t['id']}")])
+        
+        if t_type == "package": 
+            btns.append([InlineKeyboardButton("OR Browse Single Tests", callback_data="bt_others")])
+            msg = "Choose a Blood Test Package:"
+        else:
+            msg = "Choose an add-on Single Test:"
+            
         markup = InlineKeyboardMarkup(btns)
         if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=markup)
         else: await update.message.reply_text(msg, reply_markup=markup)
@@ -311,22 +316,37 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    
     if data == "bt_others": 
-        await query.edit_message_text("OTHERS (Single Tests)")
+        await query.edit_message_text("Browse Single Tests")
         return await show_blood_tests(update, context, "single")
-    if data.startswith("sel_"):
-        item = data.replace("sel_", "")
-        context.user_data['selected_items'].append(item)
-        await query.edit_message_text(f"{item}")
-        btns = [[InlineKeyboardButton("Yes, add extra", callback_data="add_more"), InlineKeyboardButton("No thanks, finish", callback_data="add_done")]]
-        await query.message.reply_text(f"Added: {item}. Would you like to add more tests?", reply_markup=InlineKeyboardMarkup(btns))
+        
+    if data.startswith("selbt_"):
+        bt_id = int(data.replace("selbt_", ""))
+        
+        # Match ID back to Name from memory
+        bt_name = "Unknown Test"
+        for t_type in ['package', 'single']:
+            cache = context.user_data.get(f'bt_cache_{t_type}', [])
+            for t in cache:
+                if t['id'] == bt_id:
+                    bt_name = t['name']
+                    break
+                    
+        context.user_data['selected_items'].append(bt_name)
+        await query.edit_message_text(f"{bt_name}")
+        
+        btns = [[InlineKeyboardButton("Yes, add more", callback_data="add_more"), InlineKeyboardButton("No thanks, finish", callback_data="add_done")]]
+        await query.message.reply_text(f"Added: {bt_name}. Would you like to add any single tests?", reply_markup=InlineKeyboardMarkup(btns))
         return BT_FLOW
+        
     if data == "add_more": 
-        await query.edit_message_text("Yes, add extra")
+        await query.edit_message_text("Yes, add more")
         return await show_blood_tests(update, context, "single")
+        
     if data == "add_done":
         await query.edit_message_text("No thanks, finish")
-        await query.message.reply_text("Please select a Date using the calendar below, \nOR type your request naturally (e.g., 'Tomorrow at 10am with Dr. Tan'):", reply_markup=generate_date_picker())
+        await query.message.reply_text("Please select a Date using the calendar below, \nOR type your request naturally (e.g., 'Tomorrow at 10am'):", reply_markup=generate_date_picker())
         return BOOK_DATE_TIME
 
 async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -339,7 +359,6 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vaccines = context.user_data.get('vaccines_list', [])
     selected_vac = next((v for v in vaccines if v['name'] == vaccine_name), None)
     
-    # Fully Dynamic Doses based on AI/Database configuration
     total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
     has_booster = selected_vac.get('has_booster', False) if selected_vac else False
     

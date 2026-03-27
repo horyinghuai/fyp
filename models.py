@@ -50,6 +50,7 @@ class BloodTest(Base):
     price = Column(Numeric(10, 2))
     description = Column(String)
     test_type = Column(String(20)) 
+    included_tests = Column(JSON) # ADDED: To store the single tests in a package
 
 class Patient(Base):
     __tablename__ = "patients"
