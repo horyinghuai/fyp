@@ -21,6 +21,11 @@ class Booking(BaseModel):
 class TextExtractRequest(BaseModel):
     text: str
 
+class AvailabilityRequest(BaseModel):
+    clinic_id: str
+    requested_time: str
+    duration: int
+
 @app.post("/ai-extract")
 def ai_extract(req: TextExtractRequest):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -28,6 +33,13 @@ def ai_extract(req: TextExtractRequest):
     if isinstance(extracted, dict) and "error" in extracted:
         return extracted
     return extracted.dict()
+
+# NEW: Endpoint to fetch the dynamic clinic name
+@app.get("/clinic/{clinic_id}")
+def get_clinic(clinic_id: str, db: Session = Depends(get_db)):
+    clinic = db.query(models.Clinic).filter(models.Clinic.id == clinic_id).first()
+    if not clinic: raise HTTPException(status_code=404)
+    return clinic
 
 @app.get("/vaccines/{clinic_id}")
 def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
@@ -58,8 +70,27 @@ def register_patient(data: Dict[str, Any], db: Session = Depends(get_db)):
     return {"status": "success"}
 
 @app.post("/check-availability")
-def check_availability(requested_time: str):
-    return scheduling_agent.invoke({"requested_time": requested_time})
+def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
+    # 1. AI Logic Check (Operating hours, past dates, etc.)
+    agent_result = scheduling_agent.invoke({"requested_time": req.requested_time})
+    if not agent_result['is_valid']:
+        return agent_result
+
+    # 2. Database Check for Clashing Appointments
+    req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
+    clash = db.query(models.ApptStage).join(models.Appointment).filter(
+        models.Appointment.clinic_id == req.clinic_id,
+        models.ApptStage.scheduled_time == req_dt
+    ).first()
+    
+    if clash:
+        return {
+            "is_valid": False,
+            "reason": "This slot is already fully booked.",
+            "suggestions": []
+        }
+        
+    return {"is_valid": True, "reason": "Slot available.", "suggestions": []}
 
 @app.post("/book-appointment")
 def book_appointment(booking: Booking, db: Session = Depends(get_db)):
