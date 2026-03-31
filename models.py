@@ -27,6 +27,7 @@ class Doctor(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
+    gender = Column(String(10)) # ADDED
     specialization = Column(String(100))
     availability_slots = Column(JSON)
 
@@ -50,7 +51,7 @@ class BloodTest(Base):
     price = Column(Numeric(10, 2))
     description = Column(String)
     test_type = Column(String(20)) 
-    included_tests = Column(JSON) # ADDED: To store the single tests in a package
+    included_tests = Column(JSON) 
 
 class Patient(Base):
     __tablename__ = "patients"

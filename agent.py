@@ -18,13 +18,13 @@ if not GEMINI_API_KEY:
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- AI Extraction Logic ---
+# --- AI EXTRACTION LOGIC ---
 class AppointmentExtraction(BaseModel):
     intent: str = Field(description="Must be either 'booking' or 'reschedule'")
     date_preference: Optional[str] = Field(description="Extracted date in strictly YYYY-MM-DD format, or null if missing.")
     time_preference: Optional[str] = Field(description="Extracted time in strictly HH:MM:SS format (24-hour), or null if missing.")
     doctor_preference: Optional[str] = Field(description="Name of the preferred doctor, or null if missing.")
-    reason: Optional[str] = Field(description="Extracted reason for visit or any free text details, or null.") # ADDED
+    reason: Optional[str] = Field(description="Extracted reason for visit or any free text details, or null.")
 
 def extract_appointment_details(user_text: str, current_time_str: str):
     if not GEMINI_API_KEY:
@@ -37,13 +37,13 @@ def extract_appointment_details(user_text: str, current_time_str: str):
     
     User Text: "{user_text}"
 
-    Extract the information into the following strictly valid JSON format. Return ONLY the JSON object, with no markdown formatting and no conversational text:
+    Extract the information into strictly valid JSON format. Return ONLY the JSON object:
     {{
         "intent": "booking",
         "date_preference": "YYYY-MM-DD",
         "time_preference": "HH:MM:SS",
         "doctor_preference": "Dr. Name",
-        "reason": "General Checkup"
+        "reason": "Extracted reason"
     }}
     """
 
@@ -73,21 +73,19 @@ def extract_appointment_details(user_text: str, current_time_str: str):
                     if 'candidates' in result and len(result['candidates']) > 0:
                         raw_text = result['candidates'][0]['content']['parts'][0]['text'].strip()
                         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-                        if not json_match:
-                            return {"error": "AI did not return a valid JSON object."}
-                        
-                        clean_json = json_match.group(0)
-                        parsed_data = json.loads(clean_json)
-                        return AppointmentExtraction(**parsed_data)
+                        if json_match:
+                            parsed_data = json.loads(json_match.group(0))
+                            return AppointmentExtraction(**parsed_data)
                 else:
                     errors.append(f"{version}/{model} ({response.status_code})")
             except Exception as e:
                 errors.append(f"{version}/{model} Exception")
                 continue 
-            
+                
     return {"error": f"All endpoints failed. Traces: {', '.join(errors)}"}
 
-# --- Scheduling Agent Logic ---
+
+# --- SCHEDULING AGENT LOGIC (LangGraph) ---
 class AgentState(TypedDict):
     requested_time: str
     is_valid: bool
@@ -121,4 +119,6 @@ workflow = StateGraph(AgentState)
 workflow.add_node("check_schedule", scheduling_agent_node)
 workflow.set_entry_point("check_schedule")
 workflow.add_edge("check_schedule", END)
+
+# This was the missing line that compiles the graph for main.py to use!
 scheduling_agent = workflow.compile()
