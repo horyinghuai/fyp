@@ -636,7 +636,7 @@ async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.edit_message_text("No, I'm done")
         clinic_name = context.user_data.get('clinic_name', 'our Clinic')
-        await query.message.reply_text(f"Thank you for using {clinic_name} AICAS . Have a great day!")
+        await query.message.reply_text(f"Thank you for using {clinic_name} AICAS bot. Have a great day!")
         return ConversationHandler.END
 
 if __name__ == '__main__':
