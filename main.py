@@ -77,7 +77,6 @@ def register_patient(data: Dict[str, Any], db: Session = Depends(get_db)):
         models.Patient.ic_passport_number == data['ic_passport_number']
     ).first()
     if existing:
-        # Update existing profile
         for key, value in data.items():
             if hasattr(existing, key):
                 setattr(existing, key, value)
@@ -166,7 +165,6 @@ def get_available_times(req: TimeRequest, db: Session = Depends(get_db)):
     
     if not doc_slots: return {"error": "No slots available"}
     
-    # Pool all unique available times across all matching doctors
     all_times = set()
     for ds in doc_slots:
         for s in ds['slots']:
@@ -176,7 +174,6 @@ def get_available_times(req: TimeRequest, db: Session = Depends(get_db)):
     
     return {
         "times": sorted_times,
-        # We don't assign the doctor yet, because we need to know exactly what time they click
         "doctor_name": "Pending Selection" 
     }
 
@@ -193,14 +190,12 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
 
     doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, date_obj, req.duration, req.doctor_pref)
     
-    # Check if ANY doctor has this exact slot free
     available_docs_for_this_slot = []
     for ds in doc_slots:
         if req_dt in ds['slots']:
             available_docs_for_this_slot.append(ds)
             
     if available_docs_for_this_slot:
-        # Rule: Assign to the doctor with the most total free slots that day
         max_free = max(ds['free_count'] for ds in available_docs_for_this_slot)
         best_docs = [ds for ds in available_docs_for_this_slot if ds['free_count'] == max_free]
         chosen = random.choice(best_docs)
@@ -213,7 +208,6 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
             "suggestions": []
         }
     else:
-        # Fallback Suggestions
         sugs_set = set()
         for ds in doc_slots:
             for s in ds['slots']:
