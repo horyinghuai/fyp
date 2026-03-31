@@ -76,14 +76,21 @@ def register_patient(data: Dict[str, Any], db: Session = Depends(get_db)):
         models.Patient.clinic_id == data['clinic_id'], 
         models.Patient.ic_passport_number == data['ic_passport_number']
     ).first()
-    if existing: return {"status": "already_registered"}
+    if existing:
+        # Update existing profile
+        for key, value in data.items():
+            if hasattr(existing, key):
+                setattr(existing, key, value)
+        db.commit()
+        return {"status": "updated"}
+        
     new_patient = models.Patient(**data)
     db.add(new_patient)
     db.commit()
     return {"status": "success"}
 
 # --- SCHEDULING ENGINE ---
-def get_best_doctor_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
+def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
     doc_query = db.query(models.Doctor).filter(models.Doctor.clinic_id == clinic_id)
     
     if doctor_pref == "MALE": doc_query = doc_query.filter(models.Doctor.gender == "MALE")
@@ -92,12 +99,11 @@ def get_best_doctor_for_date(db: Session, clinic_id: str, date_obj: datetime.dat
         doc_query = doc_query.filter(models.Doctor.name == doctor_pref)
 
     valid_docs = doc_query.all()
-    if not valid_docs: return None, []
+    if not valid_docs: return []
 
     day_of_week = date_obj.strftime("%a").lower()
     now = datetime.now()
 
-    # Get all DB clashes for this date
     start_of_day = datetime.combine(date_obj, datetime.min.time())
     end_of_day = datetime.combine(date_obj, datetime.max.time())
 
@@ -117,7 +123,7 @@ def get_best_doctor_for_date(db: Session, clinic_id: str, date_obj: datetime.dat
 
     for doc in valid_docs:
         avail = doc.availability_slots or {}
-        if day_of_week not in avail: continue # Doctor not on duty today
+        if day_of_week not in avail: continue 
 
         times = avail[day_of_week]
         if len(times) != 2: continue
@@ -139,16 +145,9 @@ def get_best_doctor_for_date(db: Session, clinic_id: str, date_obj: datetime.dat
             curr += timedelta(minutes=duration)
             
         if slots:
-            doc_slots.append((doc, slots, len(slots)))
+            doc_slots.append({"doc": doc, "slots": slots, "free_count": len(slots)})
 
-    if not doc_slots: return None, []
-
-    # Goal: Assign to doctor with the MOST free slots, random if tied
-    max_free = max(ds[2] for ds in doc_slots)
-    best_docs = [ds for ds in doc_slots if ds[2] == max_free]
-    chosen = random.choice(best_docs)
-    
-    return chosen[0], chosen[1]
+    return doc_slots
 
 @app.post("/available-dates")
 def get_available_dates(req: DateRequest, db: Session = Depends(get_db)):
@@ -156,20 +155,29 @@ def get_available_dates(req: DateRequest, db: Session = Depends(get_db)):
     today = datetime.now().date()
     for i in range(14):
         d = today + timedelta(days=i)
-        doc, slots = get_best_doctor_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
-        if slots: valid_dates.append(d.strftime("%Y-%m-%d"))
+        doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
+        if doc_slots: valid_dates.append(d.strftime("%Y-%m-%d"))
     return valid_dates
 
 @app.post("/available-times")
 def get_available_times(req: TimeRequest, db: Session = Depends(get_db)):
     d_obj = datetime.strptime(req.date, "%Y-%m-%d").date()
-    doc, slots = get_best_doctor_for_date(db, req.clinic_id, d_obj, req.duration, req.doctor_pref)
-    if not doc: return {"error": "No slots available"}
+    doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d_obj, req.duration, req.doctor_pref)
+    
+    if not doc_slots: return {"error": "No slots available"}
+    
+    # Pool all unique available times across all matching doctors
+    all_times = set()
+    for ds in doc_slots:
+        for s in ds['slots']:
+            all_times.add(s.strftime("%H:%M:%S"))
+            
+    sorted_times = sorted(list(all_times))
     
     return {
-        "doctor_id": str(doc.id),
-        "doctor_name": doc.name,
-        "times": [s.strftime("%H:%M:%S") for s in slots]
+        "times": sorted_times,
+        # We don't assign the doctor yet, because we need to know exactly what time they click
+        "doctor_name": "Pending Selection" 
     }
 
 @app.post("/check-availability")
@@ -183,31 +191,40 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
     if req_dt < now:
         return {"is_valid": False, "reason": "You cannot book an appointment in the past.", "suggestions": []}
 
-    doc, slots = get_best_doctor_for_date(db, req.clinic_id, date_obj, req.duration, req.doctor_pref)
+    doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, date_obj, req.duration, req.doctor_pref)
     
-    if not doc:
-        sugs = []
-        for i in range(1, 7):
-            d = date_obj + timedelta(days=i)
-            s_doc, s_slots = get_best_doctor_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
-            if s_slots:
-                sugs.extend([s.strftime("%Y-%m-%d %H:%M:%S") for s in s_slots[:3]])
-                break
-        return {"is_valid": False, "reason": "No doctors matching your preference have free slots on that day.", "suggestions": sugs[:3]}
-
-    if req_dt in slots:
+    # Check if ANY doctor has this exact slot free
+    available_docs_for_this_slot = []
+    for ds in doc_slots:
+        if req_dt in ds['slots']:
+            available_docs_for_this_slot.append(ds)
+            
+    if available_docs_for_this_slot:
+        # Rule: Assign to the doctor with the most total free slots that day
+        max_free = max(ds['free_count'] for ds in available_docs_for_this_slot)
+        best_docs = [ds for ds in available_docs_for_this_slot if ds['free_count'] == max_free]
+        chosen = random.choice(best_docs)
+        
         return {
             "is_valid": True, 
             "reason": "Slot available.", 
-            "doctor_id": str(doc.id), 
-            "doctor_name": doc.name,
+            "doctor_id": str(chosen['doc'].id), 
+            "doctor_name": chosen['doc'].name,
             "suggestions": []
         }
     else:
-        sugs = [s.strftime("%Y-%m-%d %H:%M:%S") for s in slots[:3]]
+        # Fallback Suggestions
+        sugs_set = set()
+        for ds in doc_slots:
+            for s in ds['slots']:
+                sugs_set.add(s.strftime("%Y-%m-%d %H:%M:%S"))
+                if len(sugs_set) >= 3: break
+            if len(sugs_set) >= 3: break
+            
+        sugs = sorted(list(sugs_set))
         return {
             "is_valid": False, 
-            "reason": f"That exact time is unavailable for {doc.name}.", 
+            "reason": "That exact time is unavailable for your preferred doctor(s).", 
             "suggestions": sugs
         }
 
@@ -227,7 +244,6 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             mapped_appt_type = 'multi-stage'
             total_stages = booking.details.get('total_doses', 1)
 
-    # Retrieves the pre-assigned doctor ID saved by bot.py
     doc_id = booking.details.get('assigned_doctor_id')
 
     new_appt = models.Appointment(
