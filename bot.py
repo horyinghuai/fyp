@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, 
-    CallbackQueryHandler, ConversationHandler, MessageHandler, filters
+    CallbackQueryHandler, ConversationHandler, MessageHandler, filters, InlineQueryHandler
 )
 
 load_dotenv()
@@ -70,7 +70,7 @@ async def generate_time_picker(service, date_str, doctor_pref):
     
     return InlineKeyboardMarkup(keyboard)
 
-# --- OCR ENGINE ---
+# --- OCR ENGINE (Reverted to MyKad Only) ---
 def extract_ic_info(image_path: str):
     reader = get_ocr_reader()
     results = reader.readtext(image_path)
@@ -91,10 +91,8 @@ def extract_ic_info(image_path: str):
     if not ic_num: return None, None, None, None, None
     last_digit = int(ic_num[-1])
     gender = "FEMALE" if last_digit % 2 == 0 else "MALE"
-
     nationality = "MALAYSIA"
     
-    # FIXED: Extract Names dynamically across 2 lines until an address keyword or number is found
     name_lines = []
     address_start_idx = ic_index + 1
     stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA"]
@@ -117,56 +115,9 @@ def extract_ic_info(image_path: str):
     address = ", ".join(address_lines) if address_lines else "UNKNOWN"
     return name, ic_num, address, gender, nationality
 
-def extract_passport_info(image_path: str):
-    reader = get_ocr_reader()
-    results = reader.readtext(image_path)
-    if not results: return None, None, None, None, None
-    
-    cleaned_results = [text.upper().strip() for bbox, text, prob in results]
-    
-    passport_no = None
-    name = "UNKNOWN"
-    gender = "UNKNOWN"
-    nationality = "UNKNOWN"
-    address = "UNKNOWN"
-    
-    passport_pattern = re.compile(r'^[A-Z0-9]{7,9}$')
-    
-    # Simple heuristic to extract Machine Readable Zone (MRZ)
-    for text in cleaned_results:
-        text_no_space = text.replace(" ", "")
-        
-        # MRZ Line 1 (Name)
-        if text_no_space.startswith('P<'):
-            parts = text_no_space[5:].split('<<')
-            if len(parts) >= 1:
-                raw_name = parts[0].replace('<', ' ')
-                if len(parts) >= 2:
-                    raw_name += " " + parts[1].replace('<', ' ')
-                name = re.sub(r'[^A-Z\s]', '', raw_name).strip()
-        
-        # MRZ Line 2 (Passport Number & Gender)
-        if '<' in text_no_space and len(text_no_space) > 20:
-            match = re.match(r'^([A-Z0-9]{7,9})<', text_no_space)
-            if match:
-                passport_no = match.group(1)
-                if 'M' in text_no_space[10:25]: gender = "MALE"
-                elif 'F' in text_no_space[10:25]: gender = "FEMALE"
-                
-    if not passport_no:
-        for text in cleaned_results:
-            text_clean = text.replace(" ", "")
-            if passport_pattern.match(text_clean) and not text_clean.isalpha() and not text_clean.isdigit():
-                passport_no = text_clean
-                break
-                
-    return name, passport_no, address, gender, nationality
-
-
 # --- 1. PROFILE REGISTRATION FLOW ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['is_editing'] = False 
-    
     clinic_name = "our Clinic"
     if CLINIC_ID:
         async with httpx.AsyncClient() as client:
@@ -177,10 +128,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     context.user_data['clinic_name'] = clinic_name
     
-    if update.message: 
-        await update.message.reply_text(f"Welcome to {clinic_name}!")
-    else: 
-        await update.callback_query.message.reply_text(f"Welcome to {clinic_name}!")
+    if update.message: await update.message.reply_text(f"Welcome to {clinic_name}!")
+    else: await update.callback_query.message.reply_text(f"Welcome to {clinic_name}!")
 
     btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")],
             [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
@@ -197,28 +146,27 @@ async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['is_malaysian'] = is_my
     await query.edit_message_text("Malaysian" if is_my else "Non-Malaysian")
     
-    doc_type = "MyKad" if is_my else "Passport"
-    
-    btns = [[InlineKeyboardButton(f"Upload {doc_type}", callback_data="meth_photo")],
-            [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
-    await query.message.reply_text(f"Would you like to auto-fill your details by uploading your {doc_type}, or enter them manually?", reply_markup=InlineKeyboardMarkup(btns))
-    return MY_METHOD_CHOICE
+    if is_my:
+        btns = [[InlineKeyboardButton("Upload MyKad", callback_data="meth_photo")],
+                [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
+        await query.message.reply_text("Would you like to auto-fill your details by uploading your MyKad, or enter them manually?", reply_markup=InlineKeyboardMarkup(btns))
+        return MY_METHOD_CHOICE
+    else:
+        # Reverted to original prompt for non-malaysians
+        await query.message.reply_text("Please enter your Passport Number:")
+        return MAN_ID_CHECK
 
 async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    is_my = context.user_data.get('is_malaysian')
-    doc_type = "MyKad" if is_my else "Passport"
-    
     if query.data == "meth_photo":
-        await query.edit_message_text(f"Upload {doc_type}")
-        await query.message.reply_text(f"Please upload a clear photo of your {doc_type}:")
+        await query.edit_message_text("Upload MyKad")
+        await query.message.reply_text("Please upload a clear photo of your MyKad:")
         return UPLOAD_IC
     else:
         await query.edit_message_text("Enter Manually")
-        if is_my: await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
-        else: await query.message.reply_text("Please enter your Passport Number:")
+        await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
         return MAN_ID_CHECK
 
 async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,13 +175,8 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.close(fd)
     await photo_file.download_to_drive(path)
     
-    is_my = context.user_data.get('is_malaysian')
-    doc_type = "MyKad" if is_my else "Passport"
-    
-    processing_msg = await update.message.reply_text(f"🔍 Analyzing {doc_type}, please wait...")
-    try: 
-        if is_my: name, ic, address, gender, nationality = await asyncio.to_thread(extract_ic_info, path)
-        else: name, ic, address, gender, nationality = await asyncio.to_thread(extract_passport_info, path)
+    processing_msg = await update.message.reply_text("🔍 Analyzing MyKad, please wait...")
+    try: name, ic, address, gender, nationality = await asyncio.to_thread(extract_ic_info, path)
     except Exception: name, ic, address, gender, nationality = None, None, None, None, None
     finally:
         if os.path.exists(path): os.remove(path)
@@ -241,8 +184,7 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await processing_msg.delete()
         
     if not ic:
-        msg = f"❌ Could not detect {doc_type}. Please enter your {'IC' if is_my else 'Passport'} Number manually:"
-        await update.message.reply_text(msg)
+        await update.message.reply_text("❌ Could not detect MyKad. Please enter your IC Number manually:")
         return MAN_ID_CHECK
         
     context.user_data['name'] = name
@@ -258,10 +200,11 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['phone'] = patient['phone']
             return await show_profile_summary(update.message, context)
 
-    await update.message.reply_text(f"✅ {doc_type} Scanned! Please enter your Phone Number to confirm your profile:")
+    await update.message.reply_text("✅ MyKad Scanned! Please enter your Phone Number to confirm your profile:")
     return MAN_PHONE
 
 async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # FIXED: Re-read the edit_mode flag directly in case it came from inline editing
     text = update.message.text.upper()
     is_my = context.user_data.get('is_malaysian')
 
@@ -276,6 +219,8 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['nationality'] = "MALAYSIA"
     else:
         context.user_data['ic'] = text
+        
+    if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
 
     async with httpx.AsyncClient() as client:
         res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{context.user_data['ic']}")
@@ -337,7 +282,7 @@ async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return await show_profile_summary(update.message, context)
 
-# --- PROFILE EDITING ---
+# --- PROFILE EDITING (Native Telegram Edit) ---
 async def show_profile_summary(message, context):
     context.user_data['edit_mode'] = False
     msg = (f"📋 *Please confirm your details:*\nName: {context.user_data['name']}\n"
@@ -379,20 +324,13 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     field = query.data.replace("edit_", "")
     context.user_data['edit_mode'] = True
     
-    prompts = {
-        "name": "Full Name",
-        "ic": "IC/Passport Number",
-        "gender": "Gender (Male/Female)",
-        "nat": "Nationality",
-        "address": "Home Address",
-        "phone": "Phone Number"
-    }
+    current_val = str(context.user_data.get(field, ''))
     
-    current_val = context.user_data.get(field, 'UNKNOWN')
+    # FIXED: Uses switch_inline_query_current_chat to instantly populate the user's text box
+    btn = [[InlineKeyboardButton("✏️ Tap here to Edit", switch_inline_query_current_chat=current_val)]]
+    msg = f"Click the button below to edit your *{field.title()}*, then delete my bot username (`@bot_name`) and press send!"
     
-    # FIXED: Tap-to-Copy functionality using Markdown Code Blocks
-    msg = f"Your current {prompts[field]} is:\n`{current_val}`\n\nTap the text above to copy it, then paste and edit to send your new {prompts[field]}:"
-    await query.edit_message_text(msg, parse_mode="Markdown")
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btn), parse_mode="Markdown")
     
     if field == "name": return MAN_NAME
     if field == "ic": return MAN_ID_CHECK
@@ -508,6 +446,12 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             if t['name'] not in excluded_singles:
                 btns.append([InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"selbt_{t['id']}")])
         
+        # FIXED: If a package covers all single tests, skip the Add-On phase entirely.
+        if t_type == 'single' and len(btns) == 0:
+            if context.user_data.get('is_editing'):
+                return await show_booking_summary(update.callback_query.message if update.callback_query else update.message, context)
+            return await show_doctor_preference(update, context)
+        
         if t_type == "package": 
             btns.append([InlineKeyboardButton("OR Browse Single Tests", callback_data="bt_others")])
             if context.user_data.get('is_editing'):
@@ -532,7 +476,11 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data == "back_start": return await restart_service(update, context)
-    if data == "back_bt_pkg": return await show_blood_tests(update, context, "package")
+    
+    # FIXED: Clear single selections if they back out of the add-on phase
+    if data == "back_bt_pkg": 
+        context.user_data['selected_items'] = []
+        return await show_blood_tests(update, context, "package")
     
     if data == "bt_others": 
         return await show_blood_tests(update, context, "single")
@@ -611,7 +559,6 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data['doctor_pref'] = pref
         
-        # FIXED: Intelligent Rebook Logic for Doctor Preferences
         if context.user_data.get('is_editing'):
             old_pref = context.user_data.get('old_doctor_pref')
             if pref != old_pref:
@@ -656,7 +603,7 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     else:
         msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
         
-    if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=markup)
+    if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=markup)
     elif update.message: await update.message.reply_text(msg, reply_markup=markup)
 
 # --- DATE / TIME & AI ---
@@ -695,6 +642,10 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
 
     elif update.message and update.message.text:
         text = update.message.text
+        
+        # Inline queries often trigger here, ignore if text is blank or missing
+        if not text or "via @" in text: return BOOK_DATE_TIME 
+        
         processing_msg = await update.message.reply_text("🤖 AI is reading your request...")
         
         async with httpx.AsyncClient() as client:
@@ -802,11 +753,13 @@ async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     
+    # FIXED: Added the Cancel Booking feature
     btns = [
         [InlineKeyboardButton("Change Service", callback_data="editbook_service")],
         [InlineKeyboardButton("Change Vaccine/Test Details", callback_data="editbook_details")],
         [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
-        [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")]
+        [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
+        [InlineKeyboardButton("❌ Cancel Booking Completely", callback_data="editbook_cancel")]
     ]
     await query.edit_message_text("What would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
     return EDIT_BOOKING_MENU
@@ -868,6 +821,13 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     context.user_data['is_editing'] = True
     
+    # FIXED: Handled the Cancel Feature
+    if choice == "cancel":
+        await query.edit_message_text("Booking cancelled.")
+        btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+        await query.message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+        return FINAL_HELP
+        
     if choice == "service":
         return await show_main_services(query.message, context)
     elif choice == "details":
@@ -888,7 +848,6 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("Please type your reason for the visit (e.g., 'Fever and cough'):")
             return DOC_PREF 
     elif choice == "doctor":
-        # Save old preference before asking
         context.user_data['old_doctor_pref'] = context.user_data.get('doctor_pref', 'ANY')
         return await show_doctor_preference(update, context)
     elif choice == "time":
@@ -899,12 +858,16 @@ async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "help_yes":
-        return await show_main_services(query.message, context)
+        return await start(update, context) # Restart from scratch seamlessly
     else:
         await query.edit_message_text("No, I'm done")
         clinic_name = context.user_data.get('clinic_name', 'our Clinic')
         await query.message.reply_text(f"Thank you for using {clinic_name}. Have a great day!")
         return ConversationHandler.END
+
+# Required for Native Inline Editing feature to ignore blank queries
+async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pass
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
@@ -964,5 +927,8 @@ if __name__ == '__main__':
         },
         fallbacks=[CommandHandler('start', start)],
     )
-    app.add_handler(conv)
+    
+    # Catch inline queries silently to enable smooth Tap-to-Edit functionality
+    app.add_handler(InlineQueryHandler(inline_query_handler))
+    
     app.run_polling()
