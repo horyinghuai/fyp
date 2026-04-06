@@ -185,8 +185,28 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
     date_obj = req_dt.date()
     now = datetime.now()
     
+    # Helper function to find the absolute nearest 3 slots starting from the requested date
+    def find_nearest_3_slots(start_date):
+        sugs_set = set()
+        # Scan up to 7 days forward from the requested date to find the nearest slots
+        for i in range(7):
+            d = start_date + timedelta(days=i)
+            # If the scanned date is in the past, skip it and jump to today
+            if d < now.date(): continue
+            
+            d_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
+            for ds in d_slots:
+                for s in ds['slots']:
+                    # Only suggest future slots
+                    if s > now:
+                        sugs_set.add(s.strftime("%Y-%m-%d %H:%M:%S"))
+                        if len(sugs_set) >= 3: return sorted(list(sugs_set))
+            if len(sugs_set) >= 3: return sorted(list(sugs_set))
+        return sorted(list(sugs_set))
+
     if req_dt < now:
-        return {"is_valid": False, "reason": "You cannot book an appointment in the past.", "suggestions": []}
+        sugs = find_nearest_3_slots(now.date())
+        return {"is_valid": False, "reason": "You cannot book an appointment in the past.", "suggestions": sugs}
 
     doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, date_obj, req.duration, req.doctor_pref)
     
@@ -208,17 +228,11 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
             "suggestions": []
         }
     else:
-        sugs_set = set()
-        for ds in doc_slots:
-            for s in ds['slots']:
-                sugs_set.add(s.strftime("%Y-%m-%d %H:%M:%S"))
-                if len(sugs_set) >= 3: break
-            if len(sugs_set) >= 3: break
-            
-        sugs = sorted(list(sugs_set))
+        # If the exact slot is full, find the nearest 3 available slots starting from the requested date
+        sugs = find_nearest_3_slots(date_obj)
         return {
             "is_valid": False, 
-            "reason": "That exact time is unavailable for your preferred doctor(s).", 
+            "reason": "That exact time is unavailable for your preferred doctor(s) or the clinic is closed.", 
             "suggestions": sugs
         }
 

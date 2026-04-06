@@ -139,9 +139,7 @@ def extract_ic_info(image_path: str):
     address = ", ".join(address_lines) if address_lines else "UNKNOWN"
     return name, ic_num, address, gender, nationality
 
-# --- HELPER: Clean Bot Username from Typed Text ---
 def clean_bot_username(text: str) -> str:
-    # Removes "@bot_username " or "via @bot_username " from the beginning of the string
     cleaned = re.sub(r'^(via\s+)?@[A-Za-z0-9_]+\s*', '', text, flags=re.IGNORECASE)
     return cleaned.strip().upper()
 
@@ -219,7 +217,6 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     await processing_msg.delete()
         
-    # FIXED: Handled Blurry/Failed OCR with options
     if not ic:
         btns = [[InlineKeyboardButton("Try Again (Upload MyKad)", callback_data="meth_photo")],
                 [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
@@ -247,7 +244,6 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAN_PHONE
 
 async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # FIXED: Clean bot username just in case they used inline edit for this field
     text = clean_bot_username(update.message.text)
     is_my = context.user_data.get('is_malaysian')
 
@@ -345,10 +341,12 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     if query.data == "prof_edit":
+        # FIXED: Added Cancel Editing button
         btns = [
             [InlineKeyboardButton("Name", callback_data="edit_name"), InlineKeyboardButton("ID Number", callback_data="edit_ic")],
             [InlineKeyboardButton("Gender", callback_data="edit_gender"), InlineKeyboardButton("Nationality", callback_data="edit_nat")],
-            [InlineKeyboardButton("Address", callback_data="edit_address"), InlineKeyboardButton("Phone", callback_data="edit_phone")]
+            [InlineKeyboardButton("Address", callback_data="edit_address"), InlineKeyboardButton("Phone", callback_data="edit_phone")],
+            [InlineKeyboardButton("❌ Cancel Editing", callback_data="edit_cancel")]
         ]
         await query.edit_message_text("Which detail would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
         return EDIT_PROFILE_MENU
@@ -371,6 +369,11 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     query = update.callback_query
     await query.answer()
     field = query.data.replace("edit_", "")
+    
+    # FIXED: Handle Cancel Editing
+    if field == "cancel":
+        return await show_profile_summary(query.message, context)
+        
     context.user_data['edit_mode'] = True
     
     prompts = {
@@ -384,10 +387,14 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     
     current_val = str(context.user_data.get(field, ''))
     
-    btn = [[InlineKeyboardButton("✏️ Tap here to Edit", switch_inline_query_current_chat=current_val)]]
+    # FIXED: Added Back button to field editor
+    btns = [
+        [InlineKeyboardButton("✏️ Tap here to Edit", switch_inline_query_current_chat=current_val)],
+        [InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="prof_edit")]
+    ]
     msg = f"Click the button below to edit your *{field.title()}*, then press send! (You do not need to delete my bot name)."
     
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btn), parse_mode="Markdown")
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
     
     if field == "name": return MAN_NAME
     if field == "ic": return MAN_ID_CHECK
@@ -437,8 +444,6 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def restart_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query: await query.answer()
-    
-    # Ensures we actually clear out the previous message to stop clutter
     if query: await query.edit_message_text("Returning to Services...")
     return await show_main_services(query.message, context)
 
@@ -520,11 +525,11 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             if t['name'] not in excluded_singles:
                 btns.append([InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"selbt_{t['id']}")])
         
-        # FIXED: Fast-track if Package covers ALL single tests
         if t_type == 'single' and len(btns) == 0:
-            msg_fast = "All available single tests are already covered by your chosen package!"
-            if update.callback_query: await update.callback_query.message.reply_text(msg_fast)
-            else: await update.message.reply_text(msg_fast)
+            # Replaced "All available..." msg with the clean "You selected" echo as requested
+            pkg_name = context.user_data.get('selected_items', ['Your Package'])[0]
+            if update.callback_query: await update.callback_query.edit_message_text(f"You selected: {pkg_name}")
+            else: await update.message.reply_text(f"You selected: {pkg_name}")
             
             if context.user_data.get('is_editing'):
                 return await show_booking_summary(update.callback_query.message if update.callback_query else update.message, context)
@@ -604,7 +609,6 @@ async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_T
     
     is_editing = context.user_data.get('is_editing')
     
-    # FIXED: Routing Back Buttons intelligently back to the exact root service list
     if is_editing:
         btns.append([InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="back_edit_menu")])
     else:
@@ -615,7 +619,6 @@ async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_T
 
     msg = "Do you have a doctor preference?"
     if update.callback_query: 
-        # Don't overwrite the previous confirmation, send a new one
         await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     else: 
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
@@ -624,8 +627,6 @@ async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_T
 async def route_back_service_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    # Ensure previous menus are dismissed smoothly
     await query.edit_message_text("Returning to Service Menu...")
     
     service = context.user_data.get('service')
@@ -1000,7 +1001,10 @@ if __name__ == '__main__':
             MAN_NAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_nat)],
             MAN_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_address)],
             MAN_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_phone)],
-            CONFIRM_PROFILE: [CallbackQueryHandler(confirm_profile_logic, pattern="^prof_")],
+            CONFIRM_PROFILE: [
+                CallbackQueryHandler(confirm_profile_logic, pattern="^prof_"),
+                CallbackQueryHandler(handle_profile_edit_selection, pattern="^edit_cancel$")
+            ],
             EDIT_PROFILE_MENU: [CallbackQueryHandler(handle_profile_edit_selection, pattern="^edit_")],
             
             SERVICE: [CallbackQueryHandler(service_choice, pattern="^svc_")],
@@ -1021,7 +1025,7 @@ if __name__ == '__main__':
             ],
             DOC_PREF: [
                 CallbackQueryHandler(handle_doc_pref, pattern="^doc_"),
-                CallbackQueryHandler(route_back_service_details, pattern="^back_v_select$"),
+                CallbackQueryHandler(route_back_service_details, pattern="^back_service_details$"),
                 CallbackQueryHandler(route_back_service_details, pattern="^back_bt_pkg$"),
                 CallbackQueryHandler(restart_service, pattern="^back_start$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
