@@ -139,6 +139,12 @@ def extract_ic_info(image_path: str):
     address = ", ".join(address_lines) if address_lines else "UNKNOWN"
     return name, ic_num, address, gender, nationality
 
+# --- HELPER: Clean Bot Username from Typed Text ---
+def clean_bot_username(text: str) -> str:
+    # Removes "@bot_username " or "via @bot_username " from the beginning of the string
+    cleaned = re.sub(r'^(via\s+)?@[A-Za-z0-9_]+\s*', '', text, flags=re.IGNORECASE)
+    return cleaned.strip().upper()
+
 # --- 1. PROFILE REGISTRATION FLOW ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
@@ -171,7 +177,9 @@ async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     is_my = (query.data == "nat_my")
     context.user_data['is_malaysian'] = is_my
-    await query.edit_message_text("Malaysian" if is_my else "Non-Malaysian")
+    
+    nat_str = "Malaysian" if is_my else "Non-Malaysian"
+    await query.edit_message_text(f"You selected: {nat_str}")
     
     if is_my:
         btns = [[InlineKeyboardButton("Upload MyKad", callback_data="meth_photo")],
@@ -187,11 +195,11 @@ async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     if query.data == "meth_photo":
-        await query.edit_message_text("Upload MyKad")
+        await query.edit_message_text("You selected: Upload MyKad")
         await query.message.reply_text("Please upload a clear photo of your MyKad:")
         return UPLOAD_IC
     else:
-        await query.edit_message_text("Enter Manually")
+        await query.edit_message_text("You selected: Enter Manually")
         await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
         return MAN_ID_CHECK
 
@@ -211,9 +219,13 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     await processing_msg.delete()
         
+    # FIXED: Handled Blurry/Failed OCR with options
     if not ic:
-        await update.message.reply_text("❌ Could not detect MyKad. Please enter your IC Number manually:")
-        return MAN_ID_CHECK
+        btns = [[InlineKeyboardButton("Try Again (Upload MyKad)", callback_data="meth_photo")],
+                [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
+        msg = "❌ Error: Could not detect MyKad information clearly. The photo might be blurry or poorly lit.\n\nWould you like to try uploading again or enter your details manually?"
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+        return MY_METHOD_CHOICE
         
     context.user_data['name'] = name
     context.user_data['ic'] = ic
@@ -231,11 +243,12 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Backend patient check failed: {e}")
 
-    await update.message.reply_text("✅ MyKad Scanned! Please enter your Phone Number to confirm your profile:")
+    await update.message.reply_text("✅ MyKad Scanned successfully!\n\nPlease enter your Phone Number to confirm your profile:")
     return MAN_PHONE
 
 async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.upper()
+    # FIXED: Clean bot username just in case they used inline edit for this field
+    text = clean_bot_username(update.message.text)
     is_my = context.user_data.get('is_malaysian')
 
     if is_my:
@@ -271,7 +284,7 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MAN_NAME
 
 async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['name'] = update.message.text.upper()
+    context.user_data['name'] = clean_bot_username(update.message.text)
     if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
     
     if context.user_data.get('is_malaysian'):
@@ -282,28 +295,28 @@ async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAN_GENDER
 
 async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['gender'] = update.message.text.upper()
+    context.user_data['gender'] = clean_bot_username(update.message.text)
     if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
     
     await update.message.reply_text("Please enter your Nationality:")
     return MAN_NAT
 
 async def man_nat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['nationality'] = update.message.text.upper()
+    context.user_data['nationality'] = clean_bot_username(update.message.text)
     if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
     
     await update.message.reply_text("Please enter your Home Address:")
     return MAN_ADDRESS
 
 async def man_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['address'] = update.message.text.upper()
+    context.user_data['address'] = clean_bot_username(update.message.text)
     if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
     
     await update.message.reply_text("Please enter your Phone Number:")
     return MAN_PHONE
 
 async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    phone_input = update.message.text.upper()
+    phone_input = clean_bot_username(update.message.text)
     digits = re.sub(r'\D', '', phone_input)
     if digits.startswith('60'): digits = '0' + digits[2:]
 
@@ -372,7 +385,7 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     current_val = str(context.user_data.get(field, ''))
     
     btn = [[InlineKeyboardButton("✏️ Tap here to Edit", switch_inline_query_current_chat=current_val)]]
-    msg = f"Click the button below to edit your *{field.title()}*, then delete my bot username (`@bot_name`) and press send!"
+    msg = f"Click the button below to edit your *{field.title()}*, then press send! (You do not need to delete my bot name)."
     
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btn), parse_mode="Markdown")
     
@@ -399,6 +412,8 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['service'] = service
     context.user_data['selected_items'] = []
     
+    await query.edit_message_text(f"You selected: {service}")
+    
     if service == 'Others':
         return await show_doctor_preference(update, context)
 
@@ -410,18 +425,21 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['vaccines_list'] = vaccines
                 btns = [[InlineKeyboardButton(f"{v['name']} (RM{float(v['price']):.2f})", callback_data=f"v_{v['name']}")] for v in vaccines]
                 btns.append([InlineKeyboardButton("🔙 Back to Services", callback_data="back_start")])
-                await query.edit_message_text("Choose a vaccine:", reply_markup=InlineKeyboardMarkup(btns))
+                await query.message.reply_text("Choose a vaccine:", reply_markup=InlineKeyboardMarkup(btns))
                 return V_SELECT
             elif service == 'Blood Test':
                 return await show_blood_tests(update, context, "package")
         except Exception as e:
             logger.error(f"Error fetching service details: {e}")
-            await query.edit_message_text("Server is currently unreachable. Please try again later.")
+            await query.message.reply_text("Server is currently unreachable. Please try again later.")
             return SERVICE
 
 async def restart_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query: await query.answer()
+    
+    # Ensures we actually clear out the previous message to stop clutter
+    if query: await query.edit_message_text("Returning to Services...")
     return await show_main_services(query.message, context)
 
 # --- VACCINES ---
@@ -450,7 +468,7 @@ async def render_v_dose_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
         btns.append([InlineKeyboardButton("🔙 Back to Vaccines", callback_data="back_v_select")])
     
     msg = "Which dose are you taking?"
-    if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     else: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return V_DOSE
 
@@ -459,12 +477,14 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     vaccine_name = query.data.replace("v_", "")
     context.user_data['selected_items'] = [vaccine_name]
+    await query.edit_message_text(f"You selected: {vaccine_name}")
     return await render_v_dose_menu(update, context, vaccine_name)
 
 async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data['dose'] = query.data.replace("dose_", "")
+    await query.edit_message_text(f"You selected: {context.user_data['dose']}")
     
     if context.user_data.get('is_editing'):
         return await show_booking_summary(query.message, context)
@@ -500,7 +520,12 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             if t['name'] not in excluded_singles:
                 btns.append([InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"selbt_{t['id']}")])
         
+        # FIXED: Fast-track if Package covers ALL single tests
         if t_type == 'single' and len(btns) == 0:
+            msg_fast = "All available single tests are already covered by your chosen package!"
+            if update.callback_query: await update.callback_query.message.reply_text(msg_fast)
+            else: await update.message.reply_text(msg_fast)
+            
             if context.user_data.get('is_editing'):
                 return await show_booking_summary(update.callback_query.message if update.callback_query else update.message, context)
             return await show_doctor_preference(update, context)
@@ -517,10 +542,12 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             msg = "Choose an add-on Single Test:"
             
         markup = InlineKeyboardMarkup(btns)
+        
         if update.callback_query:
-            try: await update.callback_query.edit_message_text(msg, reply_markup=markup)
-            except: await update.callback_query.message.reply_text(msg, reply_markup=markup)
-        else: await update.message.reply_text(msg, reply_markup=markup)
+            # We don't want to edit the "You selected" message, we send a new one
+            await update.callback_query.message.reply_text(msg, reply_markup=markup)
+        else: 
+            await update.message.reply_text(msg, reply_markup=markup)
         return BT_FLOW
 
 async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -531,10 +558,12 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "back_start": return await restart_service(update, context)
     
     if data == "back_bt_pkg": 
+        await query.edit_message_text("Returning to Packages...")
         context.user_data['selected_items'] = []
         return await show_blood_tests(update, context, "package")
     
     if data == "bt_others": 
+        await query.edit_message_text("You selected: Browse Single Tests")
         return await show_blood_tests(update, context, "single")
         
     if data.startswith("selbt_"):
@@ -549,14 +578,18 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
         context.user_data['selected_items'].append(bt_name)
         
+        await query.edit_message_text(f"You selected: {bt_name}")
+        
         btns = [[InlineKeyboardButton("Yes, add more", callback_data="add_more"), InlineKeyboardButton("No thanks, finish", callback_data="add_done")]]
-        await query.edit_message_text(f"Added: {bt_name}. Would you like to add any single tests?", reply_markup=InlineKeyboardMarkup(btns))
+        await query.message.reply_text(f"Added: {bt_name}. Would you like to add any single tests?", reply_markup=InlineKeyboardMarkup(btns))
         return BT_FLOW
         
     if data == "add_more": 
+        await query.edit_message_text("You selected: Add More")
         return await show_blood_tests(update, context, "single")
         
     if data == "add_done":
+        await query.edit_message_text("You selected: Finish Adding")
         if context.user_data.get('is_editing'):
             return await show_booking_summary(query.message, context)
         return await show_doctor_preference(update, context)
@@ -571,27 +604,44 @@ async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_T
     
     is_editing = context.user_data.get('is_editing')
     
+    # FIXED: Routing Back Buttons intelligently back to the exact root service list
     if is_editing:
         btns.append([InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="back_edit_menu")])
     else:
         service = context.user_data.get('service')
-        if service == 'Vaccine': btns.append([InlineKeyboardButton("🔙 Back", callback_data="back_service_details")])
-        elif service == 'Blood Test': btns.append([InlineKeyboardButton("🔙 Back", callback_data="back_bt_pkg")])
+        if service == 'Vaccine': btns.append([InlineKeyboardButton("🔙 Back to Vaccines", callback_data="back_v_select")])
+        elif service == 'Blood Test': btns.append([InlineKeyboardButton("🔙 Back to Packages", callback_data="back_bt_pkg")])
         elif service == 'Others': btns.append([InlineKeyboardButton("🔙 Back to Services", callback_data="back_start")])
 
     msg = "Do you have a doctor preference?"
-    if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
-    else: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    if update.callback_query: 
+        # Don't overwrite the previous confirmation, send a new one
+        await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    else: 
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return DOC_PREF
 
 async def route_back_service_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    # Ensure previous menus are dismissed smoothly
+    await query.edit_message_text("Returning to Service Menu...")
+    
     service = context.user_data.get('service')
     
     if service == 'Vaccine':
-        vaccine_name = context.user_data['selected_items'][0]
-        return await render_v_dose_menu(update, context, vaccine_name)
+        async with httpx.AsyncClient() as client:
+            res = await client.get(f"{API_BASE}/vaccines/{CLINIC_ID}")
+            vaccines = res.json()
+            context.user_data['vaccines_list'] = vaccines
+            btns = [[InlineKeyboardButton(f"{v['name']} (RM{float(v['price']):.2f})", callback_data=f"v_{v['name']}")] for v in vaccines]
+            btns.append([InlineKeyboardButton("🔙 Back to Services", callback_data="back_start")])
+            await query.message.reply_text("Choose a vaccine:", reply_markup=InlineKeyboardMarkup(btns))
+            return V_SELECT
+    elif service == 'Blood Test':
+        context.user_data['selected_items'] = []
+        return await show_blood_tests(update, context, "package")
     else:
         return await restart_service(update, context)
 
@@ -601,15 +651,17 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pref = query.data.replace("doc_", "")
     
     if pref == "SPECIFIC":
+        await query.edit_message_text("You selected: Specific Doctor")
         async with httpx.AsyncClient() as client:
             res = await client.get(f"{API_BASE}/doctors/{CLINIC_ID}")
             doctors = res.json()
         btns = [[InlineKeyboardButton(d['name'], callback_data=f"docname_{d['name']}")] for d in doctors]
         btns.append([InlineKeyboardButton("🔙 Back to Preferences", callback_data="back_doc_pref")])
-        await query.edit_message_text("Please choose a doctor:", reply_markup=InlineKeyboardMarkup(btns))
+        await query.message.reply_text("Please choose a doctor:", reply_markup=InlineKeyboardMarkup(btns))
         return DOC_SELECT
     else:
         context.user_data['doctor_pref'] = pref
+        await query.edit_message_text(f"You selected: {pref.title()} Doctor")
         
         if context.user_data.get('is_editing'):
             old_pref = context.user_data.get('old_doctor_pref')
@@ -629,6 +681,7 @@ async def handle_doc_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     name = query.data.replace("docname_", "")
     context.user_data['doctor_pref'] = name
+    await query.edit_message_text(f"You selected: {name}")
     
     if context.user_data.get('is_editing'):
         old_pref = context.user_data.get('old_doctor_pref')
@@ -655,7 +708,7 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     else:
         msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
         
-    if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=markup)
+    if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=markup)
     elif update.message: await update.message.reply_text(msg, reply_markup=markup)
 
 # --- DATE / TIME & AI ---
@@ -671,7 +724,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         if data.startswith("date_"):
             context.user_data['book_date'] = data.replace("date_", "")
             markup = await generate_time_picker(service, context.user_data['book_date'], doctor_pref)
-            await query.edit_message_text("Date selected. Now, please select your preferred Time:", reply_markup=markup)
+            await query.edit_message_text(f"You selected: {context.user_data['book_date']}\n\nNow, please select your preferred Time:", reply_markup=markup)
             return BOOK_DATE_TIME
 
         elif data == "back_date":
@@ -684,17 +737,19 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
 
         elif data.startswith("time_"):
             time_str = data.replace("time_", "")
+            await query.edit_message_text(f"You selected: {time_str}")
             full_time_str = f"{context.user_data['book_date']} {time_str}"
             return await process_availability(update, context, full_time_str)
 
         elif data.startswith("sug_"):
             full_time_str = data.replace("sug_", "")
+            await query.edit_message_text(f"You selected: {full_time_str}")
             context.user_data['book_date'] = full_time_str.split(" ")[0]
             return await process_availability(update, context, full_time_str)
 
     elif update.message and update.message.text:
-        text = update.message.text
-        if not text or "via @" in text: return BOOK_DATE_TIME 
+        text = clean_bot_username(update.message.text)
+        if not text: return BOOK_DATE_TIME 
         
         processing_msg = await update.message.reply_text("🤖 AI is reading your request...")
         
@@ -770,7 +825,7 @@ async def process_availability(update, context, full_time_str):
         msg = f"❌ {data.get('reason', 'Slot unavailable')}"
         if sugs: msg += "\nHere are alternative slots:"
         
-        if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+        if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         else: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         return BOOK_DATE_TIME
 
@@ -966,7 +1021,7 @@ if __name__ == '__main__':
             ],
             DOC_PREF: [
                 CallbackQueryHandler(handle_doc_pref, pattern="^doc_"),
-                CallbackQueryHandler(route_back_service_details, pattern="^back_service_details$"),
+                CallbackQueryHandler(route_back_service_details, pattern="^back_v_select$"),
                 CallbackQueryHandler(route_back_service_details, pattern="^back_bt_pkg$"),
                 CallbackQueryHandler(restart_service, pattern="^back_start$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
