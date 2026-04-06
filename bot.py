@@ -328,7 +328,7 @@ async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_profile_summary(message, context):
     context.user_data['edit_mode'] = False
     msg = (f"📋 *Please confirm your details:*\nName: {context.user_data['name']}\n"
-           f"ID Number: {context.user_data['ic']}\nGender: {context.user_data['gender']}\n"
+           f"IC Number: {context.user_data['ic']}\nGender: {context.user_data['gender']}\n"
            f"Nationality: {context.user_data['nationality']}\nAddress: {context.user_data['address']}\n"
            f"Phone: {context.user_data['phone']}\n\nIs this correct?")
     btns = [[InlineKeyboardButton("Yes, this is correct", callback_data="prof_yes")],
@@ -341,9 +341,8 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     if query.data == "prof_edit":
-        # FIXED: Added Cancel Editing button
         btns = [
-            [InlineKeyboardButton("Name", callback_data="edit_name"), InlineKeyboardButton("ID Number", callback_data="edit_ic")],
+            [InlineKeyboardButton("Name", callback_data="edit_name"), InlineKeyboardButton("IC Number", callback_data="edit_ic")],
             [InlineKeyboardButton("Gender", callback_data="edit_gender"), InlineKeyboardButton("Nationality", callback_data="edit_nat")],
             [InlineKeyboardButton("Address", callback_data="edit_address"), InlineKeyboardButton("Phone", callback_data="edit_phone")],
             [InlineKeyboardButton("❌ Cancel Editing", callback_data="edit_cancel")]
@@ -370,7 +369,6 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     await query.answer()
     field = query.data.replace("edit_", "")
     
-    # FIXED: Handle Cancel Editing
     if field == "cancel":
         return await show_profile_summary(query.message, context)
         
@@ -385,14 +383,23 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
         "phone": "Phone Number"
     }
     
-    current_val = str(context.user_data.get(field, ''))
+    # State key mapping to ensure database keys are extracted correctly
+    state_keys = {
+        "name": "name",
+        "ic": "ic",
+        "gender": "gender",
+        "nat": "nationality",
+        "address": "address",
+        "phone": "phone"
+    }
     
-    # FIXED: Added Back button to field editor
+    current_val = str(context.user_data.get(state_keys[field], ''))
+    
     btns = [
         [InlineKeyboardButton("✏️ Tap here to Edit", switch_inline_query_current_chat=current_val)],
         [InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="prof_edit")]
     ]
-    msg = f"Click the button below to edit your *{field.title()}*, then press send! (You do not need to delete my bot name)."
+    msg = f"Click the button below to edit your *{prompts[field]}*, then press send! (You do not need to delete my bot name)."
     
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
     
@@ -526,7 +533,6 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
                 btns.append([InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"selbt_{t['id']}")])
         
         if t_type == 'single' and len(btns) == 0:
-            # Replaced "All available..." msg with the clean "You selected" echo as requested
             pkg_name = context.user_data.get('selected_items', ['Your Package'])[0]
             if update.callback_query: await update.callback_query.edit_message_text(f"You selected: {pkg_name}")
             else: await update.message.reply_text(f"You selected: {pkg_name}")
@@ -549,7 +555,6 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         markup = InlineKeyboardMarkup(btns)
         
         if update.callback_query:
-            # We don't want to edit the "You selected" message, we send a new one
             await update.callback_query.message.reply_text(msg, reply_markup=markup)
         else: 
             await update.message.reply_text(msg, reply_markup=markup)
@@ -826,7 +831,7 @@ async def process_availability(update, context, full_time_str):
         msg = f"❌ {data.get('reason', 'Slot unavailable')}"
         if sugs: msg += "\nHere are alternative slots:"
         
-        if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+        if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         else: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         return BOOK_DATE_TIME
 
@@ -852,7 +857,7 @@ async def show_booking_summary(message, context):
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))}"
     full_time_str = context.user_data['book_time']
 
-    summary = (f"📋 *Booking Summary*\nName: {name}\nID/IC: {ic}\nPhone: {phone}\n"
+    summary = (f"📋 *Booking Summary*\nName: {name}\nIC Number: {ic}\nPhone: {phone}\n"
                f"Date: {context.user_data['book_date']}\nTime: {full_time_str.split(' ')[1]}\n"
                f"Service: {service}\nDetails: {details}{doc_text}\n\nIs this information correct?")
     
@@ -920,7 +925,7 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}"
 
     confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
-                         f"Name: {context.user_data['name']}\nID/IC: {context.user_data['ic']}\n"
+                         f"Name: {context.user_data['name']}\nIC Number: {context.user_data['ic']}\n"
                          f"Phone: {context.user_data['phone']}\nDate: {date_part}\nTime: {time_part}\n"
                          f"Service: {service}\nDetails: {details}{doc_text}\n")
     
@@ -995,12 +1000,30 @@ if __name__ == '__main__':
             NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],
             MY_METHOD_CHOICE: [CallbackQueryHandler(my_method_logic, pattern="^meth_")],
             UPLOAD_IC: [MessageHandler(filters.PHOTO, handle_ic_photo)],
-            MAN_ID_CHECK: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_id_check)],
-            MAN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_name)],
-            MAN_GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_gender)],
-            MAN_NAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_nat)],
-            MAN_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_address)],
-            MAN_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, man_phone)],
+            MAN_ID_CHECK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, man_id_check),
+                CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
+            ],
+            MAN_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, man_name),
+                CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
+            ],
+            MAN_GENDER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, man_gender),
+                CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
+            ],
+            MAN_NAT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, man_nat),
+                CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
+            ],
+            MAN_ADDRESS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, man_address),
+                CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
+            ],
+            MAN_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, man_phone),
+                CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
+            ],
             CONFIRM_PROFILE: [
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_"),
                 CallbackQueryHandler(handle_profile_edit_selection, pattern="^edit_cancel$")
