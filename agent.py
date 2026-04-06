@@ -60,7 +60,7 @@ def extract_appointment_details(user_text: str, current_time_str: str):
     }
 
     api_versions = ["v1beta", "v1"]
-    valid_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest"]
+    valid_models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
     errors = []
 
     for version in api_versions:

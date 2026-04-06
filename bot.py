@@ -43,7 +43,6 @@ async def generate_date_picker(service, doctor_pref, is_editing=False):
             row = []
     if row: keyboard.append(row)
     
-    # Rebook Constraint: If editing, Back button goes to Edit Menu, not back to start
     if is_editing:
         keyboard.append([InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="back_edit_menu")])
     else:
@@ -62,7 +61,6 @@ async def generate_time_picker(service, date_str, doctor_pref):
     keyboard = []
     row = []
     for t_str in valid_times:
-        # Simplified callback data to prevent Telegram 64-byte limits
         row.append(InlineKeyboardButton(t_str[:5], callback_data=f"time_{t_str}"))
         if len(row) == 3:
             keyboard.append(row)
@@ -94,21 +92,23 @@ def extract_ic_info(image_path: str):
     last_digit = int(ic_num[-1])
     gender = "FEMALE" if last_digit % 2 == 0 else "MALE"
 
-    nationality = "UNKNOWN"
-    for _, text, _ in cleaned_results:
-        if "WARGANEGARA" in text or "WARGA" in text or "NEGARA" in text:
-            nationality = "MALAYSIA"
-            break
-
-    name = "UNKNOWN"
+    nationality = "MALAYSIA"
+    
+    # FIXED: Extract Names dynamically across 2 lines until an address keyword or number is found
+    name_lines = []
     address_start_idx = ic_index + 1
-    if ic_index + 1 < len(cleaned_results):
-        raw_name = cleaned_results[ic_index + 1][1]
-        name = re.sub(r'[^A-Z\s]', '', raw_name).strip()
-        address_start_idx = ic_index + 2
+    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA"]
+    
+    for i in range(ic_index + 1, min(ic_index + 4, len(cleaned_results))):
+        text = cleaned_results[i][1]
+        if re.search(r'\d', text) or any(sw in text for sw in stop_words):
+            break
+        name_lines.append(re.sub(r'[^A-Z\s]', '', text).strip())
+        address_start_idx = i + 1
+        
+    name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
 
     address_lines = []
-    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA"]
     for i in range(address_start_idx, len(cleaned_results)):
         text = cleaned_results[i][1]
         if any(sw in text for sw in stop_words) or len(text) < 3: continue
@@ -117,10 +117,54 @@ def extract_ic_info(image_path: str):
     address = ", ".join(address_lines) if address_lines else "UNKNOWN"
     return name, ic_num, address, gender, nationality
 
+def extract_passport_info(image_path: str):
+    reader = get_ocr_reader()
+    results = reader.readtext(image_path)
+    if not results: return None, None, None, None, None
+    
+    cleaned_results = [text.upper().strip() for bbox, text, prob in results]
+    
+    passport_no = None
+    name = "UNKNOWN"
+    gender = "UNKNOWN"
+    nationality = "UNKNOWN"
+    address = "UNKNOWN"
+    
+    passport_pattern = re.compile(r'^[A-Z0-9]{7,9}$')
+    
+    # Simple heuristic to extract Machine Readable Zone (MRZ)
+    for text in cleaned_results:
+        text_no_space = text.replace(" ", "")
+        
+        # MRZ Line 1 (Name)
+        if text_no_space.startswith('P<'):
+            parts = text_no_space[5:].split('<<')
+            if len(parts) >= 1:
+                raw_name = parts[0].replace('<', ' ')
+                if len(parts) >= 2:
+                    raw_name += " " + parts[1].replace('<', ' ')
+                name = re.sub(r'[^A-Z\s]', '', raw_name).strip()
+        
+        # MRZ Line 2 (Passport Number & Gender)
+        if '<' in text_no_space and len(text_no_space) > 20:
+            match = re.match(r'^([A-Z0-9]{7,9})<', text_no_space)
+            if match:
+                passport_no = match.group(1)
+                if 'M' in text_no_space[10:25]: gender = "MALE"
+                elif 'F' in text_no_space[10:25]: gender = "FEMALE"
+                
+    if not passport_no:
+        for text in cleaned_results:
+            text_clean = text.replace(" ", "")
+            if passport_pattern.match(text_clean) and not text_clean.isalpha() and not text_clean.isdigit():
+                passport_no = text_clean
+                break
+                
+    return name, passport_no, address, gender, nationality
+
 
 # --- 1. PROFILE REGISTRATION FLOW ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Ensure fresh start clears any previous editing flags
     context.user_data['is_editing'] = False 
     
     clinic_name = "our Clinic"
@@ -153,25 +197,28 @@ async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['is_malaysian'] = is_my
     await query.edit_message_text("Malaysian" if is_my else "Non-Malaysian")
     
-    if is_my:
-        btns = [[InlineKeyboardButton("Upload MyKad", callback_data="meth_photo")],
-                [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
-        await query.message.reply_text("Would you like to auto-fill your details by uploading your MyKad, or enter them manually?", reply_markup=InlineKeyboardMarkup(btns))
-        return MY_METHOD_CHOICE
-    else:
-        await query.message.reply_text("Please enter your Passport Number:")
-        return MAN_ID_CHECK
+    doc_type = "MyKad" if is_my else "Passport"
+    
+    btns = [[InlineKeyboardButton(f"Upload {doc_type}", callback_data="meth_photo")],
+            [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
+    await query.message.reply_text(f"Would you like to auto-fill your details by uploading your {doc_type}, or enter them manually?", reply_markup=InlineKeyboardMarkup(btns))
+    return MY_METHOD_CHOICE
 
 async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    is_my = context.user_data.get('is_malaysian')
+    doc_type = "MyKad" if is_my else "Passport"
+    
     if query.data == "meth_photo":
-        await query.edit_message_text("Upload MyKad")
-        await query.message.reply_text("Please upload a clear photo of your MyKad:")
+        await query.edit_message_text(f"Upload {doc_type}")
+        await query.message.reply_text(f"Please upload a clear photo of your {doc_type}:")
         return UPLOAD_IC
     else:
         await query.edit_message_text("Enter Manually")
-        await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
+        if is_my: await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
+        else: await query.message.reply_text("Please enter your Passport Number:")
         return MAN_ID_CHECK
 
 async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,8 +227,13 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.close(fd)
     await photo_file.download_to_drive(path)
     
-    processing_msg = await update.message.reply_text("🔍 Analyzing MyKad, please wait...")
-    try: name, ic, address, gender, nationality = await asyncio.to_thread(extract_ic_info, path)
+    is_my = context.user_data.get('is_malaysian')
+    doc_type = "MyKad" if is_my else "Passport"
+    
+    processing_msg = await update.message.reply_text(f"🔍 Analyzing {doc_type}, please wait...")
+    try: 
+        if is_my: name, ic, address, gender, nationality = await asyncio.to_thread(extract_ic_info, path)
+        else: name, ic, address, gender, nationality = await asyncio.to_thread(extract_passport_info, path)
     except Exception: name, ic, address, gender, nationality = None, None, None, None, None
     finally:
         if os.path.exists(path): os.remove(path)
@@ -189,7 +241,8 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await processing_msg.delete()
         
     if not ic:
-        await update.message.reply_text("❌ Could not detect MyKad. Please enter your IC Number manually:")
+        msg = f"❌ Could not detect {doc_type}. Please enter your {'IC' if is_my else 'Passport'} Number manually:"
+        await update.message.reply_text(msg)
         return MAN_ID_CHECK
         
     context.user_data['name'] = name
@@ -205,7 +258,7 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['phone'] = patient['phone']
             return await show_profile_summary(update.message, context)
 
-    await update.message.reply_text("✅ MyKad Scanned! Please enter your Phone Number to confirm your profile:")
+    await update.message.reply_text(f"✅ {doc_type} Scanned! Please enter your Phone Number to confirm your profile:")
     return MAN_PHONE
 
 async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -327,15 +380,19 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     context.user_data['edit_mode'] = True
     
     prompts = {
-        "name": "Please enter your Full Name:",
-        "ic": "Please enter your IC/Passport Number:",
-        "gender": "Please enter your Gender (Male/Female):",
-        "nat": "Please enter your Nationality:",
-        "address": "Please enter your Home Address:",
-        "phone": "Please enter your Phone Number:"
+        "name": "Full Name",
+        "ic": "IC/Passport Number",
+        "gender": "Gender (Male/Female)",
+        "nat": "Nationality",
+        "address": "Home Address",
+        "phone": "Phone Number"
     }
     
-    await query.edit_message_text(prompts[field])
+    current_val = context.user_data.get(field, 'UNKNOWN')
+    
+    # FIXED: Tap-to-Copy functionality using Markdown Code Blocks
+    msg = f"Your current {prompts[field]} is:\n`{current_val}`\n\nTap the text above to copy it, then paste and edit to send your new {prompts[field]}:"
+    await query.edit_message_text(msg, parse_mode="Markdown")
     
     if field == "name": return MAN_NAME
     if field == "ic": return MAN_ID_CHECK
@@ -554,9 +611,17 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data['doctor_pref'] = pref
         
+        # FIXED: Intelligent Rebook Logic for Doctor Preferences
         if context.user_data.get('is_editing'):
-            return await show_booking_summary(query.message, context)
-            
+            old_pref = context.user_data.get('old_doctor_pref')
+            if pref != old_pref:
+                await query.message.reply_text("⚠️ You changed your doctor preference. Because doctors have different schedules, please re-select your Date and Time.")
+                await trigger_datetime_prompt(update, context)
+                return BOOK_DATE_TIME
+            else:
+                await query.message.reply_text("✅ Doctor preference unchanged.")
+                return await show_booking_summary(query.message, context)
+                
         await trigger_datetime_prompt(update, context)
         return BOOK_DATE_TIME
 
@@ -567,7 +632,14 @@ async def handle_doc_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['doctor_pref'] = name
     
     if context.user_data.get('is_editing'):
-        return await show_booking_summary(query.message, context)
+        old_pref = context.user_data.get('old_doctor_pref')
+        if name != old_pref:
+            await query.message.reply_text("⚠️ You changed your doctor preference. Because doctors have different schedules, please re-select your Date and Time.")
+            await trigger_datetime_prompt(update, context)
+            return BOOK_DATE_TIME
+        else:
+            await query.message.reply_text("✅ Doctor preference unchanged.")
+            return await show_booking_summary(query.message, context)
         
     await trigger_datetime_prompt(update, context)
     return BOOK_DATE_TIME
@@ -584,7 +656,7 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     else:
         msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
         
-    if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=markup)
+    if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=markup)
     elif update.message: await update.message.reply_text(msg, reply_markup=markup)
 
 # --- DATE / TIME & AI ---
@@ -816,6 +888,8 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("Please type your reason for the visit (e.g., 'Fever and cough'):")
             return DOC_PREF 
     elif choice == "doctor":
+        # Save old preference before asking
+        context.user_data['old_doctor_pref'] = context.user_data.get('doctor_pref', 'ANY')
         return await show_doctor_preference(update, context)
     elif choice == "time":
         await trigger_datetime_prompt(update, context)
