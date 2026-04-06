@@ -20,13 +20,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- LOAD ENVIRONMENT VARIABLES ---
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_BASE = "http://127.0.0.1:8000"
 CLINIC_ID = os.getenv("CLINIC_ID")
 
-# --- STARTUP CHECKS ---
 if not TOKEN:
     logger.error("CRITICAL ERROR: TELEGRAM_BOT_TOKEN is missing in the .env file! The bot cannot start.")
     exit(1)
@@ -150,7 +148,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if CLINIC_ID:
         async with httpx.AsyncClient() as client:
             try:
-                # ADDED TIMEOUT: Prevents bot from hanging if backend is down
                 res = await client.get(f"{API_BASE}/clinic/{CLINIC_ID}", timeout=3.0)
                 if res.status_code == 200: clinic_name = res.json().get('name', 'our Clinic')
             except Exception as e: 
@@ -932,7 +929,6 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Catch global errors to print in terminal
     async def error_handler(update, context):
         logger.error(f"Exception while handling an update: {context.error}")
     app.add_error_handler(error_handler)
@@ -991,8 +987,10 @@ if __name__ == '__main__':
             FINAL_HELP: [CallbackQueryHandler(final_help_logic, pattern="^help_")],
         },
         fallbacks=[CommandHandler('start', start)],
+        allow_reentry=True
     )
     
+    app.add_handler(conv)
     app.add_handler(InlineQueryHandler(inline_query_handler))
     
     logger.info("Bot is starting...")
