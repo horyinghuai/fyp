@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Calendar, momentLocalizer } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
@@ -9,8 +9,8 @@ const localizer = momentLocalizer(moment);
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
 
 export default function AdminDashboard() {
-  const [events, setEvents] = useState([]);
-  const [backendError, setBackendError] = useState(false); // NEW: Error handling state
+  const [events, setEvents] = useState<any[]>([]);
+  const [backendError, setBackendError] = useState(false);
 
   useEffect(() => {
     fetchAppointments();
@@ -23,7 +23,7 @@ export default function AdminDashboard() {
       if (!response.ok) throw new Error("Backend responded with an error");
       
       const data = await response.json();
-      const formattedEvents = data.map(appt => ({
+      const formattedEvents = data.map((appt: any) => ({
         id: appt.id,
         title: appt.title,
         start: new Date(appt.start),
@@ -37,11 +37,11 @@ export default function AdminDashboard() {
       setBackendError(false);
     } catch (error) {
       console.error("Error fetching appointments:", error);
-      setBackendError(true); // Triggers the warning UI
+      setBackendError(true);
     }
   };
 
-  const eventStyleGetter = (event) => ({
+  const eventStyleGetter = (event: any) => ({
     style: { backgroundColor: event.color, borderRadius: '5px', color: 'white', border: '0px' }
   });
 
@@ -49,7 +49,6 @@ export default function AdminDashboard() {
     <div>
       <h2>Dashboard Overview</h2>
       
-      {/* WARNING IF PYTHON BACKEND IS OFF */}
       {backendError && (
         <div style={{ backgroundColor: '#ffcccc', color: '#c0392b', padding: '15px', borderRadius: '5px', marginBottom: '20px' }}>
           <strong>⚠️ Warning: Cannot connect to Backend Database.</strong><br/>

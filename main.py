@@ -11,10 +11,10 @@ import random
 
 app = FastAPI(title="Clinic Smart Assistant Backend")
 
-# Add this CORS block:
+# --- CORS SETUP ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allows your React frontend to communicate with Python
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -84,7 +84,6 @@ def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     db.commit()
 
 def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
-    """Helper for Vaccine Logic Agent to parse intervals (e.g., '1 month', '6 months')"""
     interval_str = interval_str.lower()
     try:
         amount = int(''.join(filter(str.isdigit, interval_str)))
@@ -98,13 +97,12 @@ def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
             return start_date + timedelta(days=amount)
     except:
         pass
-    return start_date + timedelta(days=30) # Default fallback
+    return start_date + timedelta(days=30) 
 
 # --- ADMIN WEB DASHBOARD ENDPOINTS ---
 
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
-    """Fetches all stages for the Admin React Calendar."""
     stages = db.query(models.ApptStage, models.Appointment, models.Patient, models.Doctor).join(
         models.Appointment, models.ApptStage.appointment_id == models.Appointment.id
     ).join(
@@ -115,9 +113,9 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
 
     result = []
     for stage, appt, patient, doctor in stages:
-        color = "#3788d8" # Blue for single
-        if appt.appt_type == "multi-stage": color = "#28a745" # Green for vaccines
-        elif appt.appt_type == "follow-up": color = "#fd7e14" # Orange for follow-ups
+        color = "#3788d8" 
+        if appt.appt_type == "multi-stage": color = "#28a745" 
+        elif appt.appt_type == "follow-up": color = "#fd7e14" 
 
         result.append({
             "id": str(stage.id),
@@ -132,9 +130,13 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
         })
     return result
 
+@app.get("/admin/patients/{clinic_id}")
+def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
+    """Fetches all registered patients for the Admin Dashboard."""
+    return db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
+
 @app.post("/admin/auto-replies")
 def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db)):
-    """Automated Message Builder: Admin adds Q&A for the bot."""
     new_msg = models.ChatMessage(
         clinic_id=data.clinic_id,
         message=data.question,
@@ -448,23 +450,18 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     db.add(new_appt)
     db.flush() 
 
-    # Base Stage 1
     start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
     prev_stage_id = None
 
-    # --- VACCINE LOGIC AGENT (MULTI-STAGE SCHEDULING) ---
     if v_model and total_stages > 1:
         logging_agent(db, booking.clinic_id, "Vaccine Logic Triggered", f"Calculating {total_stages} doses for {v_model.name}.")
-        
         db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number="Multi-Dose Profile"))
         
         schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).order_by(models.VaccineDoseSchedule.dose_number).all()
-        
         current_calc_time = start_time
+        
         for i in range(total_stages):
             stage_name = f"Dose {i+1}"
-            
-            # If it's dose 2+, calculate interval
             if i > 0 and i < len(schedules):
                 interval = schedules[i].interval_description
                 current_calc_time = calculate_future_date(current_calc_time, interval)
@@ -477,12 +474,10 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             )
             db.add(stage)
             db.flush()
-            prev_stage_id = stage.id # Enforce dependency sequence
+            prev_stage_id = stage.id 
             
         logging_agent(db, booking.clinic_id, "Multi-stage Generated", f"Successfully generated sequence linked by depends_on_stage_id.")
-
     else:
-        # Standard Single Visit / Blood Test
         if booking.service_type == 'Blood Test':
             for t_name in booking.details.get('items', []):
                 bt = db.query(models.BloodTest).filter_by(name=t_name, clinic_id=booking.clinic_id).first()
