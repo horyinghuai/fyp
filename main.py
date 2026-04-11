@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -9,6 +10,15 @@ from datetime import datetime, timedelta
 import random
 
 app = FastAPI(title="Clinic Smart Assistant Backend")
+
+# Add this CORS block:
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Allows your React frontend to communicate with Python
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- PYDANTIC SCHEMAS ---
 class PatientRegister(BaseModel):
