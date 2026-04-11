@@ -1,7 +1,6 @@
 from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, BigInteger, Numeric, Boolean, Time
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from sqlalchemy.schema import UniqueConstraint
 import uuid
 import datetime
 from database import Base
@@ -17,7 +16,7 @@ class Clinic(Base):
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ic_passport_number = Column(String(20), primary_key=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
@@ -26,31 +25,28 @@ class User(Base):
 
 class Doctor(Base):
     __tablename__ = "doctors"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ic_passport_number = Column(String(20), primary_key=True)
     name = Column(String(255), nullable=False)
     gender = Column(String(10)) 
     specialization = Column(String(100))
 
 class Patient(Base):
     __tablename__ = "patients"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ic_passport_number = Column(String(20), primary_key=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     telegram_id = Column(BigInteger) 
-    ic_passport_number = Column(String(20)) 
     phone = Column(String(20))
     address = Column(String) 
     gender = Column(String(10)) 
     nationality = Column(String(50)) 
-    
-    __table_args__ = (UniqueConstraint('clinic_id', 'ic_passport_number', name='_clinic_patient_uc'),)
 
 class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
-    patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
-    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id"), nullable=True) 
+    patient_ic = Column(String(20), ForeignKey("patients.ic_passport_number", ondelete="CASCADE"), nullable=False)
+    doctor_ic = Column(String(20), ForeignKey("doctors.ic_passport_number"), nullable=True) 
     appt_type = Column(String(50)) 
     total_stages = Column(Integer, default=1)
     general_notes = Column(String(255), nullable=True)
@@ -108,7 +104,7 @@ class Vaccine(Base):
 
 class DoctorClinicAvailability(Base):
     __tablename__ = "doctor_clinic_availability"
-    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), primary_key=True)
+    doctor_ic = Column(String(20), ForeignKey("doctors.ic_passport_number", ondelete="CASCADE"), primary_key=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), primary_key=True)
     day_of_week = Column(String(10), primary_key=True)
     start_time = Column(Time, primary_key=True)

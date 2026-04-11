@@ -83,16 +83,14 @@ def get_clinic(clinic_id: str, db: Session = Depends(get_db)):
 
 @app.get("/doctors/{clinic_id}")
 def get_doctors(clinic_id: str, db: Session = Depends(get_db)):
-    # Now dynamically queries the bridge table to find doctors practicing at this clinic
     doctors = db.query(models.Doctor).join(
         models.DoctorClinicAvailability, 
-        models.Doctor.id == models.DoctorClinicAvailability.doctor_id
+        models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
     ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).distinct().all()
     return doctors
 
 @app.get("/vaccines/{clinic_id}")
 def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
-    # Combines global vaccine data with clinic-specific pricing and stock
     results = db.query(
         models.Vaccine.id, models.Vaccine.name, models.Vaccine.type, 
         models.Vaccine.total_doses, models.Vaccine.has_booster, 
@@ -144,9 +142,9 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
     appts = db.query(models.Appointment, models.ApptStage, models.Doctor).join(
         models.ApptStage, models.Appointment.id == models.ApptStage.appointment_id
     ).outerjoin(
-        models.Doctor, models.Appointment.doctor_id == models.Doctor.id
+        models.Doctor, models.Appointment.doctor_ic == models.Doctor.ic_passport_number
     ).filter(
-        models.Appointment.patient_id == patient.id,
+        models.Appointment.patient_ic == patient.ic_passport_number,
         models.ApptStage.scheduled_time >= now,
         models.ApptStage.status != 'canceled'
     ).all()
@@ -180,7 +178,7 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
             "dose": dose,
             "reason": reason,
             "assigned_doctor_name": doc.name if doc else "ANY",
-            "assigned_doctor_id": str(doc.id) if doc else None,
+            "assigned_doctor_id": str(doc.ic_passport_number) if doc else None,
             "service_type": service
         }
 
@@ -216,7 +214,7 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
 
 def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
     doc_query = db.query(models.Doctor).join(
-        models.DoctorClinicAvailability, models.Doctor.id == models.DoctorClinicAvailability.doctor_id
+        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
     ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id)
     
     if doctor_pref == "MALE": doc_query = doc_query.filter(models.Doctor.gender == "MALE")
@@ -233,7 +231,7 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
     start_of_day = datetime.combine(date_obj, datetime.min.time())
     end_of_day = datetime.combine(date_obj, datetime.max.time())
 
-    clashes = db.query(models.ApptStage.scheduled_time, models.Appointment.doctor_id).join(
+    clashes = db.query(models.ApptStage.scheduled_time, models.Appointment.doctor_ic).join(
         models.Appointment).filter(
         models.Appointment.clinic_id == clinic_id,
         models.ApptStage.scheduled_time >= start_of_day,
@@ -241,15 +239,15 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
     ).all()
 
     clash_dict = {}
-    for c_time, d_id in clashes:
-        if d_id not in clash_dict: clash_dict[d_id] = []
-        clash_dict[d_id].append(c_time)
+    for c_time, d_ic in clashes:
+        if d_ic not in clash_dict: clash_dict[d_ic] = []
+        clash_dict[d_ic].append(c_time)
 
     doc_slots = []
 
     for doc in valid_docs:
         availabilities = db.query(models.DoctorClinicAvailability).filter(
-            models.DoctorClinicAvailability.doctor_id == doc.id,
+            models.DoctorClinicAvailability.doctor_ic == doc.ic_passport_number,
             models.DoctorClinicAvailability.clinic_id == clinic_id,
             models.DoctorClinicAvailability.day_of_week == day_of_week
         ).all()
@@ -260,7 +258,7 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
             
             curr = datetime.combine(date_obj, avail.start_time)
             end_dt = datetime.combine(date_obj, avail.end_time)
-            busy_times = clash_dict.get(doc.id, [])
+            busy_times = clash_dict.get(doc.ic_passport_number, [])
             
             while curr < end_dt:
                 if curr > now and curr not in busy_times:
@@ -333,7 +331,7 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
         max_free = max(ds['free_count'] for ds in available_docs_for_this_slot)
         best_docs = [ds for ds in available_docs_for_this_slot if ds['free_count'] == max_free]
         chosen = random.choice(best_docs)
-        return {"is_valid": True, "reason": "Slot available.", "doctor_id": str(chosen['doc'].id), "doctor_name": chosen['doc'].name, "suggestions": []}
+        return {"is_valid": True, "reason": "Slot available.", "doctor_id": str(chosen['doc'].ic_passport_number), "doctor_name": chosen['doc'].name, "suggestions": []}
     else:
         sugs = find_nearest_3_slots(date_obj)
         return {"is_valid": False, "reason": "That exact time is unavailable for your preferred doctor(s) or the clinic is closed.", "suggestions": sugs}
@@ -351,11 +349,10 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             mapped_appt_type = 'multi-stage'
             total_stages = booking.details.get('total_doses', 1)
 
-    doc_id = booking.details.get('assigned_doctor_id')
+    doc_ic = booking.details.get('assigned_doctor_id')
 
-    # Saves to generic Appointment table AND handles general notes
     new_appt = models.Appointment(
-        clinic_id=booking.clinic_id, patient_id=patient.id, doctor_id=doc_id,
+        clinic_id=booking.clinic_id, patient_ic=patient.ic_passport_number, doctor_ic=doc_ic,
         appt_type=mapped_appt_type, total_stages=total_stages,
         general_notes=booking.details.get('reason') if booking.service_type == 'Others' else None
     )
@@ -365,7 +362,6 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     service = booking.service_type
     items_list = booking.details.get('items', [])
     
-    # Saves specific relationships to the new Bridge Tables
     if service == 'Vaccine' and items_list:
         v = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
         if v:
@@ -397,7 +393,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
     db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
     db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
     
-    appt.doctor_id = booking.details.get('assigned_doctor_id')
+    appt.doctor_ic = booking.details.get('assigned_doctor_id')
     appt.general_notes = booking.details.get('reason') if booking.service_type == 'Others' else None
     
     mapped_appt_type = 'single-visit'
