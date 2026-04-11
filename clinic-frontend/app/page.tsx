@@ -14,15 +14,14 @@ export default function AdminDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
   const [stats, setStats] = useState({ total: 0, vaccines: 0, followUp: 0 });
-  
-  // Modal State
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
 
   useEffect(() => {
-    // FIX: Changed localhost to 127.0.0.1 to bypass Next.js IPv6 routing bug
+    let isMounted = true;
     fetch(`http://127.0.0.1:8000/admin/appointments/${CLINIC_ID}`)
       .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
+        if (!isMounted) return;
         let vacCount = 0, folCount = 0;
         const formattedEvents = data.map((appt: any) => {
           if (appt.type === "multi-stage") vacCount++;
@@ -33,7 +32,9 @@ export default function AdminDashboard() {
         setStats({ total: formattedEvents.length, vaccines: vacCount, followUp: folCount });
         setIsLoading(false);
       })
-      .catch(() => { setError(true); setIsLoading(false); });
+      .catch(() => { if (isMounted) { setError(true); setIsLoading(false); } });
+      
+    return () => { isMounted = false; };
   }, []);
 
   const eventStyleGetter = (event: any) => ({

@@ -35,7 +35,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {navItems.map((item) => {
               const isActive = pathname === item.path;
               return (
-                <Link key={item.path} href={item.path} 
+                <Link 
+                  key={item.path} 
+                  href={item.path} 
+                  prefetch={false} // <--- THE CRITICAL FIX FOR SPEED
                   className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${isActive ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
                   {item.icon}
                   <span className="font-medium">{item.name}</span>
@@ -62,13 +65,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
 
             <div className="flex items-center gap-6 relative">
-              {/* Notification Bell */}
               <div className="relative cursor-pointer" onClick={() => setShowNotifications(!showNotifications)}>
                 <Bell size={22} className="text-slate-600 hover:text-blue-600 transition" />
                 <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold h-4 w-4 rounded-full flex items-center justify-center animate-pulse">3</span>
               </div>
 
-              {/* Notification Dropdown */}
               {showNotifications && (
                 <div className="absolute top-10 right-10 w-80 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden">
                   <div className="p-4 border-b bg-slate-50"><h4 className="font-bold text-slate-700">Notifications</h4></div>

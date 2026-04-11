@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { Syringe, AlertCircle } from 'lucide-react';
+import { Syringe } from 'lucide-react';
 
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 
@@ -10,13 +10,14 @@ export default function VaccinesPage() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    let isMounted = true;
     fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`)
       .then(res => res.json())
-      .then(data => { setVaccines(data); setIsLoading(false); })
-      .catch(() => setIsLoading(false));
+      .then(data => { if(isMounted) { setVaccines(data); setIsLoading(false); } })
+      .catch(() => { if(isMounted) setIsLoading(false); });
+    return () => { isMounted = false; };
   }, []);
 
-  // UI Component to draw the visual timeline
   const DoseTimeline = ({ total }: { total: number }) => (
     <div className="flex items-center mt-4">
       {Array.from({ length: total }).map((_, i) => (
