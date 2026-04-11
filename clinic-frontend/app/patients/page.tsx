@@ -7,6 +7,7 @@ const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 export default function PatientsPage() {
   const [patients, setPatients] = useState<any[]>([]);
   const [search, setSearch] = useState("");
+  const [error, setError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
   // Modal States
@@ -20,7 +21,7 @@ export default function PatientsPage() {
     fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`)
       .then(res => res.json())
       .then(data => { setPatients(data); setIsLoading(false); })
-      .catch(() => setIsLoading(false));
+      .catch(() => { setError(true); setIsLoading(false); });
   };
 
   const handleSave = async () => {
@@ -39,14 +40,16 @@ export default function PatientsPage() {
     loadData();
   };
 
-  const handleDelete = async (ic: str) => {
+  // FIX: Changed `str` to `string`
+  const handleDelete = async (ic: string) => {
     if(confirm("Are you sure you want to delete this patient?")) {
       await fetch(`http://127.0.0.1:8000/admin/patients/${ic}`, { method: 'DELETE' });
       loadData();
     }
   };
 
-  const openModal = (patient = null) => {
+  // FIX: Added `: any` to bypass TypeScript strictness
+  const openModal = (patient: any = null) => {
     setEditingPatient(patient);
     if(patient) setFormData({ ic: patient.ic_passport_number, name: patient.name, phone: patient.phone, gender: patient.gender, nationality: patient.nationality });
     else setFormData({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA' });
@@ -66,9 +69,11 @@ export default function PatientsPage() {
         </div>
         <div className="flex gap-4">
           <input type="text" placeholder="Search Name or IC..." value={search} onChange={(e) => setSearch(e.target.value)} className="px-4 py-2 border rounded-lg outline-none w-64" />
-          <button onClick={() => openModal()} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">+ Add Patient</button>
+          <button onClick={() => openModal()} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-md">+ Add Patient</button>
         </div>
       </div>
+      
+      {error && <div className="bg-red-50 text-red-600 p-4 rounded-xl mb-4">⚠️ Cannot connect to backend. Is FastAPI running on 127.0.0.1:8000?</div>}
 
       <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100">
         <table className="w-full text-left border-collapse">
@@ -101,21 +106,21 @@ export default function PatientsPage() {
       </div>
 
       {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-2xl w-96 shadow-2xl">
+        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
+          <div className="bg-white p-6 rounded-2xl w-[400px] shadow-2xl">
             <h3 className="text-xl font-bold mb-4">{editingPatient ? 'Edit Patient' : 'Add New Patient'}</h3>
             <div className="space-y-3">
-              <input type="text" placeholder="IC / Passport" disabled={!!editingPatient} value={formData.ic} onChange={e => setFormData({...formData, ic: e.target.value})} className="w-full p-2 border rounded" />
-              <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-2 border rounded" />
-              <input type="text" placeholder="Phone Number" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="w-full p-2 border rounded" />
-              <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full p-2 border rounded">
+              <input type="text" placeholder="IC / Passport" disabled={!!editingPatient} value={formData.ic} onChange={e => setFormData({...formData, ic: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500" />
+              <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500" />
+              <input type="text" placeholder="Phone Number" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500" />
+              <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500 bg-white">
                 <option value="MALE">Male</option><option value="FEMALE">Female</option>
               </select>
-              <input type="text" placeholder="Nationality" value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value})} className="w-full p-2 border rounded" />
+              <input type="text" placeholder="Nationality" value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500" />
             </div>
             <div className="mt-6 flex justify-end gap-3">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded font-medium">Cancel</button>
-              <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded font-medium">Save</button>
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200 transition">Cancel</button>
+              <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition">Save Patient</button>
             </div>
           </div>
         </div>
