@@ -15,30 +15,52 @@ export default function AdminDashboard() {
   const [error, setError] = useState(false);
   const [stats, setStats] = useState({ total: 0, vaccines: 0, followUp: 0 });
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
+  
+  // Explicitly track date and view so standard buttons work properly
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [currentView, setCurrentView] = useState<any>('week');
 
   useEffect(() => {
     let isMounted = true;
     fetch(`http://127.0.0.1:8000/admin/appointments/${CLINIC_ID}`)
-      .then(res => { if (!res.ok) throw new Error(); return res.json(); })
+      .then(res => { 
+        if (!res.ok) throw new Error("Backend error"); 
+        return res.json(); 
+      })
       .then(data => {
         if (!isMounted) return;
+        if (!Array.isArray(data)) {
+            setEvents([]); setIsLoading(false); return;
+        }
+
         let vacCount = 0, folCount = 0;
         const formattedEvents = data.map((appt: any) => {
           if (appt.type === "multi-stage") vacCount++;
           if (appt.type === "follow-up") folCount++;
-          return { ...appt, start: new Date(appt.start), end: new Date(appt.end) };
+          return { 
+            ...appt, 
+            start: new Date(appt.start), 
+            end: new Date(appt.end),
+            title: appt.title || "Unknown - Unknown"
+          };
         });
+        
         setEvents(formattedEvents);
         setStats({ total: formattedEvents.length, vaccines: vacCount, followUp: folCount });
         setIsLoading(false);
       })
-      .catch(() => { if (isMounted) { setError(true); setIsLoading(false); } });
+      .catch((err) => { 
+        if (isMounted) { setError(true); setIsLoading(false); } 
+      });
       
     return () => { isMounted = false; };
   }, []);
 
   const eventStyleGetter = (event: any) => ({
-    style: { backgroundColor: event.color, borderRadius: '6px', border: 'none', padding: '4px', opacity: 0.9, fontSize: '0.8rem', fontWeight: 600 }
+    style: { 
+      backgroundColor: event.color || '#3B82F6', 
+      borderRadius: '6px', border: 'none', padding: '4px', opacity: 0.9, fontSize: '0.8rem', fontWeight: 600, color: 'white'
+    }
   });
 
   if (isLoading) return (
@@ -62,7 +84,6 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* METRICS CARDS */}
       <div className="grid grid-cols-3 gap-6 mb-8">
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-blue-100 text-blue-600 rounded-xl"><User size={24}/></div>
@@ -84,9 +105,12 @@ export default function AdminDashboard() {
           events={events}
           startAccessor="start"
           endAccessor="end"
+          date={currentDate}
+          onNavigate={setCurrentDate}
+          view={currentView}
+          onView={setCurrentView}
           eventPropGetter={eventStyleGetter}
           views={['month', 'week', 'day']}
-          defaultView="week"
           onSelectEvent={(event) => setSelectedEvent(event)}
         />
       </div>
@@ -99,12 +123,26 @@ export default function AdminDashboard() {
               <button onClick={() => setSelectedEvent(null)} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
             </div>
             <div className="p-6 space-y-4">
-              <div><p className="text-xs text-slate-400 font-bold uppercase">Patient Name</p><p className="font-semibold text-lg">{selectedEvent.title.split(' - ')[0]}</p></div>
-              <div className="grid grid-cols-2 gap-4">
-                <div><p className="text-xs text-slate-400 font-bold uppercase">Type</p><span className="mt-1 inline-block px-3 py-1 bg-slate-100 rounded-full text-xs font-bold text-slate-600">{selectedEvent.type}</span></div>
-                <div><p className="text-xs text-slate-400 font-bold uppercase">Doctor</p><p className="font-medium">{selectedEvent.doctor}</p></div>
+              <div>
+                <p className="text-xs text-slate-400 font-bold uppercase">Patient Name</p>
+                <p className="font-semibold text-lg">{selectedEvent?.title ? selectedEvent.title.split(' - ')[0] : 'Unknown Patient'}</p>
               </div>
-              <div><p className="text-xs text-slate-400 font-bold uppercase">Schedule</p><p className="font-medium">{moment(selectedEvent.start).format("dddd, MMMM Do YYYY, h:mm a")}</p></div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-slate-400 font-bold uppercase">Type</p>
+                  <span className="mt-1 inline-block px-3 py-1 bg-slate-100 rounded-full text-xs font-bold text-slate-600">
+                    {selectedEvent?.type || 'Unknown'}
+                  </span>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400 font-bold uppercase">Doctor</p>
+                  <p className="font-medium">{selectedEvent?.doctor || 'Unassigned'}</p>
+                </div>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 font-bold uppercase">Schedule</p>
+                <p className="font-medium">{selectedEvent?.start ? moment(selectedEvent.start).format("dddd, MMMM Do YYYY, h:mm a") : ''}</p>
+              </div>
             </div>
           </div>
         </div>

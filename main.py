@@ -5,13 +5,12 @@ from database import get_db
 import models
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
-from agent import extract_appointment_details
+from agent import extract_appointment_details, generate_vaccine_schedule_ai
 from datetime import datetime, timedelta
 import random
 
 app = FastAPI(title="Clinic Smart Assistant Backend")
 
-# --- CORS SETUP ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -39,11 +38,16 @@ class PatientUpdate(BaseModel):
 
 class VaccineCreate(BaseModel):
     clinic_id: str
-    name: str
-    type: str
-    total_doses: int
+    vaccine_id: Optional[int] = None
+    name: Optional[str] = None
+    type: Optional[str] = None
+    total_doses: Optional[int] = None
+    has_booster: Optional[bool] = None
+    schedules: Optional[List[Dict[str, Any]]] = []
     price: float
-    has_booster: bool
+
+class VaccineAIRequest(BaseModel):
+    vaccine_name: str
 
 class BloodTestCreate(BaseModel):
     clinic_id: str
@@ -96,7 +100,6 @@ class AdminChatReply(BaseModel):
     question: str
     answer: str
 
-# --- AI AGENT HELPERS ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
@@ -113,7 +116,6 @@ def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
     except: pass
     return start_date + timedelta(days=30) 
 
-# --- 1. DASHBOARD FIX (Manual Lookups to prevent SQLAlchemy Join Crashes) ---
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     try:
@@ -159,7 +161,6 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
         print(f"DASHBOARD CRASH PREVENTED: {e}")
         return []
 
-# --- 2. PATIENT CRUD ---
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
     return db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
@@ -178,23 +179,35 @@ def admin_delete_patient(ic: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-# --- 3. VACCINE CRUD ---
+# --- VACCINE ENDPOINTS ---
+@app.get("/admin/global-vaccines")
+def get_global_vaccines(db: Session = Depends(get_db)):
+    return db.query(models.Vaccine).all()
+
+@app.post("/admin/ai/vaccine-schedule")
+def ai_vaccine_schedule(req: VaccineAIRequest):
+    return generate_vaccine_schedule_ai(req.vaccine_name)
+
 @app.post("/admin/vaccines")
 def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
-    v = models.Vaccine(name=data.name, type=data.type, total_doses=data.total_doses, has_booster=data.has_booster)
-    db.add(v)
-    db.commit()
-    db.refresh(v)
-    vc = models.VaccineClinic(vaccine_id=v.id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
+    if data.vaccine_id:
+        v_id = data.vaccine_id
+    else:
+        v = models.Vaccine(name=data.name, type=data.type, total_doses=data.total_doses, has_booster=data.has_booster)
+        db.add(v)
+        db.flush() 
+        v_id = v.id
+        for sched in data.schedules:
+            db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
+        db.commit()
+
+    vc = models.VaccineClinic(vaccine_id=v_id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
     db.add(vc)
     db.commit()
     return {"status": "success"}
 
 @app.put("/admin/vaccines/{v_id}")
 def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)):
-    v = db.query(models.Vaccine).filter_by(id=v_id).first()
-    if v:
-        v.name, v.type, v.total_doses, v.has_booster = data.name, data.type, data.total_doses, data.has_booster
     vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
     if vc: vc.price = data.price
     db.commit()
@@ -203,11 +216,9 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
 @app.delete("/admin/vaccines/{v_id}/{clinic_id}")
 def delete_vaccine(v_id: int, clinic_id: str, db: Session = Depends(get_db)):
     db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=clinic_id).delete()
-    db.query(models.Vaccine).filter_by(id=v_id).delete()
     db.commit()
     return {"status": "success"}
 
-# --- 4. BLOOD TEST CRUD ---
 @app.post("/admin/blood-tests")
 def create_bt(data: BloodTestCreate, db: Session = Depends(get_db)):
     bt = models.BloodTest(clinic_id=data.clinic_id, name=data.name, description=data.description, price=data.price, test_type=data.test_type)
@@ -229,22 +240,14 @@ def delete_bt(bt_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-# --- 5. OTHER ADMIN ENDPOINTS ---
 @app.post("/admin/auto-replies")
 def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db)):
-    new_msg = models.ChatMessage(
-        clinic_id=data.clinic_id,
-        message=data.question,
-        reply=data.answer,
-        status='auto_rule'
-    )
+    new_msg = models.ChatMessage(clinic_id=data.clinic_id, message=data.question, reply=data.answer, status='auto_rule')
     db.add(new_msg)
     db.commit()
     logging_agent(db, data.clinic_id, "Automated Message Updated", f"Admin added rule for: {data.question}")
     return {"status": "success"}
 
-
-# --- 6. CORE BOT & DATA ENDPOINTS ---
 @app.post("/ai-extract")
 def ai_extract(req: TextExtractRequest):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -392,7 +395,6 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-# --- 7. AVAILABILITY & SCHEDULING ENDPOINTS ---
 def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
     doc_query = db.query(models.Doctor).join(
         models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic

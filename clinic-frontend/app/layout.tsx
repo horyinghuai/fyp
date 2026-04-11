@@ -3,7 +3,7 @@
 import './globals.css';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, Search, UserCircle } from 'lucide-react';
+import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle } from 'lucide-react';
 import { useState } from 'react';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -22,7 +22,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="m-0 flex h-screen bg-slate-50 font-sans text-slate-800">
         
-        {/* SIDEBAR */}
         <aside className="w-64 bg-slate-900 text-white flex flex-col shadow-xl z-20">
           <div className="p-6 border-b border-slate-800">
             <h2 className="text-xl font-bold tracking-wide flex items-center gap-2">
@@ -38,7 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <Link 
                   key={item.path} 
                   href={item.path} 
-                  prefetch={false} // <--- THE CRITICAL FIX FOR SPEED
+                  prefetch={false}
                   className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${isActive ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
                   {item.icon}
                   <span className="font-medium">{item.name}</span>
@@ -54,16 +53,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </aside>
 
-        {/* MAIN CONTENT AREA */}
         <div className="flex-1 flex flex-col h-screen overflow-hidden">
           
-          {/* TOP NOTIFICATION BAR */}
-          <header className="h-16 bg-white shadow-sm flex items-center justify-between px-8 z-10">
-            <div className="flex items-center bg-slate-100 px-4 py-2 rounded-full w-96">
-              <Search size={18} className="text-slate-400 mr-2" />
-              <input type="text" placeholder="Search patients or IC..." className="bg-transparent border-none outline-none w-full text-sm" />
-            </div>
-
+          <header className="h-16 bg-white shadow-sm flex items-center justify-end px-8 z-10">
             <div className="flex items-center gap-6 relative">
               <div className="relative cursor-pointer" onClick={() => setShowNotifications(!showNotifications)}>
                 <Bell size={22} className="text-slate-600 hover:text-blue-600 transition" />
