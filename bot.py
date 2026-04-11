@@ -761,7 +761,8 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         
         async with httpx.AsyncClient() as client:
             try:
-                res = await client.post(f"{API_BASE}/ai-extract", json={"text": text}, timeout=15.0)
+                # CHANGED: Increased timeout from 15.0 to 120.0 to allow DeepSeek to "think"
+                res = await client.post(f"{API_BASE}/ai-extract", json={"text": text}, timeout=120.0)
                 ext = res.json() if res.status_code == 200 else {"error": "Backend offline."}
             except Exception as e:
                 logger.error(f"AI Extract Error: {e}")
