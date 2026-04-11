@@ -55,6 +55,7 @@ class BloodTestCreate(BaseModel):
     description: str
     price: float
     test_type: str
+    component_ids: Optional[List[int]] = [] # NEW: for packages
 
 class Booking(BaseModel):
     clinic_id: str
@@ -116,6 +117,7 @@ def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
     except: pass
     return start_date + timedelta(days=30) 
 
+# --- DASHBOARD & STAGE API ---
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     try:
@@ -134,6 +136,12 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
         doctors = db.query(models.Doctor).filter(models.Doctor.ic_passport_number.in_(doctor_ics)).all()
         doctor_dict = {d.ic_passport_number: d for d in doctors}
 
+        # Map services to get precise statistics
+        appt_vaccines = db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id.in_(appt_ids)).all()
+        appt_tests = db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id.in_(appt_ids)).all()
+        vac_appt_ids = {av.appointment_id for av in appt_vaccines}
+        test_appt_ids = {at.appointment_id for at in appt_tests}
+
         result = []
         for stage in stages:
             appt = appt_dict.get(stage.appointment_id)
@@ -141,9 +149,16 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
             patient = patient_dict.get(appt.patient_ic)
             doctor = doctor_dict.get(appt.doctor_ic) if appt.doctor_ic else None
 
+            service = "Consultation"
             color = "#3B82F6" 
-            if appt.appt_type == "multi-stage": color = "#A855F7" 
-            elif appt.appt_type == "follow-up": color = "#F97316" 
+            if appt.id in vac_appt_ids: 
+                service = "Vaccine"
+                color = "#A855F7"
+            elif appt.id in test_appt_ids: 
+                service = "Blood Test"
+                color = "#EF4444" 
+            elif appt.appt_type == "follow-up":
+                color = "#F97316"
 
             result.append({
                 "id": str(stage.id),
@@ -153,6 +168,7 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
                 "patient_ic": patient.ic_passport_number if patient else "",
                 "doctor": doctor.name if doctor else "Unassigned",
                 "type": appt.appt_type,
+                "service": service,
                 "status": stage.status,
                 "color": color
             })
@@ -161,6 +177,22 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
         print(f"DASHBOARD CRASH PREVENTED: {e}")
         return []
 
+@app.put("/admin/appointment-stages/{stage_id}")
+def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db)):
+    stage = db.query(models.ApptStage).filter_by(id=stage_id).first()
+    if not stage: raise HTTPException(status_code=404)
+    
+    if 'status' in data:
+        stage.status = data['status']
+    if 'scheduled_time' in data:
+        dt_str = data['scheduled_time'].replace("T", " ")
+        if len(dt_str) == 16: dt_str += ":00" # Support datetime-local format
+        stage.scheduled_time = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+        
+    db.commit()
+    return {"status": "success"}
+
+# --- PATIENTS API ---
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
     return db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
@@ -179,7 +211,7 @@ def admin_delete_patient(ic: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-# --- VACCINE ENDPOINTS ---
+# --- VACCINE API ---
 @app.get("/admin/global-vaccines")
 def get_global_vaccines(db: Session = Depends(get_db)):
     return db.query(models.Vaccine).all()
@@ -219,10 +251,15 @@ def delete_vaccine(v_id: int, clinic_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
+# --- BLOOD TESTS API ---
 @app.post("/admin/blood-tests")
 def create_bt(data: BloodTestCreate, db: Session = Depends(get_db)):
     bt = models.BloodTest(clinic_id=data.clinic_id, name=data.name, description=data.description, price=data.price, test_type=data.test_type)
     db.add(bt)
+    db.flush()
+    if data.test_type == 'package' and data.component_ids:
+        for cid in data.component_ids:
+            db.add(models.BloodTestComponent(package_id=bt.id, test_id=cid))
     db.commit()
     return {"status": "success"}
 
@@ -231,6 +268,10 @@ def update_bt(bt_id: int, data: BloodTestCreate, db: Session = Depends(get_db)):
     bt = db.query(models.BloodTest).filter_by(id=bt_id).first()
     if bt:
         bt.name, bt.description, bt.price, bt.test_type = data.name, data.description, data.price, data.test_type
+        if data.test_type == 'package':
+            db.query(models.BloodTestComponent).filter_by(package_id=bt.id).delete()
+            for cid in data.component_ids:
+                db.add(models.BloodTestComponent(package_id=bt.id, test_id=cid))
         db.commit()
     return {"status": "success"}
 
@@ -304,10 +345,14 @@ def get_blood_tests(clinic_id: str, test_type: str, db: Session = Depends(get_db
         if test_type == "package":
             components = db.query(models.BloodTestComponent).filter(models.BloodTestComponent.package_id == t.id).all()
             included_names = []
+            component_ids = []
             for comp in components:
                 child = db.query(models.BloodTest).filter(models.BloodTest.id == comp.test_id).first()
-                if child: included_names.append(child.name)
+                if child: 
+                    included_names.append(child.name)
+                    component_ids.append(comp.test_id)
             t_dict["included_tests"] = included_names
+            t_dict["component_ids"] = component_ids
         results.append(t_dict)
     return results
 
@@ -466,13 +511,11 @@ def get_available_dates(req: DateRequest, db: Session = Depends(get_db)):
 def get_available_times(req: TimeRequest, db: Session = Depends(get_db)):
     d_obj = datetime.strptime(req.date, "%Y-%m-%d").date()
     doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d_obj, req.duration, req.doctor_pref)
-    
     if not doc_slots: return {"error": "No slots available"}
     
     all_times = set()
     for ds in doc_slots:
-        for s in ds['slots']:
-            all_times.add(s.strftime("%H:%M:%S"))
+        for s in ds['slots']: all_times.add(s.strftime("%H:%M:%S"))
             
     sorted_times = sorted(list(all_times))
     return {"times": sorted_times, "doctor_name": "Pending Selection"}
@@ -560,9 +603,7 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 interval = schedules[i].interval_description
                 current_calc_time = calculate_future_date(current_calc_time, interval)
 
-            stage = models.ApptStage(
-                appointment_id=new_appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id
-            )
+            stage = models.ApptStage(appointment_id=new_appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
             db.add(stage)
             db.flush()
             prev_stage_id = stage.id 
@@ -572,9 +613,7 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 bt = db.query(models.BloodTest).filter_by(name=t_name, clinic_id=booking.clinic_id).first()
                 if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
 
-        stage = models.ApptStage(
-            appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time
-        )
+        stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
         db.add(stage)
 
     db.commit()
@@ -608,20 +647,13 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
     
     if service == 'Vaccine' and items_list:
         v = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
-        if v:
-            db.add(models.AppointmentVaccine(
-                appointment_id=appt.id, vaccine_id=v.id, dose_number=booking.details.get('dose')
-            ))
+        if v: db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v.id, dose_number=booking.details.get('dose')))
     elif service == 'Blood Test' and items_list:
         for t_name in items_list:
             bt = db.query(models.BloodTest).filter_by(name=t_name).first()
-            if bt:
-                db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
+            if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
     
-    new_stage = models.ApptStage(
-        appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type),
-        scheduled_time=datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
-    )
+    new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S"))
     db.add(new_stage)
     db.commit()
     return {"status": "success"}
