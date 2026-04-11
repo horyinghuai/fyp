@@ -1,22 +1,24 @@
 import os
 import json
 import re
-import requests
-import urllib3
 from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from openai import OpenAI
 
 # --- LOAD ENV VARIABLES ---
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
-if not GEMINI_API_KEY:
-    GEMINI_API_KEY = os.getenv('GOOGLE_API_KEY', '').strip()
+# Point to LM Studio's default port (1234)
+LOCAL_LLM_BASE_URL = os.getenv('LOCAL_LLM_BASE_URL', 'http://localhost:1234/v1')
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Initialize the Local LLM Client
+client = OpenAI(
+    base_url=LOCAL_LLM_BASE_URL,
+    api_key='lm-studio', # API key is required by the library, but LM studio ignores it
+)
 
 # --- AI EXTRACTION LOGIC ---
 class AppointmentExtraction(BaseModel):
@@ -27,9 +29,6 @@ class AppointmentExtraction(BaseModel):
     reason: Optional[str] = Field(description="Extracted reason for visit or any free text details, or null.")
 
 def extract_appointment_details(user_text: str, current_time_str: str):
-    if not GEMINI_API_KEY:
-        return {"error": "Server missing GEMINI_API_KEY in .env file."}
-
     prompt = f"""
     You are an AI Clinic Assistant extracting data. The current date and time is {current_time_str}. 
     If the user uses relative terms like 'tomorrow' or 'next monday', calculate the exact YYYY-MM-DD date. 
@@ -37,7 +36,7 @@ def extract_appointment_details(user_text: str, current_time_str: str):
     
     User Text: "{user_text}"
 
-    Extract the information into strictly valid JSON format. Return ONLY the JSON object:
+    Extract the information into strictly valid JSON format. Return ONLY the JSON object matching this structure:
     {{
         "intent": "booking",
         "date_preference": "YYYY-MM-DD",
@@ -47,42 +46,34 @@ def extract_appointment_details(user_text: str, current_time_str: str):
     }}
     """
 
-    headers = {'Content-Type': 'application/json'}
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json"},
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
-    }
+    try:
+        # Call LM Studio
+        response = client.chat.completions.create(
+            model="local-model", # LM Studio will automatically use whatever model is currently loaded in the server tab
+            messages=[
+                {"role": "system", "content": "You are a precise data extraction assistant. Always output strictly valid JSON without any markdown formatting."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={ "type": "json_object" }, # Forces LM Studio to only output valid JSON
+            temperature=0.0 # Zero randomness for exact, deterministic extraction
+        )
+        
+        # Parse the JSON response
+        raw_text = response.choices[0].message.content.strip()
+        
+        # Cleanup: Sometimes local models wrap JSON in markdown block quotes
+        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        if json_match:
+            parsed_data = json.loads(json_match.group(0))
+        else:
+            parsed_data = json.loads(raw_text)
+            
+        # Validate against our strict Pydantic model
+        validated_data = AppointmentExtraction(**parsed_data)
+        return validated_data
 
-    api_versions = ["v1beta", "v1"]
-    valid_models = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
-    errors = []
-
-    for version in api_versions:
-        for model in valid_models:
-            url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:generateContent?key={GEMINI_API_KEY}"
-            try:
-                response = requests.post(url, headers=headers, json=payload, timeout=15, verify=False)
-                if response.status_code == 200:
-                    result = response.json()
-                    if 'candidates' in result and len(result['candidates']) > 0:
-                        raw_text = result['candidates'][0]['content']['parts'][0]['text'].strip()
-                        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-                        if json_match:
-                            parsed_data = json.loads(json_match.group(0))
-                            return AppointmentExtraction(**parsed_data)
-                else:
-                    errors.append(f"{version}/{model} ({response.status_code})")
-            except Exception as e:
-                errors.append(f"{version}/{model} Exception")
-                continue 
-                
-    return {"error": f"All endpoints failed. Traces: {', '.join(errors)}"}
+    except Exception as e:
+        return {"error": f"LM Studio Request failed: {str(e)}. Make sure the Local Server is running in LM Studio."}
 
 
 # --- SCHEDULING AGENT LOGIC (LangGraph) ---
@@ -120,5 +111,4 @@ workflow.add_node("check_schedule", scheduling_agent_node)
 workflow.set_entry_point("check_schedule")
 workflow.add_edge("check_schedule", END)
 
-# This was the missing line that compiles the graph for main.py to use!
 scheduling_agent = workflow.compile()
