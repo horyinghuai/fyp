@@ -64,21 +64,20 @@ export default function AdminDashboard() {
 
       {/* METRICS CARDS */}
       <div className="grid grid-cols-3 gap-6 mb-8">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-blue-100 text-blue-600 rounded-xl"><User size={24}/></div>
-          <div><p className="text-sm font-bold text-slate-400 uppercase tracking-wider">Total Appointments</p><h3 className="text-3xl font-black text-slate-800">{stats.total}</h3></div></div>
+          <div><p className="text-sm font-bold text-slate-400 uppercase">Total Appointments</p><h3 className="text-3xl font-black text-slate-800">{stats.total}</h3></div></div>
         </div>
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-purple-100 text-purple-600 rounded-xl"><Activity size={24}/></div>
-          <div><p className="text-sm font-bold text-slate-400 uppercase tracking-wider">Vaccine Stages</p><h3 className="text-3xl font-black text-slate-800">{stats.vaccines}</h3></div></div>
+          <div><p className="text-sm font-bold text-slate-400 uppercase">Vaccine Stages</p><h3 className="text-3xl font-black text-slate-800">{stats.vaccines}</h3></div></div>
         </div>
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-orange-100 text-orange-600 rounded-xl"><Clock size={24}/></div>
-          <div><p className="text-sm font-bold text-slate-400 uppercase tracking-wider">Follow-ups Pending</p><h3 className="text-3xl font-black text-slate-800">{stats.followUp}</h3></div></div>
+          <div><p className="text-sm font-bold text-slate-400 uppercase">Follow-ups Pending</p><h3 className="text-3xl font-black text-slate-800">{stats.followUp}</h3></div></div>
         </div>
       </div>
 
-      {/* CALENDAR */}
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-[65vh]">
         <Calendar
           localizer={localizer}
@@ -92,26 +91,20 @@ export default function AdminDashboard() {
         />
       </div>
 
-      {/* INTERACTIVE EVENT MODAL */}
       {selectedEvent && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-2xl w-[450px] overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="bg-slate-50 px-6 py-4 border-b border-slate-100 flex justify-between items-center">
+        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-2xl w-[450px] overflow-hidden">
+            <div className="bg-slate-50 px-6 py-4 border-b flex justify-between items-center">
               <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><CalIcon size={18}/> Appointment Details</h3>
-              <button onClick={() => setSelectedEvent(null)} className="text-slate-400 hover:text-red-500 transition"><X size={20}/></button>
+              <button onClick={() => setSelectedEvent(null)} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
             </div>
             <div className="p-6 space-y-4">
-              <div><p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Patient Name</p><p className="font-semibold text-slate-800 text-lg">{selectedEvent.title.split(' - ')[0]}</p></div>
+              <div><p className="text-xs text-slate-400 font-bold uppercase">Patient Name</p><p className="font-semibold text-lg">{selectedEvent.title.split(' - ')[0]}</p></div>
               <div className="grid grid-cols-2 gap-4">
-                <div><p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Type</p>
-                  <span className="mt-1 inline-block px-3 py-1 bg-slate-100 rounded-full text-xs font-bold text-slate-600">{selectedEvent.type}</span></div>
-                <div><p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Assigned Doctor</p><p className="font-medium text-slate-700">{selectedEvent.doctor}</p></div>
+                <div><p className="text-xs text-slate-400 font-bold uppercase">Type</p><span className="mt-1 inline-block px-3 py-1 bg-slate-100 rounded-full text-xs font-bold text-slate-600">{selectedEvent.type}</span></div>
+                <div><p className="text-xs text-slate-400 font-bold uppercase">Doctor</p><p className="font-medium">{selectedEvent.doctor}</p></div>
               </div>
-              <div><p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Schedule</p><p className="font-medium text-slate-700">{moment(selectedEvent.start).format("dddd, MMMM Do YYYY, h:mm a")}</p></div>
-            </div>
-            <div className="px-6 py-4 bg-slate-50 flex justify-end gap-3 border-t border-slate-100">
-              <button className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 font-medium hover:bg-slate-50 transition">Reschedule</button>
-              <button className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition shadow-md shadow-blue-200">View Patient</button>
+              <div><p className="text-xs text-slate-400 font-bold uppercase">Schedule</p><p className="font-medium">{moment(selectedEvent.start).format("dddd, MMMM Do YYYY, h:mm a")}</p></div>
             </div>
           </div>
         </div>

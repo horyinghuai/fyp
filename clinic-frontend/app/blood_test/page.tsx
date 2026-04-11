@@ -7,95 +7,121 @@ const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 export default function BloodTestsPage() {
   const [packages, setPackages] = useState<any[]>([]);
   const [singles, setSingles] = useState<any[]>([]);
-  const [error, setError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    let isMounted = true;
-    const fetchBloodTests = async () => {
-      try {
-        const [pkgRes, sglRes] = await Promise.all([
-          fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`),
-          fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`)
-        ]);
+  const [showModal, setShowModal] = useState(false);
+  const [editingBt, setEditingBt] = useState<any>(null);
+  const [formData, setFormData] = useState({ name: '', description: '', price: 0, test_type: 'single' });
 
-        if (!pkgRes.ok || !sglRes.ok) throw new Error("Failed to fetch");
+  useEffect(() => { loadData(); }, []);
 
-        const pData = await pkgRes.json();
-        const sData = await sglRes.json();
-        
-        if (isMounted) {
-            setPackages(pData);
-            setSingles(sData);
-            setError(false);
-            setIsLoading(false);
-        }
-      } catch (err) {
-        if (isMounted) { console.error(err); setError(true); setIsLoading(false); }
-      }
-    };
-    fetchBloodTests();
-    return () => { isMounted = false; };
-  }, []);
+  const loadData = async () => {
+    try {
+      const [pkgRes, sglRes] = await Promise.all([
+        fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`),
+        fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`)
+      ]);
+      setPackages(await pkgRes.json());
+      setSingles(await sglRes.json());
+      setIsLoading(false);
+    } catch (e) { setIsLoading(false); }
+  };
+
+  const handleSave = async () => {
+    const isEditing = !!editingBt;
+    const url = isEditing ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` : `http://127.0.0.1:8000/admin/blood-tests`;
+    
+    await fetch(url, {
+      method: isEditing ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData })
+    });
+    
+    setShowModal(false);
+    loadData();
+  };
+
+  const handleDelete = async (id: number) => {
+    if(confirm("Delete this Blood Test?")) {
+      await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { method: 'DELETE' });
+      loadData();
+    }
+  };
+
+  const openModal = (bt = null) => {
+    setEditingBt(bt);
+    if(bt) setFormData({ name: bt.name, description: bt.description, price: bt.price, test_type: bt.test_type });
+    else setFormData({ name: '', description: '', price: 0, test_type: 'single' });
+    setShowModal(true);
+  };
+
+  if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-      <div style={{ marginBottom: '30px' }}>
-        <h1 style={{ margin: '0 0 10px 0', color: '#1E293B', fontSize: '2rem' }}>🩸 Blood Test Services</h1>
-        <p style={{ margin: 0, color: '#64748B' }}>Manage full diagnostic packages and standalone test pricing.</p>
+    <div className="max-w-7xl mx-auto">
+      <div className="flex justify-between items-center mb-8">
+        <div>
+          <h1 className="text-3xl font-bold text-slate-800">🩸 Blood Test Services</h1>
+          <p className="text-slate-500 mt-1">Manage diagnostic packages and standalone test pricing.</p>
+        </div>
+        <button onClick={() => openModal()} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700">+ Add Blood Test</button>
       </div>
-      
-      {error && <div style={{ color: '#EF4444', marginBottom: '15px', padding: '15px', backgroundColor: '#FEE2E2', borderRadius: '8px' }}>⚠️ Cannot connect to backend. Is FastAPI running on 127.0.0.1:8000?</div>}
 
-      {isLoading ? (
-        <div style={{ height: '300px', backgroundColor: '#E2E8F0', borderRadius: '12px', animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite' }}></div>
-      ) : (
-        <>
-          <h2 style={{ color: '#1E293B', borderBottom: '2px solid #E2E8F0', paddingBottom: '10px', marginBottom: '20px' }}>Comprehensive Packages</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: '20px', marginBottom: '50px' }}>
-            {packages.map(p => (
-              <div key={p.id} style={{ backgroundColor: 'white', borderRadius: '12px', padding: '25px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', borderTop: '4px solid #8B5CF6', display: 'flex', flexDirection: 'column' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px' }}>
-                  <h3 style={{ margin: 0, color: '#1E293B', fontSize: '1.2rem', paddingRight: '15px' }}>{p.name}</h3>
-                  <span style={{ backgroundColor: '#F0FDF4', color: '#047857', padding: '5px 10px', borderRadius: '8px', fontWeight: 'bold', fontSize: '1.1rem' }}>RM{p.price}</span>
-                </div>
-                <p style={{ color: '#64748B', fontSize: '0.9rem', marginBottom: '20px', fontStyle: 'italic' }}>{p.description}</p>
-                
-                <div style={{ marginTop: 'auto' }}>
-                  <h4 style={{ margin: '0 0 10px 0', fontSize: '0.85rem', color: '#94A3B8', textTransform: 'uppercase' }}>Included Tests:</h4>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                    {p.included_tests?.slice(0, 5).map((test: string, i: number) => (
-                      <span key={i} style={{ backgroundColor: '#F1F5F9', color: '#475569', fontSize: '0.75rem', padding: '4px 8px', borderRadius: '4px' }}>{test}</span>
-                    ))}
-                    {p.included_tests?.length > 5 && <span style={{ backgroundColor: '#E2E8F0', color: '#475569', fontSize: '0.75rem', padding: '4px 8px', borderRadius: '4px' }}>+{p.included_tests.length - 5} more</span>}
-                  </div>
-                </div>
-              </div>
+      <h2 className="font-bold text-lg border-b pb-2 mb-4">Packages</h2>
+      <div className="grid grid-cols-2 gap-4 mb-8">
+        {packages.map(p => (
+          <div key={p.id} className="bg-white rounded-xl p-6 shadow-sm border-t-4 border-emerald-500 flex flex-col">
+            <div className="flex justify-between mb-2">
+              <h3 className="font-bold text-lg">{p.name}</h3>
+              <span className="font-black text-emerald-600">RM {p.price}</span>
+            </div>
+            <p className="text-sm text-slate-500 mb-4">{p.description}</p>
+            <div className="mt-auto flex justify-end gap-2">
+              <button onClick={() => openModal(p)} className="text-sm px-3 py-1 bg-slate-100 rounded">Edit</button>
+              <button onClick={() => handleDelete(p.id)} className="text-sm px-3 py-1 bg-red-50 text-red-600 rounded">Delete</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="font-bold text-lg border-b pb-2 mb-4">Standalone Tests</h2>
+      <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+        <table className="w-full text-left border-collapse">
+          <thead className="bg-slate-50 border-b"><th className="p-4">Name</th><th className="p-4">Description</th><th className="p-4">Price</th><th className="p-4 text-center">Actions</th></thead>
+          <tbody>
+            {singles.map(s => (
+              <tr key={s.id} className="border-b border-slate-50">
+                <td className="p-4 font-bold">{s.name}</td>
+                <td className="p-4 text-sm text-slate-500">{s.description}</td>
+                <td className="p-4 font-bold text-emerald-600">RM {s.price}</td>
+                <td className="p-4 text-center space-x-2">
+                  <button onClick={() => openModal(s)} className="text-sm px-3 py-1 bg-slate-100 rounded">Edit</button>
+                  <button onClick={() => handleDelete(s.id)} className="text-sm px-3 py-1 bg-red-50 text-red-600 rounded">Delete</button>
+                </td>
+              </tr>
             ))}
-          </div>
+          </tbody>
+        </table>
+      </div>
 
-          <h2 style={{ color: '#1E293B', borderBottom: '2px solid #E2E8F0', paddingBottom: '10px', marginBottom: '20px' }}>Standalone Tests</h2>
-          <div style={{ backgroundColor: 'white', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-              <thead style={{ backgroundColor: '#F8FAFC', borderBottom: '2px solid #E2E8F0' }}>
-                <tr>
-                  <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600' }}>Test Name</th>
-                  <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600' }}>Description</th>
-                  <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600' }}>Price</th>
-                </tr>
-              </thead>
-              <tbody>
-                {singles.map((s, index) => (
-                  <tr key={s.id} style={{ borderBottom: '1px solid #F1F5F9', backgroundColor: index % 2 === 0 ? '#FFFFFF' : '#FAFAFA' }}>
-                    <td style={{ padding: '16px 20px', fontWeight: '600', color: '#334155' }}>{s.name}</td>
-                    <td style={{ padding: '16px 20px', color: '#64748B', fontSize: '0.9rem' }}>{s.description}</td>
-                    <td style={{ padding: '16px 20px', color: '#10B981', fontWeight: 'bold' }}>RM {s.price}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {showModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-2xl w-96 shadow-2xl">
+            <h3 className="text-xl font-bold mb-4">{editingBt ? 'Edit Test' : 'Add Test'}</h3>
+            <div className="space-y-3">
+              <input type="text" placeholder="Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-2 border rounded" />
+              <input type="text" placeholder="Description" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} className="w-full p-2 border rounded" />
+              <input type="number" placeholder="Price" value={formData.price} onChange={e => setFormData({...formData, price: parseFloat(e.target.value)})} className="w-full p-2 border rounded" />
+              <select value={formData.test_type} onChange={e => setFormData({...formData, test_type: e.target.value})} className="w-full p-2 border rounded">
+                <option value="single">Single Test</option><option value="package">Package</option>
+              </select>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded">Cancel</button>
+              <button onClick={handleSave} className="px-4 py-2 bg-emerald-600 text-white rounded">Save</button>
+            </div>
           </div>
-        </>
+        </div>
       )}
     </div>
   );

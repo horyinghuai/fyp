@@ -7,80 +7,117 @@ const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 export default function PatientsPage() {
   const [patients, setPatients] = useState<any[]>([]);
   const [search, setSearch] = useState("");
-  const [error, setError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Modal States
+  const [showModal, setShowModal] = useState(false);
+  const [editingPatient, setEditingPatient] = useState<any>(null);
+  const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA' });
 
-  useEffect(() => {
-    let isMounted = true;
+  useEffect(() => { loadData(); }, []);
+
+  const loadData = () => {
     fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`)
-      .then(res => { if(!res.ok) throw new Error("Failed to fetch"); return res.json(); })
-      .then(data => { 
-          if(isMounted) { setPatients(data); setError(false); setIsLoading(false); }
-      })
-      .catch(err => { 
-          if(isMounted) { console.error(err); setError(true); setIsLoading(false); }
-      });
-      return () => { isMounted = false; };
-  }, []);
+      .then(res => res.json())
+      .then(data => { setPatients(data); setIsLoading(false); })
+      .catch(() => setIsLoading(false));
+  };
 
-  const filteredPatients = patients.filter(p => 
-    p.name.toLowerCase().includes(search.toLowerCase()) || 
-    p.ic_passport_number.includes(search)
-  );
+  const handleSave = async () => {
+    const isEditing = !!editingPatient;
+    const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${formData.ic}` : `http://127.0.0.1:8000/register-patient`;
+    const payload = isEditing ? { name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality } 
+                              : { clinic_id: CLINIC_ID, ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality };
+
+    await fetch(url, {
+      method: isEditing ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    setShowModal(false);
+    loadData();
+  };
+
+  const handleDelete = async (ic: str) => {
+    if(confirm("Are you sure you want to delete this patient?")) {
+      await fetch(`http://127.0.0.1:8000/admin/patients/${ic}`, { method: 'DELETE' });
+      loadData();
+    }
+  };
+
+  const openModal = (patient = null) => {
+    setEditingPatient(patient);
+    if(patient) setFormData({ ic: patient.ic_passport_number, name: patient.name, phone: patient.phone, gender: patient.gender, nationality: patient.nationality });
+    else setFormData({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA' });
+    setShowModal(true);
+  };
+
+  const filteredPatients = patients.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.ic_passport_number.includes(search));
+
+  if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
+    <div className="max-w-7xl mx-auto">
+      <div className="flex justify-between items-center mb-8">
         <div>
-          <h1 style={{ margin: '0 0 10px 0', color: '#1E293B', fontSize: '2rem' }}>👥 Patient Directory</h1>
-          <p style={{ margin: 0, color: '#64748B' }}>View and search through registered clinic patients.</p>
+          <h1 className="text-3xl font-bold text-slate-800">👥 Patient Directory</h1>
+          <p className="text-slate-500 mt-1">View, search, edit, and add new patients.</p>
         </div>
-        
-        <input 
-          type="text" 
-          placeholder="Search by Name or IC..." 
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ padding: '12px 20px', width: '300px', borderRadius: '8px', border: '1px solid #CBD5E1', outline: 'none', fontSize: '1rem', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
-        />
+        <div className="flex gap-4">
+          <input type="text" placeholder="Search Name or IC..." value={search} onChange={(e) => setSearch(e.target.value)} className="px-4 py-2 border rounded-lg outline-none w-64" />
+          <button onClick={() => openModal()} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700">+ Add Patient</button>
+        </div>
       </div>
-      
-      {error && <div style={{ color: '#EF4444', marginBottom: '15px', padding: '15px', backgroundColor: '#FEE2E2', borderRadius: '8px' }}>⚠️ Cannot connect to backend. Is FastAPI running on 127.0.0.1:8000?</div>}
 
-      {isLoading ? (
-         <div style={{ height: '200px', backgroundColor: '#E2E8F0', borderRadius: '12px', animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite' }}></div>
-      ) : (
-        <div style={{ backgroundColor: 'white', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-            <thead style={{ backgroundColor: '#F8FAFC', borderBottom: '2px solid #E2E8F0' }}>
-              <tr>
-                <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600' }}>Patient Details</th>
-                <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600' }}>IC / Passport</th>
-                <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600' }}>Contact</th>
-                <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600', textAlign: 'center' }}>Action</th>
+      <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100">
+        <table className="w-full text-left border-collapse">
+          <thead className="bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th className="p-4 font-semibold text-slate-600">Patient Details</th>
+              <th className="p-4 font-semibold text-slate-600">IC / Passport</th>
+              <th className="p-4 font-semibold text-slate-600">Contact</th>
+              <th className="p-4 font-semibold text-slate-600 text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredPatients.map((p, i) => (
+              <tr key={p.ic_passport_number} className={`border-b border-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+                <td className="p-4">
+                  <div className="font-bold text-slate-800">{p.name}</div>
+                  <span className="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded-full">{p.gender}</span>
+                  <span className="text-xs text-slate-500 ml-2">{p.nationality}</span>
+                </td>
+                <td className="p-4 font-mono text-slate-600">{p.ic_passport_number}</td>
+                <td className="p-4 text-slate-600">{p.phone}</td>
+                <td className="p-4 text-center space-x-2">
+                  <button onClick={() => openModal(p)} className="px-3 py-1 bg-slate-100 text-slate-600 rounded hover:bg-slate-200 font-medium text-sm">Edit</button>
+                  <button onClick={() => handleDelete(p.ic_passport_number)} className="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 font-medium text-sm">Delete</button>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {filteredPatients.length > 0 ? filteredPatients.map((p, index) => (
-                <tr key={p.ic_passport_number} style={{ borderBottom: '1px solid #F1F5F9', backgroundColor: index % 2 === 0 ? '#FFFFFF' : '#FAFAFA' }}>
-                  <td style={{ padding: '16px 20px' }}>
-                    <div style={{ fontWeight: 'bold', color: '#1E293B', marginBottom: '4px' }}>{p.name}</div>
-                    <span style={{ fontSize: '0.75rem', backgroundColor: '#E0E7FF', color: '#3B82F6', padding: '3px 8px', borderRadius: '12px' }}>{p.gender}</span>
-                    <span style={{ fontSize: '0.75rem', color: '#64748B', marginLeft: '10px' }}>{p.nationality}</span>
-                  </td>
-                  <td style={{ padding: '16px 20px', color: '#475569', fontFamily: 'monospace' }}>{p.ic_passport_number}</td>
-                  <td style={{ padding: '16px 20px', color: '#475569' }}>{p.phone}</td>
-                  <td style={{ padding: '16px 20px', textAlign: 'center' }}>
-                    <button style={{ padding: '8px 16px', backgroundColor: '#F1F5F9', color: '#3B82F6', border: '1px solid #CBD5E1', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', transition: 'all 0.2s' }}>
-                      View Profile
-                    </button>
-                  </td>
-                </tr>
-              )) : (
-                <tr><td colSpan={4} style={{ padding: '30px', textAlign: 'center', color: '#94A3B8' }}>No patients found matching "{search}"</td></tr>
-              )}
-            </tbody>
-          </table>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-2xl w-96 shadow-2xl">
+            <h3 className="text-xl font-bold mb-4">{editingPatient ? 'Edit Patient' : 'Add New Patient'}</h3>
+            <div className="space-y-3">
+              <input type="text" placeholder="IC / Passport" disabled={!!editingPatient} value={formData.ic} onChange={e => setFormData({...formData, ic: e.target.value})} className="w-full p-2 border rounded" />
+              <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-2 border rounded" />
+              <input type="text" placeholder="Phone Number" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="w-full p-2 border rounded" />
+              <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full p-2 border rounded">
+                <option value="MALE">Male</option><option value="FEMALE">Female</option>
+              </select>
+              <input type="text" placeholder="Nationality" value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value})} className="w-full p-2 border rounded" />
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded font-medium">Cancel</button>
+              <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded font-medium">Save</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

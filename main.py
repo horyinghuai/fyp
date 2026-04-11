@@ -31,6 +31,27 @@ class PatientRegister(BaseModel):
     gender: Optional[str] = None
     nationality: Optional[str] = None
 
+class PatientUpdate(BaseModel):
+    name: str
+    phone: str
+    gender: str
+    nationality: str
+
+class VaccineCreate(BaseModel):
+    clinic_id: str
+    name: str
+    type: str
+    total_doses: int
+    price: float
+    has_booster: bool
+
+class BloodTestCreate(BaseModel):
+    clinic_id: str
+    name: str
+    description: str
+    price: float
+    test_type: str
+
 class Booking(BaseModel):
     clinic_id: str
     telegram_id: int
@@ -76,9 +97,7 @@ class AdminChatReply(BaseModel):
     answer: str
 
 # --- AI AGENT HELPERS ---
-
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
-    """Logging Agent: Records AI reasoning into the database."""
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
     db.commit()
@@ -87,55 +106,130 @@ def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
     interval_str = interval_str.lower()
     try:
         amount = int(''.join(filter(str.isdigit, interval_str)))
-        if 'month' in interval_str:
-            return start_date + timedelta(days=30 * amount)
-        elif 'week' in interval_str:
-            return start_date + timedelta(weeks=amount)
-        elif 'year' in interval_str or 'annual' in interval_str:
-            return start_date + timedelta(days=365 * amount)
-        elif 'day' in interval_str:
-            return start_date + timedelta(days=amount)
-    except:
-        pass
+        if 'month' in interval_str: return start_date + timedelta(days=30 * amount)
+        elif 'week' in interval_str: return start_date + timedelta(weeks=amount)
+        elif 'year' in interval_str or 'annual' in interval_str: return start_date + timedelta(days=365 * amount)
+        elif 'day' in interval_str: return start_date + timedelta(days=amount)
+    except: pass
     return start_date + timedelta(days=30) 
 
-# --- ADMIN WEB DASHBOARD ENDPOINTS ---
-
-# Replace ONLY this function inside main.py
+# --- 1. DASHBOARD FIX (Manual Lookups to prevent SQLAlchemy Join Crashes) ---
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
-    stages = db.query(models.ApptStage, models.Appointment, models.Patient, models.Doctor).join(
-        models.Appointment, models.ApptStage.appointment_id == models.Appointment.id
-    ).join(
-        models.Patient, models.Appointment.patient_ic == models.Patient.ic_passport_number
-    ).outerjoin(
-        models.Doctor, models.Appointment.doctor_ic == models.Doctor.ic_passport_number
-    ).filter(models.Appointment.clinic_id == clinic_id).all()
+    try:
+        appointments = db.query(models.Appointment).filter(models.Appointment.clinic_id == clinic_id).all()
+        appt_ids = [a.id for a in appointments]
+        if not appt_ids: return []
+        
+        stages = db.query(models.ApptStage).filter(models.ApptStage.appointment_id.in_(appt_ids)).all()
+        
+        appt_dict = {a.id: a for a in appointments}
+        patient_ics = [a.patient_ic for a in appointments]
+        patients = db.query(models.Patient).filter(models.Patient.ic_passport_number.in_(patient_ics)).all()
+        patient_dict = {p.ic_passport_number: p for p in patients}
+        
+        doctor_ics = [a.doctor_ic for a in appointments if a.doctor_ic]
+        doctors = db.query(models.Doctor).filter(models.Doctor.ic_passport_number.in_(doctor_ics)).all()
+        doctor_dict = {d.ic_passport_number: d for d in doctors}
 
-    result = []
-    for stage, appt, patient, doctor in stages:
-        color = "#3B82F6" # Blue for single visit
-        if appt.appt_type == "multi-stage": color = "#A855F7" # Purple for multi-stage/vaccine
-        elif appt.appt_type == "follow-up": color = "#F97316" # Orange for follow-ups
+        result = []
+        for stage in stages:
+            appt = appt_dict.get(stage.appointment_id)
+            if not appt: continue
+            patient = patient_dict.get(appt.patient_ic)
+            doctor = doctor_dict.get(appt.doctor_ic) if appt.doctor_ic else None
 
-        result.append({
-            "id": str(stage.id),
-            "title": f"{patient.name} - {stage.stage_name}",
-            "start": stage.scheduled_time.isoformat(),
-            "end": (stage.scheduled_time + timedelta(minutes=30)).isoformat(),
-            "patient_ic": patient.ic_passport_number,
-            "doctor": doctor.name if doctor else "Unassigned",
-            "type": appt.appt_type,
-            "status": stage.status,
-            "color": color
-        })
-    return result
+            color = "#3B82F6" 
+            if appt.appt_type == "multi-stage": color = "#A855F7" 
+            elif appt.appt_type == "follow-up": color = "#F97316" 
 
+            result.append({
+                "id": str(stage.id),
+                "title": f"{patient.name if patient else 'Unknown'} - {stage.stage_name}",
+                "start": stage.scheduled_time.isoformat(),
+                "end": (stage.scheduled_time + timedelta(minutes=30)).isoformat(),
+                "patient_ic": patient.ic_passport_number if patient else "",
+                "doctor": doctor.name if doctor else "Unassigned",
+                "type": appt.appt_type,
+                "status": stage.status,
+                "color": color
+            })
+        return result
+    except Exception as e:
+        print(f"DASHBOARD CRASH PREVENTED: {e}")
+        return []
+
+# --- 2. PATIENT CRUD ---
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
-    """Fetches all registered patients for the Admin Dashboard."""
     return db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
 
+@app.put("/admin/patients/{ic}")
+def admin_update_patient(ic: str, data: PatientUpdate, db: Session = Depends(get_db)):
+    p = db.query(models.Patient).filter_by(ic_passport_number=ic).first()
+    if p:
+        p.name, p.phone, p.gender, p.nationality = data.name, data.phone, data.gender, data.nationality
+        db.commit()
+    return {"status": "success"}
+
+@app.delete("/admin/patients/{ic}")
+def admin_delete_patient(ic: str, db: Session = Depends(get_db)):
+    db.query(models.Patient).filter_by(ic_passport_number=ic).delete()
+    db.commit()
+    return {"status": "success"}
+
+# --- 3. VACCINE CRUD ---
+@app.post("/admin/vaccines")
+def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
+    v = models.Vaccine(name=data.name, type=data.type, total_doses=data.total_doses, has_booster=data.has_booster)
+    db.add(v)
+    db.commit()
+    db.refresh(v)
+    vc = models.VaccineClinic(vaccine_id=v.id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
+    db.add(vc)
+    db.commit()
+    return {"status": "success"}
+
+@app.put("/admin/vaccines/{v_id}")
+def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)):
+    v = db.query(models.Vaccine).filter_by(id=v_id).first()
+    if v:
+        v.name, v.type, v.total_doses, v.has_booster = data.name, data.type, data.total_doses, data.has_booster
+    vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
+    if vc: vc.price = data.price
+    db.commit()
+    return {"status": "success"}
+
+@app.delete("/admin/vaccines/{v_id}/{clinic_id}")
+def delete_vaccine(v_id: int, clinic_id: str, db: Session = Depends(get_db)):
+    db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=clinic_id).delete()
+    db.query(models.Vaccine).filter_by(id=v_id).delete()
+    db.commit()
+    return {"status": "success"}
+
+# --- 4. BLOOD TEST CRUD ---
+@app.post("/admin/blood-tests")
+def create_bt(data: BloodTestCreate, db: Session = Depends(get_db)):
+    bt = models.BloodTest(clinic_id=data.clinic_id, name=data.name, description=data.description, price=data.price, test_type=data.test_type)
+    db.add(bt)
+    db.commit()
+    return {"status": "success"}
+
+@app.put("/admin/blood-tests/{bt_id}")
+def update_bt(bt_id: int, data: BloodTestCreate, db: Session = Depends(get_db)):
+    bt = db.query(models.BloodTest).filter_by(id=bt_id).first()
+    if bt:
+        bt.name, bt.description, bt.price, bt.test_type = data.name, data.description, data.price, data.test_type
+        db.commit()
+    return {"status": "success"}
+
+@app.delete("/admin/blood-tests/{bt_id}")
+def delete_bt(bt_id: int, db: Session = Depends(get_db)):
+    db.query(models.BloodTest).filter_by(id=bt_id).delete()
+    db.commit()
+    return {"status": "success"}
+
+# --- 5. OTHER ADMIN ENDPOINTS ---
 @app.post("/admin/auto-replies")
 def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db)):
     new_msg = models.ChatMessage(
@@ -149,7 +243,8 @@ def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db))
     logging_agent(db, data.clinic_id, "Automated Message Updated", f"Admin added rule for: {data.question}")
     return {"status": "success"}
 
-# --- ENDPOINTS ---
+
+# --- 6. CORE BOT & DATA ENDPOINTS ---
 @app.post("/ai-extract")
 def ai_extract(req: TextExtractRequest):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -193,7 +288,7 @@ def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
         vaccines.append({
             "id": r.id, "name": r.name, "type": r.type,
             "total_doses": r.total_doses, "has_booster": r.has_booster,
-            "price": r.price
+            "price": float(r.price)
         })
     return vaccines
 
@@ -202,10 +297,7 @@ def get_blood_tests(clinic_id: str, test_type: str, db: Session = Depends(get_db
     tests = db.query(models.BloodTest).filter(models.BloodTest.clinic_id == clinic_id, models.BloodTest.test_type == test_type).all()
     results = []
     for t in tests:
-        t_dict = {
-            "id": t.id, "name": t.name, "price": t.price, 
-            "description": t.description, "test_type": t.test_type
-        }
+        t_dict = {"id": t.id, "name": t.name, "price": float(t.price), "description": t.description, "test_type": t.test_type}
         if test_type == "package":
             components = db.query(models.BloodTestComponent).filter(models.BloodTestComponent.package_id == t.id).all()
             included_names = []
@@ -291,8 +383,7 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
     
     if existing:
         for key, value in data_dict.items():
-            if hasattr(existing, key):
-                setattr(existing, key, value)
+            if hasattr(existing, key): setattr(existing, key, value)
         db.commit()
         return {"status": "updated"}
         
@@ -301,6 +392,7 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
+# --- 7. AVAILABILITY & SCHEDULING ENDPOINTS ---
 def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
     doc_query = db.query(models.Doctor).join(
         models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
@@ -344,7 +436,6 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
         slots = []
         for avail in availabilities:
             if not avail.start_time or not avail.end_time: continue
-            
             curr = datetime.combine(date_obj, avail.start_time)
             end_dt = datetime.combine(date_obj, avail.end_time)
             busy_times = clash_dict.get(doc.ic_passport_number, [])
@@ -423,7 +514,7 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
         return {"is_valid": True, "reason": "Slot available.", "doctor_id": str(chosen['doc'].ic_passport_number), "doctor_name": chosen['doc'].name, "suggestions": []}
     else:
         sugs = find_nearest_3_slots(date_obj)
-        return {"is_valid": False, "reason": "That exact time is unavailable for your preferred doctor(s) or the clinic is closed.", "suggestions": sugs}
+        return {"is_valid": False, "reason": "That exact time is unavailable.", "suggestions": sugs}
 
 @app.post("/book-appointment")
 def book_appointment(booking: Booking, db: Session = Depends(get_db)):
@@ -468,16 +559,11 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 current_calc_time = calculate_future_date(current_calc_time, interval)
 
             stage = models.ApptStage(
-                appointment_id=new_appt.id, 
-                stage_name=stage_name, 
-                scheduled_time=current_calc_time,
-                depends_on_stage_id=prev_stage_id
+                appointment_id=new_appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id
             )
             db.add(stage)
             db.flush()
             prev_stage_id = stage.id 
-            
-        logging_agent(db, booking.clinic_id, "Multi-stage Generated", f"Successfully generated sequence linked by depends_on_stage_id.")
     else:
         if booking.service_type == 'Blood Test':
             for t_name in booking.details.get('items', []):
@@ -485,8 +571,7 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
 
         stage = models.ApptStage(
-            appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), 
-            scheduled_time=start_time
+            appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time
         )
         db.add(stage)
 
@@ -529,9 +614,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         for t_name in items_list:
             bt = db.query(models.BloodTest).filter_by(name=t_name).first()
             if bt:
-                db.add(models.AppointmentBloodTest(
-                    appointment_id=appt.id, blood_test_id=bt.id
-                ))
+                db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
     
     new_stage = models.ApptStage(
         appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type),
