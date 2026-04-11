@@ -20,63 +20,159 @@ client = OpenAI(
     api_key='lm-studio', # API key is required by the library, but LM studio ignores it
 )
 
-# --- AI EXTRACTION LOGIC ---
+# --- 1. PYTHON DETERMINISTIC DATE CALCULATOR ---
+def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_time_str: str):
+    """
+    Takes the raw human text extracted by the LLM (e.g. "next monday", "19/4") 
+    and uses Python math to convert it perfectly to YYYY-MM-DD and HH:MM:SS.
+    """
+    now = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
+    final_date = None
+    final_time = None
+
+    # --- DATE CALCULATION ---
+    if raw_date_text:
+        dt_str = raw_date_text.lower().strip()
+        
+        # 1. Absolute YYYY-MM-DD
+        if re.match(r'\d{4}-\d{2}-\d{2}', dt_str):
+            final_date = dt_str
+            
+        # 2. Format: DD/MM/YYYY or DD/MM/YY or DD/MM (e.g., "19/4", "19/4/26")
+        elif match := re.search(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', dt_str):
+            d, m, y = match.groups()
+            if not y:
+                y = now.year
+                # If the month has already passed this year, assume they mean next year
+                if int(m) < now.month:
+                    y += 1
+            elif len(y) == 2:
+                y = int(y) + 2000
+            final_date = f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+            
+        # 3. Relative Days ("today", "tomorrow")
+        elif "today" in dt_str:
+            final_date = now.strftime("%Y-%m-%d")
+        elif "tomorrow" in dt_str:
+            final_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+            
+        # 4. "In X days" (e.g., "in 3 days")
+        elif match := re.search(r'in (\d+) day', dt_str):
+            days_ahead = int(match.group(1))
+            final_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+            
+        # 5. Days of week (e.g., "next monday", "friday")
+        else:
+            days_of_week = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+            for i, day in enumerate(days_of_week):
+                if day in dt_str:
+                    current_weekday = now.weekday()
+                    target_weekday = i
+                    days_ahead = target_weekday - current_weekday
+                    
+                    # If the day has passed this week, or they explicitly said "next"
+                    if days_ahead <= 0 or "next" in dt_str:
+                        days_ahead += 7
+                        
+                    final_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+                    break
+
+    # --- TIME CALCULATION ---
+    if raw_time_text:
+        tt_str = raw_time_text.lower().strip().replace('.', ':') # fixes 5.30pm -> 5:30pm
+        
+        # 1. Already perfect HH:MM:SS
+        if re.match(r'\d{2}:\d{2}:\d{2}', tt_str):
+            final_time = tt_str
+            
+        # 2. Convert 5pm, 5:30pm, 17:00
+        elif match := re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', tt_str):
+            h = int(match.group(1))
+            m = int(match.group(2) or 0)
+            ampm = match.group(3)
+            
+            if ampm == 'pm' and h < 12:
+                h += 12
+            elif ampm == 'am' and h == 12:
+                h = 0
+            final_time = f"{h:02d}:{m:02d}:00"
+
+    return final_date, final_time
+
+# --- 2. AI EXTRACTION LOGIC ---
+
+# Model for final output back to main.py
 class AppointmentExtraction(BaseModel):
-    intent: str = Field(description="Must be either 'booking' or 'reschedule'")
-    date_preference: Optional[str] = Field(description="Extracted date in strictly YYYY-MM-DD format, or null if missing.")
-    time_preference: Optional[str] = Field(description="Extracted time in strictly HH:MM:SS format (24-hour), or null if missing.")
-    doctor_preference: Optional[str] = Field(description="Name of the preferred doctor, or null if missing.")
-    reason: Optional[str] = Field(description="Extracted reason for visit or any free text details, or null.")
+    intent: str
+    date_preference: Optional[str]
+    time_preference: Optional[str]
+    doctor_preference: Optional[str]
+    reason: Optional[str]
 
 def extract_appointment_details(user_text: str, current_time_str: str):
     prompt = f"""
-    You are an AI Clinic Assistant extracting data. The current date and time is {current_time_str}. 
-    If the user uses relative terms like 'tomorrow' or 'next monday', calculate the exact YYYY-MM-DD date. 
-    Convert times like '5pm' into 17:00:00.
+    You are an AI Clinic Assistant. Read the user's text and extract the details.
+    
+    CRITICAL RULE:
+    Do NOT attempt to calculate dates or times. Extract the EXACT words the user wrote.
+    For example, if they say "next monday at 5pm", extract "next monday" and "5pm".
     
     User Text: "{user_text}"
 
-    Extract the information into strictly valid JSON format. Return ONLY the JSON object matching this structure:
+    Extract the information into strictly valid JSON format. Return ONLY the JSON object matching this exact structure:
     {{
-        "intent": "booking",
-        "date_preference": "YYYY-MM-DD",
-        "time_preference": "HH:MM:SS",
-        "doctor_preference": "Dr. Name",
-        "reason": "Extracted reason"
+        "intent": "booking", // Or "status", "reschedule", "question"
+        "raw_date_text": "extracted exact date words or null",
+        "raw_time_text": "extracted exact time words or null",
+        "doctor_preference": "Dr. Name or null",
+        "reason": "Extracted reason or null"
     }}
     """
 
     try:
         # Call LM Studio
         response = client.chat.completions.create(
-            model="local-model", # LM Studio will automatically use whatever model is currently loaded in the server tab
+            model="local-model", 
             messages=[
-                {"role": "system", "content": "You are a precise data extraction assistant. Always output strictly valid JSON without any markdown formatting."},
+                {"role": "system", "content": "You are a precise data extraction assistant. Extract exact words without altering them. Output strictly valid JSON."},
                 {"role": "user", "content": prompt}
             ],
-            response_format={ "type": "json_object" }, # Forces LM Studio to only output valid JSON
-            temperature=0.0 # Zero randomness for exact, deterministic extraction
+            temperature=0.0 # Zero randomness for exact extraction
         )
         
-        # Parse the JSON response
+        # Parse the JSON response securely (ignoring <think> tags from DeepSeek R1)
         raw_text = response.choices[0].message.content.strip()
-        
-        # Cleanup: Sometimes local models wrap JSON in markdown block quotes
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        
         if json_match:
-            parsed_data = json.loads(json_match.group(0))
+            llm_data = json.loads(json_match.group(0))
         else:
-            parsed_data = json.loads(raw_text)
+            llm_data = json.loads(raw_text)
             
-        # Validate against our strict Pydantic model
-        validated_data = AppointmentExtraction(**parsed_data)
-        return validated_data
+        # --- Python Math Intervention ---
+        # Pass the LLM's extracted raw words to our Python calculator
+        calculated_date, calculated_time = calculate_exact_datetime(
+            raw_date_text=llm_data.get("raw_date_text"),
+            raw_time_text=llm_data.get("raw_time_text"),
+            current_time_str=current_time_str
+        )
+        
+        # Format the final payload perfectly for main.py
+        final_data = AppointmentExtraction(
+            intent=llm_data.get("intent", "booking"),
+            date_preference=calculated_date,
+            time_preference=calculated_time,
+            doctor_preference=llm_data.get("doctor_preference"),
+            reason=llm_data.get("reason")
+        )
+        
+        return final_data
 
     except Exception as e:
         return {"error": f"LM Studio Request failed: {str(e)}. Make sure the Local Server is running in LM Studio."}
 
 
-# --- SCHEDULING AGENT LOGIC (LangGraph) ---
+# --- 3. SCHEDULING AGENT LOGIC (LangGraph) ---
 class AgentState(TypedDict):
     requested_time: str
     is_valid: bool
