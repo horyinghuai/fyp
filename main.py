@@ -101,6 +101,7 @@ def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
 
 # --- ADMIN WEB DASHBOARD ENDPOINTS ---
 
+# Replace ONLY this function inside main.py
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     stages = db.query(models.ApptStage, models.Appointment, models.Patient, models.Doctor).join(
@@ -113,9 +114,9 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
 
     result = []
     for stage, appt, patient, doctor in stages:
-        color = "#3788d8" 
-        if appt.appt_type == "multi-stage": color = "#28a745" 
-        elif appt.appt_type == "follow-up": color = "#fd7e14" 
+        color = "#3B82F6" # Blue for single visit
+        if appt.appt_type == "multi-stage": color = "#A855F7" # Purple for multi-stage/vaccine
+        elif appt.appt_type == "follow-up": color = "#F97316" # Orange for follow-ups
 
         result.append({
             "id": str(stage.id),

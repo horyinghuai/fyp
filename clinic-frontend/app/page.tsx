@@ -4,87 +4,81 @@ import { useState, useEffect } from 'react';
 import { Calendar, momentLocalizer } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
+import { X, User, Clock, Activity, Calendar as CalIcon } from 'lucide-react';
 
 const localizer = momentLocalizer(moment);
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
 
 export default function AdminDashboard() {
   const [events, setEvents] = useState<any[]>([]);
-  const [backendError, setBackendError] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [stats, setStats] = useState({ total: 0, vaccines: 0, followUp: 0 });
+  
+  // Modal State
+  const [selectedEvent, setSelectedEvent] = useState<any>(null);
 
   useEffect(() => {
-    fetchAppointments();
+    // FIX: Changed localhost to 127.0.0.1 to bypass Next.js IPv6 routing bug
+    fetch(`http://127.0.0.1:8000/admin/appointments/${CLINIC_ID}`)
+      .then(res => { if (!res.ok) throw new Error(); return res.json(); })
+      .then(data => {
+        let vacCount = 0, folCount = 0;
+        const formattedEvents = data.map((appt: any) => {
+          if (appt.type === "multi-stage") vacCount++;
+          if (appt.type === "follow-up") folCount++;
+          return { ...appt, start: new Date(appt.start), end: new Date(appt.end) };
+        });
+        setEvents(formattedEvents);
+        setStats({ total: formattedEvents.length, vaccines: vacCount, followUp: folCount });
+        setIsLoading(false);
+      })
+      .catch(() => { setError(true); setIsLoading(false); });
   }, []);
 
-  const fetchAppointments = async () => {
-    try {
-      const response = await fetch(`http://localhost:8000/admin/appointments/${CLINIC_ID}`);
-      if (!response.ok) throw new Error("Backend responded with an error");
-      
-      const data = await response.json();
-      
-      let vacCount = 0;
-      let folCount = 0;
-
-      const formattedEvents = data.map((appt: any) => {
-        if (appt.type === "multi-stage") vacCount++;
-        if (appt.type === "follow-up") folCount++;
-
-        return {
-          id: appt.id,
-          title: appt.title,
-          start: new Date(appt.start),
-          end: new Date(appt.end),
-          color: appt.color,
-          doctor: appt.doctor,
-          type: appt.type
-        };
-      });
-      
-      setEvents(formattedEvents);
-      setStats({ total: formattedEvents.length, vaccines: vacCount, followUp: folCount });
-      setBackendError(false);
-    } catch (error) {
-      console.error("Error fetching appointments:", error);
-      setBackendError(true);
-    }
-  };
-
   const eventStyleGetter = (event: any) => ({
-    style: { backgroundColor: event.color, borderRadius: '6px', color: 'white', border: 'none', padding: '2px 5px', fontSize: '0.85rem' }
+    style: { backgroundColor: event.color, borderRadius: '6px', border: 'none', padding: '4px', opacity: 0.9, fontSize: '0.8rem', fontWeight: 600 }
   });
 
+  if (isLoading) return (
+    <div className="animate-pulse space-y-6">
+      <div className="h-8 bg-slate-200 rounded w-1/4"></div>
+      <div className="grid grid-cols-3 gap-6"><div className="h-32 bg-slate-200 rounded-2xl"></div><div className="h-32 bg-slate-200 rounded-2xl"></div><div className="h-32 bg-slate-200 rounded-2xl"></div></div>
+      <div className="h-[60vh] bg-slate-200 rounded-2xl"></div>
+    </div>
+  );
+
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-      <div style={{ marginBottom: '30px' }}>
-        <h1 style={{ margin: '0 0 10px 0', color: '#1E293B', fontSize: '2rem' }}>Dashboard Overview</h1>
-        <p style={{ margin: 0, color: '#64748B' }}>Manage your clinic's daily appointments and resources.</p>
+    <div className="max-w-7xl mx-auto relative">
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-slate-800">Dashboard Overview</h1>
+        <p className="text-slate-500 mt-1">Manage today's schedule and monitor clinic load.</p>
       </div>
       
-      {backendError && (
-        <div style={{ backgroundColor: '#FEE2E2', color: '#B91C1C', padding: '15px 20px', borderRadius: '8px', marginBottom: '25px', borderLeft: '4px solid #EF4444' }}>
-          <strong>⚠️ Connection Error:</strong> Cannot connect to the database. Ensure FastAPI is running on port 8000.
+      {error && (
+        <div className="bg-red-50 border-l-4 border-red-500 text-red-700 p-4 rounded-xl mb-6 shadow-sm">
+          <strong>⚠️ Connection Error:</strong> Cannot connect to the database. Is FastAPI running on 127.0.0.1:8000?
         </div>
       )}
 
-      {/* METRIC CARDS */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px', marginBottom: '30px' }}>
-        <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', borderTop: '4px solid #3B82F6' }}>
-          <h3 style={{ margin: '0 0 10px 0', color: '#64748B', fontSize: '0.9rem', textTransform: 'uppercase' }}>Total Appointments</h3>
-          <p style={{ margin: 0, fontSize: '2.5rem', fontWeight: 'bold', color: '#1E293B' }}>{stats.total}</p>
+      {/* METRICS CARDS */}
+      <div className="grid grid-cols-3 gap-6 mb-8">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition">
+          <div className="flex items-center gap-4"><div className="p-3 bg-blue-100 text-blue-600 rounded-xl"><User size={24}/></div>
+          <div><p className="text-sm font-bold text-slate-400 uppercase tracking-wider">Total Appointments</p><h3 className="text-3xl font-black text-slate-800">{stats.total}</h3></div></div>
         </div>
-        <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', borderTop: '4px solid #10B981' }}>
-          <h3 style={{ margin: '0 0 10px 0', color: '#64748B', fontSize: '0.9rem', textTransform: 'uppercase' }}>Vaccine Stages</h3>
-          <p style={{ margin: 0, fontSize: '2.5rem', fontWeight: 'bold', color: '#1E293B' }}>{stats.vaccines}</p>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition">
+          <div className="flex items-center gap-4"><div className="p-3 bg-purple-100 text-purple-600 rounded-xl"><Activity size={24}/></div>
+          <div><p className="text-sm font-bold text-slate-400 uppercase tracking-wider">Vaccine Stages</p><h3 className="text-3xl font-black text-slate-800">{stats.vaccines}</h3></div></div>
         </div>
-        <div style={{ backgroundColor: 'white', padding: '20px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', borderTop: '4px solid #F59E0B' }}>
-          <h3 style={{ margin: '0 0 10px 0', color: '#64748B', fontSize: '0.9rem', textTransform: 'uppercase' }}>Follow-ups</h3>
-          <p style={{ margin: 0, fontSize: '2.5rem', fontWeight: 'bold', color: '#1E293B' }}>{stats.followUp}</p>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition">
+          <div className="flex items-center gap-4"><div className="p-3 bg-orange-100 text-orange-600 rounded-xl"><Clock size={24}/></div>
+          <div><p className="text-sm font-bold text-slate-400 uppercase tracking-wider">Follow-ups Pending</p><h3 className="text-3xl font-black text-slate-800">{stats.followUp}</h3></div></div>
         </div>
       </div>
 
-      <div style={{ height: '65vh', backgroundColor: 'white', padding: '20px', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
+      {/* CALENDAR */}
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-[65vh]">
         <Calendar
           localizer={localizer}
           events={events}
@@ -93,8 +87,34 @@ export default function AdminDashboard() {
           eventPropGetter={eventStyleGetter}
           views={['month', 'week', 'day']}
           defaultView="week"
+          onSelectEvent={(event) => setSelectedEvent(event)}
         />
       </div>
+
+      {/* INTERACTIVE EVENT MODAL */}
+      {selectedEvent && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-2xl w-[450px] overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="bg-slate-50 px-6 py-4 border-b border-slate-100 flex justify-between items-center">
+              <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><CalIcon size={18}/> Appointment Details</h3>
+              <button onClick={() => setSelectedEvent(null)} className="text-slate-400 hover:text-red-500 transition"><X size={20}/></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div><p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Patient Name</p><p className="font-semibold text-slate-800 text-lg">{selectedEvent.title.split(' - ')[0]}</p></div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Type</p>
+                  <span className="mt-1 inline-block px-3 py-1 bg-slate-100 rounded-full text-xs font-bold text-slate-600">{selectedEvent.type}</span></div>
+                <div><p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Assigned Doctor</p><p className="font-medium text-slate-700">{selectedEvent.doctor}</p></div>
+              </div>
+              <div><p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Schedule</p><p className="font-medium text-slate-700">{moment(selectedEvent.start).format("dddd, MMMM Do YYYY, h:mm a")}</p></div>
+            </div>
+            <div className="px-6 py-4 bg-slate-50 flex justify-end gap-3 border-t border-slate-100">
+              <button className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 font-medium hover:bg-slate-50 transition">Reschedule</button>
+              <button className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition shadow-md shadow-blue-200">View Patient</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

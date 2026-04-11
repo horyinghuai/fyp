@@ -1,67 +1,76 @@
 "use client";
 
 import { useState, useEffect } from 'react';
+import { Syringe, AlertCircle } from 'lucide-react';
 
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 
 export default function VaccinesPage() {
   const [vaccines, setVaccines] = useState<any[]>([]);
-  const [error, setError] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`http://localhost:8000/vaccines/${CLINIC_ID}`)
-      .then(res => {
-          if(!res.ok) throw new Error("Failed to fetch");
-          return res.json();
-      })
-      .then(data => { setVaccines(data); setError(false); })
-      .catch(err => { console.error(err); setError(true); });
+    fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`)
+      .then(res => res.json())
+      .then(data => { setVaccines(data); setIsLoading(false); })
+      .catch(() => setIsLoading(false));
   }, []);
 
-  return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-      <div style={{ marginBottom: '30px' }}>
-        <h1 style={{ margin: '0 0 10px 0', color: '#1E293B', fontSize: '2rem' }}>💉 Vaccine Inventory & AI Logic</h1>
-        <p style={{ margin: 0, color: '#64748B' }}>Configure vaccine parameters to allow the AI Agent to auto-schedule multi-stage appointments.</p>
-      </div>
-      
-      {error && <div style={{ color: '#EF4444', marginBottom: '15px' }}>Cannot connect to backend. Is FastAPI running?</div>}
+  // UI Component to draw the visual timeline
+  const DoseTimeline = ({ total }: { total: number }) => (
+    <div className="flex items-center mt-4">
+      {Array.from({ length: total }).map((_, i) => (
+        <div key={i} className="flex items-center">
+          <div className="flex flex-col items-center">
+            <div className="w-6 h-6 rounded-full bg-purple-100 border-2 border-purple-500 flex items-center justify-center text-[10px] font-bold text-purple-700">
+              {i + 1}
+            </div>
+            <span className="text-[10px] text-slate-400 mt-1 font-medium">Dose {i + 1}</span>
+          </div>
+          {i < total - 1 && <div className="w-12 h-0.5 bg-slate-200 mx-1 -mt-4"></div>}
+        </div>
+      ))}
+    </div>
+  );
 
-      <div style={{ backgroundColor: 'white', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-          <thead style={{ backgroundColor: '#F8FAFC', borderBottom: '2px solid #E2E8F0' }}>
-            <tr>
-              <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600' }}>Vaccine Name</th>
-              <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600', textAlign: 'center' }}>Total Doses</th>
-              <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600' }}>Price</th>
-              <th style={{ padding: '16px 20px', color: '#475569', fontWeight: '600', textAlign: 'center' }}>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {vaccines.map((v, index) => (
-              <tr key={v.id} style={{ borderBottom: '1px solid #F1F5F9', backgroundColor: index % 2 === 0 ? '#FFFFFF' : '#FAFAFA' }}>
-                <td style={{ padding: '16px 20px' }}>
-                  <div style={{ fontWeight: 'bold', color: '#1E293B', fontSize: '1.1rem', marginBottom: '4px' }}>{v.name}</div>
-                  <span style={{ fontSize: '0.8rem', color: '#64748B' }}>Type: {v.type}</span>
-                  {v.has_booster && (
-                    <span style={{ marginLeft: '10px', fontSize: '0.75rem', backgroundColor: '#FEF3C7', color: '#D97706', padding: '2px 8px', borderRadius: '12px', fontWeight: 'bold' }}>⭐ Requires Booster</span>
-                  )}
-                </td>
-                <td style={{ padding: '16px 20px', textAlign: 'center' }}>
-                  <div style={{ display: 'inline-block', backgroundColor: '#E0F2FE', color: '#2563EB', fontWeight: 'bold', padding: '8px 16px', borderRadius: '8px' }}>
-                    {v.total_doses} Stage{v.total_doses > 1 ? 's' : ''}
-                  </div>
-                </td>
-                <td style={{ padding: '16px 20px', color: '#10B981', fontWeight: 'bold', fontSize: '1.1rem' }}>RM {v.price}</td>
-                <td style={{ padding: '16px 20px', textAlign: 'center' }}>
-                  <button style={{ padding: '8px 16px', backgroundColor: '#3B82F6', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', transition: 'background 0.2s' }}>
-                    Configure AI Logic
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+  if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
+
+  return (
+    <div className="max-w-7xl mx-auto">
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-slate-800">Vaccine Inventory & AI Rules</h1>
+        <p className="text-slate-500 mt-1">Configure parameters for the AI Agent to automate multi-stage scheduling.</p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-6">
+        {vaccines.map((v) => (
+          <div key={v.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 hover:shadow-md transition-shadow group relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-1 h-full bg-purple-500"></div>
+            
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Syringe size={20} className="text-purple-500"/> {v.name}</h3>
+                <span className="inline-block mt-2 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-semibold">{v.type}</span>
+                {v.has_booster && <span className="inline-block mt-2 ml-2 px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-bold">⭐ Booster Stage</span>}
+              </div>
+              <div className="text-right">
+                <span className="text-2xl font-black text-emerald-500">RM {v.price}</span>
+              </div>
+            </div>
+
+            {/* VISUAL TIMELINE */}
+            <div className="mt-6 p-4 bg-slate-50 rounded-xl border border-slate-100">
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">AI Scheduling Sequence</p>
+              <DoseTimeline total={v.total_doses} />
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button className="px-5 py-2.5 bg-white border-2 border-purple-100 text-purple-600 rounded-xl font-semibold hover:bg-purple-50 transition">
+                Configure AI Logic
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
