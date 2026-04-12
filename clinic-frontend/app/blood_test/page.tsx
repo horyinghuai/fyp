@@ -12,58 +12,98 @@ export default function BloodTestsPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingBt, setEditingBt] = useState<any>(null);
   
-  const [formData, setFormData] = useState<{name: string, description: string, price: number, test_type: string, component_ids: number[]}>({ 
-    name: '', description: '', price: 0, test_type: 'single', component_ids: [] 
+  const [formData, setFormData] = useState<{name: string, description: string, price: number | string, test_type: string, component_ids: number[]}>({ 
+    name: '', description: '', price: '', test_type: 'single', component_ids: [] 
   });
 
   useEffect(() => { loadData(); }, []);
 
   const loadData = async () => {
     try {
-      const [pkgRes, sglRes] = await Promise.all([ fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`), fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`) ]);
-      setPackages(await pkgRes.json()); setSingles(await sglRes.json());
+      const [pkgRes, sglRes] = await Promise.all([
+        fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`),
+        fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`)
+      ]);
+      setPackages(await pkgRes.json());
+      setSingles(await sglRes.json());
       setIsLoading(false);
-    } catch (e) { setIsLoading(false); }
+    } catch (e) {
+      setIsLoading(false);
+    }
   };
 
   const handleSave = async (e: any) => {
     e.preventDefault();
-    if (!formData.name || !formData.price) { alert("Name and Price are required!"); return; }
+    if (!formData.name.trim()) {
+      alert("Test/Package Name is required!");
+      return;
+    }
+    const priceNum = parseFloat(String(formData.price));
+    if (isNaN(priceNum) || priceNum <= 0) {
+      alert("Please enter a valid price (RM) greater than 0.");
+      return;
+    }
 
-    // FIXED Payload Mapping to prevent 400 Bad Request
+    // Build payload exactly matching BloodTestCreate Pydantic model
     const payload = {
-        clinic_id: CLINIC_ID,
-        name: formData.name,
-        description: formData.description || null, // Force null if empty string
-        price: Number(formData.price) || 0, // Force pure JS Number
-        test_type: formData.test_type,
-        component_ids: formData.component_ids.map(Number) // Enforce Array of Integers
+      clinic_id: CLINIC_ID,
+      name: formData.name.trim(),
+      description: formData.description.trim() === '' ? null : formData.description.trim(),
+      price: priceNum,
+      test_type: formData.test_type,
+      component_ids: formData.component_ids.map(Number)  // ensure array of integers
     };
 
     try {
-        const isEditing = !!editingBt;
-        const url = isEditing ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` : `http://127.0.0.1:8000/admin/blood-tests`;
-        const res = await fetch(url, { 
-            method: isEditing ? 'PUT' : 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify(payload) 
-        });
-        
-        if (!res.ok) throw new Error("Failed to save.");
-        setShowModal(false); loadData();
-    } catch (err) {
-        alert("Failed to save. Ensure FastAPI is running and data matches database format.");
+      const isEditing = !!editingBt;
+      const url = isEditing 
+        ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` 
+        : `http://127.0.0.1:8000/admin/blood-tests`;
+      
+      const res = await fetch(url, {
+        method: isEditing ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ detail: 'Unknown server error' }));
+        throw new Error(errorData.detail || `Request failed with status ${res.status}`);
+      }
+
+      setShowModal(false);
+      loadData();
+    } catch (err: any) {
+      alert(`Failed to save: ${err.message}`);
     }
   };
 
   const handleDelete = async (id: number) => {
-    if(confirm("Delete this Blood Test?")) { await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { method: 'DELETE' }); loadData(); }
+    if (confirm("Delete this Blood Test? This cannot be undone.")) {
+      await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { method: 'DELETE' });
+      loadData();
+    }
   };
 
   const openModal = (bt: any = null) => {
     setEditingBt(bt);
-    if(bt) setFormData({ name: bt.name, description: bt.description, price: bt.price, test_type: bt.test_type, component_ids: bt.component_ids || [] });
-    else setFormData({ name: '', description: '', price: 0, test_type: 'single', component_ids: [] });
+    if (bt) {
+      setFormData({
+        name: bt.name,
+        description: bt.description || '',
+        price: bt.price,
+        test_type: bt.test_type,
+        component_ids: bt.component_ids || []
+      });
+    } else {
+      setFormData({
+        name: '',
+        description: '',
+        price: '',
+        test_type: 'single',
+        component_ids: []
+      });
+    }
     setShowModal(true);
   };
 
@@ -73,9 +113,12 @@ export default function BloodTestsPage() {
     <div className="max-w-7xl mx-auto">
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold text-slate-800">🩸 Blood Test Services</h1>
-        <button onClick={() => openModal()} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold">+ Add Blood Test</button>
+        <button onClick={() => openModal()} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold shadow-md hover:bg-emerald-700">
+          + Add Blood Test
+        </button>
       </div>
 
+      {/* Packages Section */}
       <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">1. Packages</h2>
       <div className="grid grid-cols-2 gap-4 mb-12">
         {packages.map(p => (
@@ -91,42 +134,57 @@ export default function BloodTestsPage() {
               </div>
             </div>
             <label className="block text-xs font-bold text-slate-400 uppercase mt-2">Description</label>
-            <p className="text-sm text-slate-700 mb-4">{p.description}</p>
+            <p className="text-sm text-slate-700 mb-4">{p.description || "N/A"}</p>
             
             <div className="mt-auto">
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Included Tests ({p.included_tests?.length || 0})</label>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                Included Tests ({p.included_tests?.length || 0})
+              </label>
               <div className="flex flex-wrap gap-2 mb-4">
-                {p.included_tests?.map((t: string, i: number) => <span key={i} className="bg-slate-100 text-xs px-2 py-1 rounded text-slate-600 font-medium border border-slate-200">{t}</span>)}
+                {p.included_tests?.map((t: string, i: number) => (
+                  <span key={i} className="bg-slate-100 text-xs px-2 py-1 rounded text-slate-600 font-medium border border-slate-200">
+                    {t}
+                  </span>
+                ))}
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t pt-4">
-              <button onClick={() => openModal(p)} className="text-sm px-4 py-2 bg-slate-100 rounded-lg font-medium">Edit Package</button>
-              <button onClick={() => handleDelete(p.id)} className="text-sm px-4 py-2 bg-red-50 text-red-600 rounded-lg font-medium">Delete</button>
+              <button onClick={() => openModal(p)} className="text-sm px-4 py-2 bg-slate-100 rounded-lg font-medium">
+                Edit Package
+              </button>
+              <button onClick={() => handleDelete(p.id)} className="text-sm px-4 py-2 bg-red-50 text-red-600 rounded-lg font-medium">
+                Delete
+              </button>
             </div>
           </div>
         ))}
       </div>
 
+      {/* Single Tests Section */}
       <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">2. Standalone Single Tests</h2>
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden mb-12">
         <table className="w-full text-left border-collapse">
           <thead className="bg-slate-50 border-b border-slate-200">
-             <tr>
-               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Test Name</th>
-               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Description</th>
-               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Price</th>
-               <th className="p-4 text-slate-600 font-semibold text-center text-sm uppercase">Actions</th>
-             </tr>
+            <tr>
+              <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Test Name</th>
+              <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Description</th>
+              <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Price</th>
+              <th className="p-4 text-slate-600 font-semibold text-center text-sm uppercase">Actions</th>
+            </tr>
           </thead>
           <tbody>
             {singles.map((s, i) => (
               <tr key={s.id} className={`border-b border-slate-50 hover:bg-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                 <td className="p-4 font-bold text-slate-800">{s.name}</td>
-                <td className="p-4 text-sm text-slate-500">{s.description}</td>
+                <td className="p-4 text-sm text-slate-500">{s.description || "N/A"}</td>
                 <td className="p-4 font-bold text-emerald-600">RM {s.price}</td>
                 <td className="p-4 text-center space-x-2">
-                  <button onClick={() => openModal(s)} className="text-sm px-3 py-1 bg-slate-100 text-slate-600 rounded font-medium">Edit</button>
-                  <button onClick={() => handleDelete(s.id)} className="text-sm px-3 py-1 bg-red-50 text-red-600 rounded font-medium">Delete</button>
+                  <button onClick={() => openModal(s)} className="text-sm px-3 py-1 bg-slate-100 text-slate-600 rounded font-medium">
+                    Edit
+                  </button>
+                  <button onClick={() => handleDelete(s.id)} className="text-sm px-3 py-1 bg-red-50 text-red-600 rounded font-medium">
+                    Delete
+                  </button>
                 </td>
               </tr>
             ))}
@@ -134,27 +192,54 @@ export default function BloodTestsPage() {
         </table>
       </div>
 
+      {/* Modal for Add/Edit */}
       {showModal && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
-            <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingBt ? 'Modify Test / Package' : 'Add New Record'}</h3>
+          <div className="bg-white p-6 rounded-2xl w-[500px] shadow-2xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-xl font-bold mb-4 border-b pb-2">
+              {editingBt ? 'Modify Test / Package' : 'Add New Record'}
+            </h3>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Test Name</label>
-                <input type="text" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
+                <label className="block text-sm font-bold text-slate-700 mb-1">Test / Package Name *</label>
+                <input
+                  type="text"
+                  value={formData.name}
+                  onChange={e => setFormData({...formData, name: e.target.value})}
+                  className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
+                  placeholder="e.g., Complete Blood Count"
+                />
               </div>
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Short Description</label>
-                <input type="text" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
+                <label className="block text-sm font-bold text-slate-700 mb-1">Short Description (Optional)</label>
+                <input
+                  type="text"
+                  value={formData.description}
+                  onChange={e => setFormData({...formData, description: e.target.value})}
+                  className="w-full p-3 border rounded-lg outline-none"
+                  placeholder="Brief description"
+                />
               </div>
               <div className="flex gap-4">
                 <div className="flex-1">
-                  <label className="block text-sm font-bold text-slate-700 mb-1">Price (RM)</label>
-                  <input type="number" value={formData.price || ''} onChange={e => setFormData({...formData, price: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg outline-none" />
+                  <label className="block text-sm font-bold text-slate-700 mb-1">Price (RM) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={formData.price}
+                    onChange={e => setFormData({...formData, price: e.target.value})}
+                    className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="0.00"
+                  />
                 </div>
                 <div className="flex-1">
-                  <label className="block text-sm font-bold text-slate-700 mb-1">Type</label>
-                  <select value={formData.test_type} onChange={e => setFormData({...formData, test_type: e.target.value})} className="w-full p-3 border rounded-lg outline-none bg-white">
+                  <label className="block text-sm font-bold text-slate-700 mb-1">Service Type</label>
+                  <select
+                    value={formData.test_type}
+                    onChange={e => setFormData({...formData, test_type: e.target.value, component_ids: []})}
+                    className="w-full p-3 border rounded-lg outline-none bg-white"
+                  >
                     <option value="single">Single Test</option>
                     <option value="package">Package Collection</option>
                   </select>
@@ -164,28 +249,38 @@ export default function BloodTestsPage() {
               {formData.test_type === 'package' && (
                 <div className="mt-4">
                   <label className="block text-sm font-bold text-slate-700 mb-2">Select Included Single Tests</label>
-                  <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
+                  <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
                     {singles.map(s => (
-                      <label key={s.id} className="flex items-center gap-3 cursor-pointer bg-white p-2 rounded border border-slate-100 shadow-sm">
+                      <label key={s.id} className="flex items-center gap-3 cursor-pointer bg-white p-2 rounded border border-slate-100 shadow-sm hover:bg-slate-50">
                         <input 
                           type="checkbox" 
                           className="w-4 h-4 accent-emerald-600"
                           checked={formData.component_ids.includes(s.id)}
                           onChange={(e) => {
-                            if(e.target.checked) setFormData({...formData, component_ids: [...formData.component_ids, s.id]});
-                            else setFormData({...formData, component_ids: formData.component_ids.filter(id => id !== s.id)});
+                            if (e.target.checked) {
+                              setFormData({...formData, component_ids: [...formData.component_ids, s.id]});
+                            } else {
+                              setFormData({...formData, component_ids: formData.component_ids.filter(id => id !== s.id)});
+                            }
                           }}
                         />
                         <span className="text-sm font-medium text-slate-700">{s.name}</span>
                       </label>
                     ))}
                   </div>
+                  {singles.length === 0 && (
+                    <p className="text-sm text-amber-600 mt-2">No single tests available. Add some single tests first.</p>
+                  )}
                 </div>
               )}
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded-lg font-medium">Cancel</button>
-              <button onClick={handleSave} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium">Save Data</button>
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded-lg font-medium hover:bg-slate-200">
+                Cancel
+              </button>
+              <button onClick={handleSave} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700">
+                Save Data
+              </button>
             </div>
           </div>
         </div>

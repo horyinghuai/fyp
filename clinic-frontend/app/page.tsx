@@ -12,31 +12,38 @@ const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 export default function AdminDashboard() {
   const [events, setEvents] = useState<any[]>([]);
   const [doctors, setDoctors] = useState<any[]>([]);
+  const [patients, setPatients] = useState<any[]>([]);
   const [vaccinesList, setVaccinesList] = useState<any[]>([]);
   const [bloodTestsList, setBloodTestsList] = useState<any[]>([]);
+  
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
   const [stats, setStats] = useState({ total: 0, vaccines: 0, bloodTests: 0 });
   
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
+  const [isNewBooking, setIsNewBooking] = useState(false);
   
   const [editForm, setEditForm] = useState({
-    status: '', scheduled_time: '', doctor_ic: '',
+    status: 'scheduled', scheduled_time: '', doctor_ic: '', patient_ic: '',
     service: 'Consultation', items: [] as string[], dose: 'Single Dose', reason: ''
   });
 
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [currentView, setCurrentView] = useState<any>('week'); // Month, Week, Day Fix
+  const [currentView, setCurrentView] = useState<any>('week'); 
 
   useEffect(() => { 
     loadAppointments();
     loadDoctors(); 
+    loadPatients();
     loadServices();
   }, []);
 
   const loadDoctors = () => {
     fetch(`http://127.0.0.1:8000/doctors/${CLINIC_ID}`).then(res => res.json()).then(data => setDoctors(data));
+  };
+  const loadPatients = () => {
+    fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`).then(res => res.json()).then(data => setPatients(data));
   };
 
   const loadServices = async () => {
@@ -87,27 +94,32 @@ export default function AdminDashboard() {
       .catch(() => { setError(true); setIsLoading(false); });
   };
 
-  const handleUpdateEvent = async () => {
-    const payload = {
-        appt_id: selectedEvent.appt_id,
-        service_type: editForm.service,
-        details: {
-            items: editForm.items,
-            dose: editForm.dose,
-            total_doses: 1, 
-            assigned_doctor_id: editForm.doctor_ic,
-            reason: editForm.reason
-        },
-        scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss"),
-        status: editForm.status
-    };
-
-    await fetch(`http://127.0.0.1:8000/update-appointment`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
-    
+  const handleUpdateOrAddEvent = async () => {
+    if(isNewBooking) {
+        if(!editForm.patient_ic) return alert("Please select a patient.");
+        const payload = {
+            clinic_id: CLINIC_ID, telegram_id: 0, ic_passport_number: editForm.patient_ic,
+            service_type: editForm.service,
+            details: {
+                items: editForm.items, dose: editForm.dose, reason: editForm.reason, assigned_doctor_id: editForm.doctor_ic
+            },
+            scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss")
+        };
+        await fetch(`http://127.0.0.1:8000/book-appointment`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+    } else {
+        const payload = {
+            appt_id: selectedEvent.appt_id, service_type: editForm.service,
+            details: {
+                items: editForm.items, dose: editForm.dose, total_doses: 1, assigned_doctor_id: editForm.doctor_ic, reason: editForm.reason
+            },
+            scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss"), status: editForm.status
+        };
+        await fetch(`http://127.0.0.1:8000/update-appointment`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+    }
     window.location.reload(); 
   };
 
@@ -123,13 +135,49 @@ export default function AdminDashboard() {
       status: event.status || 'scheduled',
       scheduled_time: moment(event.start).format("YYYY-MM-DDTHH:mm"),
       doctor_ic: event.doctor_ic || '',
+      patient_ic: event.patient_ic || '',
       service: event.service || 'Consultation',
       items: event.items || [],
       dose: event.dose || 'Single Dose',
       reason: event.reason || ''
     });
     setIsEditingEvent(false);
+    setIsNewBooking(false);
   };
+
+  const openNewBookingModal = () => {
+    setEditForm({
+      status: 'scheduled',
+      scheduled_time: moment().format("YYYY-MM-DDTHH:mm"),
+      doctor_ic: '', patient_ic: '', service: 'Consultation', items: [], dose: 'Single Dose', reason: ''
+    });
+    setSelectedEvent(null);
+    setIsEditingEvent(true);
+    setIsNewBooking(true);
+  };
+
+  // --- Dynamic Groupings (Explicit typings added to fix TS errors) ---
+  const groupedVaccines = vaccinesList.reduce((acc: any, v: any) => {
+    const type = v.type || "Other";
+    if (!acc[type]) acc[type] = [];
+    acc[type].push(v); return acc;
+  }, {} as Record<string, any[]>);
+
+  const selectedVac = vaccinesList.find((v: any) => v.name === editForm.items[0]);
+  let doseOptions: string[] = [];
+  if (selectedVac) {
+      if (selectedVac.total_doses === 1) doseOptions.push("Single Dose");
+      else { for(let i=1; i<=selectedVac.total_doses; i++) doseOptions.push(`Dose ${i}`); }
+      if (selectedVac.has_booster) doseOptions.push("Booster");
+  }
+
+  const pkgs = bloodTestsList.filter((b: any) => b.test_type === 'package');
+  const sgls = bloodTestsList.filter((b: any) => b.test_type === 'single');
+  const selectedPkgs = pkgs.filter((p: any) => editForm.items.includes(p.name));
+  const includedTestNames = new Set<string>();
+  selectedPkgs.forEach((p: any) => {
+      if (p.included_tests) p.included_tests.forEach((t: string) => includedTestNames.add(t));
+  });
 
   const eventStyleGetter = (event: any) => ({
     style: { backgroundColor: event.color || '#3B82F6', borderRadius: '6px', border: 'none', padding: '4px', opacity: 0.9, fontSize: '0.8rem', fontWeight: 600, color: 'white' }
@@ -145,23 +193,24 @@ export default function AdminDashboard() {
             <p className="text-slate-500 mt-1">Manage today's schedule and monitor clinic load.</p>
         </div>
         
-        {/* YEAR SELECTION FIX */}
-        <div className="flex items-center gap-3">
-            <span className="font-bold text-slate-500">YEAR:</span>
-            <select 
-                value={currentDate.getFullYear()} 
-                onChange={(e) => {
-                    const newDate = new Date(currentDate);
-                    newDate.setFullYear(parseInt(e.target.value));
-                    setCurrentDate(newDate);
-                }}
-                className="bg-slate-900 text-white px-4 py-2 rounded-xl font-bold text-lg shadow-lg outline-none cursor-pointer"
-            >
-                <option value="2025">2025</option>
-                <option value="2026">2026</option>
-                <option value="2027">2027</option>
-                <option value="2028">2028</option>
-            </select>
+        <div className="flex items-center gap-4">
+            <button onClick={openNewBookingModal} className="bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-emerald-700">
+              + New Booking
+            </button>
+            <div className="flex items-center gap-2 bg-slate-900 rounded-xl px-4 py-2 shadow-lg">
+                <span className="font-bold text-slate-400 text-sm">YEAR</span>
+                <select 
+                    value={currentDate.getFullYear()} 
+                    onChange={(e) => {
+                        const newDate = new Date(currentDate);
+                        newDate.setFullYear(parseInt(e.target.value));
+                        setCurrentDate(newDate);
+                    }}
+                    className="bg-transparent text-white font-bold text-lg outline-none cursor-pointer"
+                >
+                    <option value="2025">2025</option><option value="2026">2026</option><option value="2027">2027</option>
+                </select>
+            </div>
         </div>
       </div>
       
@@ -198,22 +247,29 @@ export default function AdminDashboard() {
         />
       </div>
 
-      {selectedEvent && (
+      {(selectedEvent || isNewBooking) && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-[500px] overflow-hidden max-h-[90vh] overflow-y-auto">
             <div className="bg-slate-50 px-6 py-4 border-b flex justify-between items-center">
-              <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><CalIcon size={18}/> Booking Details</h3>
-              <button onClick={() => setSelectedEvent(null)} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
+              <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><CalIcon size={18}/> {isNewBooking ? "Add New Booking" : "Booking Details"}</h3>
+              <button onClick={() => { setSelectedEvent(null); setIsNewBooking(false); }} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
             </div>
 
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Patient Name</label>
-                <p className="font-semibold text-lg">{selectedEvent?.title ? selectedEvent.title.split(' - ')[0] : 'Unknown Patient'}</p>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Patient</label>
+                {isNewBooking ? (
+                    <select value={editForm.patient_ic} onChange={e => setEditForm({...editForm, patient_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
+                        <option value="">Select a Registered Patient</option>
+                        {patients.map((p: any) => <option key={p.ic_passport_number} value={p.ic_passport_number}>{p.name} ({p.ic_passport_number})</option>)}
+                    </select>
+                ) : (
+                    <p className="font-semibold text-lg">{selectedEvent?.title ? selectedEvent.title.split(' - ')[0] : 'Unknown Patient'}</p>
+                )}
               </div>
 
               {isEditingEvent ? (
-                <div className="space-y-4">
+                <div className="space-y-4 border-t pt-4">
                   <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Schedule Date & Time</label>
@@ -223,19 +279,21 @@ export default function AdminDashboard() {
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assign Doctor</label>
                         <select value={editForm.doctor_ic} onChange={(e) => setEditForm({...editForm, doctor_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
                           <option value="">Any / Unassigned</option>
-                          {doctors.map(d => <option key={d.ic_passport_number} value={d.ic_passport_number}>{d.name}</option>)}
+                          {doctors.map((d: any) => <option key={d.ic_passport_number} value={d.ic_passport_number}>{d.name}</option>)}
                         </select>
                       </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Booking Status</label>
-                        <select value={editForm.status} onChange={(e) => setEditForm({...editForm, status: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          <option value="scheduled">Scheduled</option><option value="completed">Completed</option><option value="canceled">Canceled</option>
-                        </select>
-                      </div>
-                      <div>
+                      {!isNewBooking && (
+                        <div>
+                            <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Booking Status</label>
+                            <select value={editForm.status} onChange={(e) => setEditForm({...editForm, status: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
+                            <option value="scheduled">Scheduled</option><option value="completed">Completed</option><option value="canceled">Canceled</option>
+                            </select>
+                        </div>
+                      )}
+                      <div className={isNewBooking ? "col-span-2" : ""}>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
                         <select value={editForm.service} onChange={(e) => setEditForm({...editForm, service: e.target.value, items: []})} className="w-full p-2 border rounded-lg bg-white outline-none">
                           <option value="Consultation">Consultation</option><option value="Vaccine">Vaccine</option><option value="Blood Test">Blood Test</option>
@@ -249,15 +307,25 @@ export default function AdminDashboard() {
                         <div className="grid grid-cols-2 gap-4">
                           <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Vaccine Name</label>
-                            <select value={editForm.items[0] || ''} onChange={e => setEditForm({...editForm, items: [e.target.value]})} className="w-full p-2 border rounded-lg bg-white outline-none">
+                            <select value={editForm.items[0] || ''} onChange={e => {
+                                const val = e.target.value;
+                                const vac = vaccinesList.find((v: any) => v.name === val);
+                                let defaultDose = 'Single Dose';
+                                if(vac && vac.total_doses > 1) defaultDose = 'Dose 1';
+                                setEditForm({...editForm, items: [val], dose: defaultDose});
+                            }} className="w-full p-2 border rounded-lg bg-white outline-none">
                               <option value="">Select Vaccine</option>
-                              {vaccinesList.map(v => <option key={v.id} value={v.name}>{v.name}</option>)}
+                              {Object.keys(groupedVaccines).map(type => (
+                                  <optgroup key={type} label={type}>
+                                      {groupedVaccines[type].map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
+                                  </optgroup>
+                              ))}
                             </select>
                           </div>
                           <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Dose Sequence</label>
                             <select value={editForm.dose} onChange={e => setEditForm({...editForm, dose: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                              <option value="Single Dose">Single Dose</option><option value="Dose 1">Dose 1</option><option value="Dose 2">Dose 2</option><option value="Booster">Booster</option>
+                                {doseOptions.map(d => <option key={d} value={d}>{d}</option>)}
                             </select>
                           </div>
                         </div>
@@ -265,9 +333,9 @@ export default function AdminDashboard() {
 
                       {editForm.service === 'Blood Test' && (
                         <div>
-                          <label className="block text-xs font-bold text-slate-500 mb-2">Select Blood Tests</label>
-                          <div className="max-h-32 overflow-y-auto space-y-2 pr-2">
-                             {bloodTestsList.map(bt => (
+                          <label className="block text-xs font-bold text-slate-500 mb-2">1. Packages</label>
+                          <div className="grid grid-cols-2 gap-2 mb-4">
+                             {pkgs.map((bt: any) => (
                                 <label key={bt.id} className="flex items-center gap-2 bg-white p-2 rounded border text-sm cursor-pointer hover:bg-slate-50">
                                   <input type="checkbox" className="w-4 h-4 accent-blue-600" checked={editForm.items.includes(bt.name)} 
                                      onChange={e => {
@@ -277,6 +345,24 @@ export default function AdminDashboard() {
                                   /> {bt.name}
                                 </label>
                              ))}
+                          </div>
+                          
+                          <label className="block text-xs font-bold text-slate-500 mb-2">2. Single Tests</label>
+                          <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
+                             {sgls.map((bt: any) => {
+                                const isIncluded = includedTestNames.has(bt.name);
+                                return (
+                                    <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${isIncluded ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
+                                      <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={isIncluded} checked={isIncluded || editForm.items.includes(bt.name)} 
+                                         onChange={e => {
+                                            if(isIncluded) return;
+                                            const newItems = e.target.checked ? [...editForm.items, bt.name] : editForm.items.filter(i => i !== bt.name);
+                                            setEditForm({...editForm, items: newItems});
+                                         }}
+                                      /> {bt.name} {isIncluded && <span className="text-[10px] text-blue-500 font-bold ml-auto">(In Pkg)</span>}
+                                    </label>
+                                );
+                             })}
                           </div>
                         </div>
                       )}
@@ -316,7 +402,7 @@ export default function AdminDashboard() {
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Status</label>
-                      <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold capitalize ${selectedEvent.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : selectedEvent.status === 'canceled' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{selectedEvent.status}</span>
+                      <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold capitalize ${selectedEvent?.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : selectedEvent?.status === 'canceled' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{selectedEvent?.status}</span>
                     </div>
                   </div>
                 </>
@@ -325,13 +411,16 @@ export default function AdminDashboard() {
 
             <div className="px-6 py-4 bg-slate-50 flex justify-between gap-3 border-t border-slate-100">
               {isEditingEvent ? (
-                 <button onClick={() => setIsEditingEvent(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel Edit</button>
+                 <button onClick={() => {
+                    if(isNewBooking) { setSelectedEvent(null); setIsNewBooking(false); }
+                    else setIsEditingEvent(false);
+                 }} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel Edit</button>
               ) : (
                  <button onClick={handleCancelBooking} className="px-4 py-2 bg-red-100 text-red-600 rounded-lg font-medium hover:bg-red-200 transition-colors">Cancel Booking</button>
               )}
               
               {isEditingEvent ? (
-                <button onClick={handleUpdateEvent} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium">Save Changes</button>
+                <button onClick={handleUpdateOrAddEvent} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium">{isNewBooking ? "Create Booking" : "Save Changes"}</button>
               ) : (
                 <button onClick={() => setIsEditingEvent(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium">Modify Booking</button>
               )}

@@ -56,7 +56,7 @@ class BloodTestCreate(BaseModel):
 
 class Booking(BaseModel):
     clinic_id: str
-    telegram_id: int
+    telegram_id: Optional[int] = 0
     ic_passport_number: str 
     service_type: str
     details: Dict[str, Any]
@@ -67,7 +67,7 @@ class UpdateBooking(BaseModel):
     service_type: str
     details: Dict[str, Any]
     scheduled_time: str
-    status: Optional[str] = "scheduled" # Added to preserve status during updates
+    status: Optional[str] = "scheduled"
 
 class ChatMessageModel(BaseModel):
     clinic_id: str
@@ -222,6 +222,12 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
         dt_str = data['scheduled_time'].replace("T", " ")
         if len(dt_str) == 16: dt_str += ":00"
         stage.scheduled_time = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+        
+    if 'doctor_ic' in data:
+        appt = db.query(models.Appointment).filter_by(id=stage.appointment_id).first()
+        if appt:
+            appt.doctor_ic = data['doctor_ic'] if data['doctor_ic'] else None
+
     db.commit()
     return {"status": "success"}
 
@@ -575,7 +581,15 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         doc_ic = booking.details.get('assigned_doctor_id')
         if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
 
-        new_appt = models.Appointment(clinic_id=booking.clinic_id, patient_ic=patient.ic_passport_number, doctor_ic=doc_ic, appt_type=mapped_appt_type, total_stages=total_stages, general_notes=booking.details.get('reason') if booking.service_type == 'Others' else None)
+        new_appt = models.Appointment(
+            clinic_id=booking.clinic_id, 
+            patient_ic=patient.ic_passport_number, 
+            doctor_ic=doc_ic, 
+            appt_type=mapped_appt_type, 
+            total_stages=total_stages, 
+            # FIXED: Ensures 'Consultation' reason gets saved into the general_notes column
+            general_notes=booking.details.get('reason') if booking.service_type in ['Others', 'Consultation'] else None
+        )
         db.add(new_appt)
         db.flush() 
         
@@ -629,7 +643,9 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         doc_ic = booking.details.get('assigned_doctor_id')
         if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
         appt.doctor_ic = doc_ic
-        appt.general_notes = booking.details.get('reason') if booking.service_type == 'Others' else None
+        
+        # FIXED: Ensure Consultation reason is correctly written to DB
+        appt.general_notes = booking.details.get('reason') if booking.service_type in ['Others', 'Consultation'] else None
         
         service = booking.service_type
         items_list = booking.details.get('items', [])
@@ -639,7 +655,11 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         total_stages = 1
         
         if service == 'Vaccine':
-            total_stages = booking.details.get('total_doses', 1)
+            # Deduce total stages directly from vaccine DB rather than trusting pure payload
+            if items_list:
+                v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
+                if v_model:
+                    total_stages = v_model.total_doses
             if total_stages > 1 and dose_val == 'Dose 1':
                 mapped_appt_type = 'multi-stage'
                 

@@ -47,7 +47,6 @@ class Appointment(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     patient_ic = Column(String(20), ForeignKey("patients.ic_passport_number", ondelete="CASCADE"), nullable=False)
     doctor_ic = Column(String(20), ForeignKey("doctors.ic_passport_number"), nullable=True) 
-    # FIXED: Map the Python attribute "appt_type" to the database column "type"
     appt_type = Column("type", String(50)) 
     total_stages = Column(Integer, default=1)
     general_notes = Column(String(255), nullable=True)
@@ -55,20 +54,18 @@ class Appointment(Base):
     stages = relationship("ApptStage", back_populates="appointment", cascade="all, delete-orphan")
 
 class ApptStage(Base):
-    # FIXED: The table name in the DB is appointment_stages, not appt_stages
     __tablename__ = "appointment_stages"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     appointment_id = Column(UUID(as_uuid=True), ForeignKey("appointments.id", ondelete="CASCADE"))
     stage_name = Column(String(100))
     scheduled_time = Column(DateTime)
     status = Column(String(20), default="scheduled")
-    # FIXED: Map the foreign key to the corrected table name
     depends_on_stage_id = Column(UUID(as_uuid=True), ForeignKey("appointment_stages.id"), nullable=True)
     appointment = relationship("Appointment", back_populates="stages")
 
 class AgentLog(Base):
     __tablename__ = "agent_logs"
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"))
     action = Column(String(255))
     reasoning = Column(String)
@@ -76,7 +73,7 @@ class AgentLog(Base):
 
 class BloodTest(Base):
     __tablename__ = "blood_tests"
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(100), nullable=False)
     price = Column(Numeric(10, 2), nullable=False)
@@ -85,7 +82,7 @@ class BloodTest(Base):
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     telegram_id = Column(BigInteger)
     message = Column(String)
@@ -95,7 +92,7 @@ class ChatMessage(Base):
 
 class Vaccine(Base):
     __tablename__ = "vaccines"
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
     type = Column(String(50))
     total_doses = Column(Integer, default=1) 
@@ -136,7 +133,7 @@ class AppointmentBloodTest(Base):
 
 class VaccineDoseSchedule(Base):
     __tablename__ = "vaccine_dose_schedules"
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     vaccine_id = Column(Integer, ForeignKey("vaccines.id", ondelete="CASCADE"))
     dose_number = Column(Integer)
     interval_description = Column(String(50))
