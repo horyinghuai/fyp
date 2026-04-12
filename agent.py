@@ -27,6 +27,7 @@ async def fetch_gemini(prompt: str) -> str:
         await asyncio.sleep(9999) 
         return ""
     async with httpx.AsyncClient() as client:
+        # FIXED: Upgraded from the deprecated gemini-1.5-flash to the active gemini-2.5-flash
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.0}}
         res = await client.post(url, json=payload, timeout=30.0)
@@ -35,32 +36,36 @@ async def fetch_gemini(prompt: str) -> str:
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 async def run_llm_race(prompt: str) -> str:
-    """Runs Local and Gemini in parallel. Returns the fastest. Cancels the loser immediately."""
+    """Runs Local and Gemini in parallel. Returns the FIRST successful response. Safely cancels the loser."""
     task_local = asyncio.create_task(fetch_local_llm(prompt), name="Local_LLM")
     task_gemini = asyncio.create_task(fetch_gemini(prompt), name="Gemini_LLM")
     
-    done, pending = await asyncio.wait(
-        [task_local, task_gemini],
-        return_when=asyncio.FIRST_COMPLETED
-    )
-    
-    # Aggressively cancel the slower task to free up CPU/GPU/Network
-    for p in pending:
-        p.cancel()
-        
-    first_done = list(done)[0]
-    
-    try:
-        return first_done.result()
-    except Exception as e:
-        print(f"[{first_done.get_name()}] failed: {e}. Falling back to the slower LLM...")
-        if pending:
-            remaining = list(pending)[0]
+    pending = {task_local, task_gemini}
+
+    while pending:
+        done, pending = await asyncio.wait(
+            pending,
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        for task in done:
             try:
-                return await remaining
-            except Exception as e2:
-                raise Exception(f"Both LLMs failed. Local Error: {e} | Gemini Error: {e2}")
-        raise e
+                # Check if this completed task succeeded
+                result = task.result()
+                
+                # If we get here, it succeeded! Cancel all remaining pending tasks safely.
+                for p in pending:
+                    p.cancel()
+                    
+                return result
+            except Exception as e:
+                # Task failed. Print the error type and message for better debugging.
+                print(f"[{task.get_name()}] failed: {type(e).__name__} - {str(e)}. Falling back...")
+                
+                if not pending:
+                    raise Exception("Both LLMs failed. Check your Local LLM server and Gemini API Key.")
+
+    raise Exception("All LLM tasks failed unexpectedly.")
 
 # --- DATE CALCULATOR ---
 def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_time_str: str):
