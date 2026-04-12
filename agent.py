@@ -1,45 +1,75 @@
 import os
 import json
 import re
-import requests
+import asyncio
+import httpx
 from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
 from datetime import datetime, timedelta
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from dotenv import load_dotenv
-from openai import OpenAI
 
 load_dotenv()
 LOCAL_LLM_BASE_URL = os.getenv('LOCAL_LLM_BASE_URL', 'http://localhost:1234/v1')
-client = OpenAI(base_url=LOCAL_LLM_BASE_URL, api_key='lm-studio')
 
-# --- DUAL LLM FALLBACK SYSTEM ---
-def run_llm_with_fallback(prompt: str) -> str:
-    """Tries Local LLM first (45s timeout). If it fails or times out, falls back to Gemini API."""
-    try:
-        response = client.chat.completions.create(
-            model="local-model", 
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            timeout=45.0 
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Local LLM failed or timed out: {e}. Falling back to Gemini API...")
-        gemini_key = os.getenv("GEMINI_API_KEY")
-        if not gemini_key:
-            raise Exception("Local LLM failed and GEMINI_API_KEY is not set in .env")
-        
+# --- DUAL LLM PARALLEL EXECUTION ---
+async def fetch_local_llm(prompt: str) -> str:
+    """Fetches result from Local LM Studio."""
+    async with httpx.AsyncClient() as client:
+        payload = {
+            "model": "local-model",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0
+        }
+        url = f"{LOCAL_LLM_BASE_URL}/chat/completions"
+        res = await client.post(url, json=payload, timeout=45.0)
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"].strip()
+
+async def fetch_gemini(prompt: str) -> str:
+    """Fetches result from Gemini API."""
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        await asyncio.sleep(9999) # Will never finish if no key, allowing Local LLM to win
+        return ""
+    async with httpx.AsyncClient() as client:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.0}
         }
-        res = requests.post(url, json=payload, timeout=30.0)
+        res = await client.post(url, json=payload, timeout=30.0)
         res.raise_for_status()
         data = res.json()
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
+async def run_llm_parallel(prompt: str) -> str:
+    """Runs both LLMs simultaneously. Returns fastest. Cancels the slower one."""
+    task_local = asyncio.create_task(fetch_local_llm(prompt))
+    task_gemini = asyncio.create_task(fetch_gemini(prompt))
+    
+    done, pending = await asyncio.wait(
+        [task_local, task_gemini],
+        return_when=asyncio.FIRST_COMPLETED
+    )
+    
+    for p in pending:
+        p.cancel() # Cancel the loser
+        
+    first_done = list(done)[0]
+    try:
+        return first_done.result()
+    except Exception as e:
+        print(f"First LLM failed: {e}. Falling back to the other...")
+        if pending:
+            remaining = list(pending)[0]
+            try:
+                return await remaining
+            except Exception as e2:
+                raise Exception(f"Both LLMs failed. Local: {e}, Gemini: {e2}")
+        raise e
+
+# --- DATE CALCULATOR ---
 def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_time_str: str):
     now = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
     final_date = None
@@ -87,12 +117,15 @@ class AppointmentExtraction(BaseModel):
     doctor_preference: Optional[str]
     reason: Optional[str]
 
-def extract_appointment_details(user_text: str, current_time_str: str):
+async def extract_appointment_details(user_text: str, current_time_str: str):
     prompt = f"""
-    You are a strict JSON API. Extract the exact date and time words from the user's text.
+    You are a strict JSON API. Extract details from the user's text.
     USER TEXT: "{user_text}"
     
-    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output any conversational text.
+    CRITICAL INSTRUCTIONS:
+    - DO NOT output <think> tags. Output ONLY raw JSON.
+    - If the user uses relative words like "next monday", "tomorrow", "this friday", you MUST extract those exact words into `raw_date_text`. Do NOT return null if a day is mentioned.
+    
     {{
         "intent": "booking",
         "raw_date_text": "extracted exact date words or null",
@@ -102,7 +135,7 @@ def extract_appointment_details(user_text: str, current_time_str: str):
     }}
     """
     try:
-        raw_text = run_llm_with_fallback(prompt)
+        raw_text = await run_llm_parallel(prompt)
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         llm_data = json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
         
@@ -111,7 +144,7 @@ def extract_appointment_details(user_text: str, current_time_str: str):
     except Exception as e:
         return {"error": f"AI Parsing Error: {str(e)}"}
 
-def generate_vaccine_schedule_ai(search_query: str):
+async def generate_vaccine_schedule_ai(search_query: str):
     prompt = f"""
     You are a strict Medical Database JSON API. The user entered: "{search_query}".
     
@@ -119,7 +152,7 @@ def generate_vaccine_schedule_ai(search_query: str):
     2. If it is a specific vaccine brand (e.g., "Pfizer", "Twinrix"): Return status "exact_match", and provide its medical type, total doses, booster status, and interval schedules.
     3. If it is unrecognized or fake: Return status "invalid".
     
-    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text.
+    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output <think> tags.
     {{
         "status": "exact_match", 
         "options": ["Brand A", "Brand B"], 
@@ -132,7 +165,7 @@ def generate_vaccine_schedule_ai(search_query: str):
     }}
     """
     try:
-        raw_text = run_llm_with_fallback(prompt)
+        raw_text = await run_llm_parallel(prompt)
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         return json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
     except Exception as e:

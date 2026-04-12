@@ -4,6 +4,9 @@ import { useState, useEffect } from 'react';
 
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 
+// Full generic country list dropdown
+const COUNTRIES = ["Malaysia", "Singapore", "Indonesia", "Thailand", "China", "India", "United States", "United Kingdom", "Australia", "Japan", "South Korea", "Others"];
+
 export default function PatientsPage() {
   const [patients, setPatients] = useState<any[]>([]);
   const [search, setSearch] = useState("");
@@ -12,6 +15,9 @@ export default function PatientsPage() {
   
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState<any>(null);
+  
+  // NEW: Malaysian specific flag
+  const [isMalaysian, setIsMalaysian] = useState(true);
   const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
 
   useEffect(() => { loadData(); }, []);
@@ -24,45 +30,67 @@ export default function PatientsPage() {
   };
 
   const handleICChange = (val: string) => {
-      let gender = formData.gender;
-      if (/^\d{6}-\d{2}-\d{4}$/.test(val)) {
-          const lastDigit = parseInt(val[val.length - 1]);
-          gender = lastDigit % 2 === 0 ? 'FEMALE' : 'MALE';
+      if (isMalaysian) {
+          let clean = val.replace(/[^0-9]/g, '');
+          if (clean.length <= 12) {
+              let formatted = clean;
+              if (clean.length > 6) formatted = clean.slice(0,6) + '-' + clean.slice(6);
+              if (clean.length > 8) formatted = formatted.slice(0,9) + '-' + clean.slice(8);
+              
+              let gender = formData.gender;
+              if (clean.length === 12) {
+                  const lastDigit = parseInt(clean[11]);
+                  gender = lastDigit % 2 === 0 ? 'FEMALE' : 'MALE';
+              }
+              setFormData({...formData, ic: formatted, gender: gender, nationality: 'MALAYSIA'});
+          }
+      } else {
+          setFormData({...formData, ic: val});
       }
-      setFormData({...formData, ic: val, gender: gender});
   };
 
   const handleSave = async () => {
     if (!formData.ic || !formData.name || !formData.phone) {
-        alert("IC/Passport, Name, and Phone are required fields."); return;
+        alert("⚠️ IC/Passport, Name, and Phone are required fields."); return;
     }
-    if (formData.nationality === 'MALAYSIA' && !/^\d{6}-\d{2}-\d{4}$/.test(formData.ic)) {
-        alert("Malaysian IC must follow the format XXXXXX-XX-XXXX."); return;
+    if (isMalaysian) {
+        const cleanIC = formData.ic.replace(/[^0-9]/g, '');
+        if (cleanIC.length !== 12) {
+            alert("⚠️ Malaysian IC must be exactly 12 digits."); return;
+        }
     }
 
-    const isEditing = !!editingPatient;
-    const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${editingPatient.ic_passport_number}` : `http://127.0.0.1:8000/register-patient`;
-    const payload = isEditing ? { ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address } 
-                              : { clinic_id: CLINIC_ID, ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address };
+    try {
+        const isEditing = !!editingPatient;
+        const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${editingPatient.ic_passport_number}` : `http://127.0.0.1:8000/register-patient`;
+        const payload = isEditing ? { ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address } 
+                                  : { clinic_id: CLINIC_ID, ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address };
 
-    const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    if (!res.ok) { alert("Failed to save data. IC may already exist."); return; }
-    
-    setShowModal(false);
-    loadData();
+        const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (!res.ok) throw new Error();
+        setShowModal(false);
+        loadData();
+    } catch (e) {
+        alert("⚠️ Failed to save. Ensure FastAPI is running and IC does not already exist.");
+    }
   };
 
   const handleDelete = async (ic: string) => {
     if(confirm("Are you sure you want to delete this patient?")) {
-      await fetch(`http://127.0.0.1:8000/admin/patients/${ic}`, { method: 'DELETE' });
-      loadData();
+      await fetch(`http://127.0.0.1:8000/admin/patients/${ic}`, { method: 'DELETE' }); loadData();
     }
   };
 
   const openModal = (patient: any = null) => {
     setEditingPatient(patient);
-    if(patient) setFormData({ ic: patient.ic_passport_number, name: patient.name, phone: patient.phone, gender: patient.gender, nationality: patient.nationality, address: patient.address || '' });
-    else setFormData({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
+    if(patient) {
+        const isMy = patient.nationality.toUpperCase() === 'MALAYSIA';
+        setIsMalaysian(isMy);
+        setFormData({ ic: patient.ic_passport_number, name: patient.name, phone: patient.phone, gender: patient.gender, nationality: patient.nationality, address: patient.address || '' });
+    } else {
+        setIsMalaysian(true);
+        setFormData({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
+    }
     setShowModal(true);
   };
 
@@ -109,10 +137,16 @@ export default function PatientsPage() {
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
             <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingPatient ? 'Modify Patient Data' : 'Add New Patient'}</h3>
+            
+            <div className="flex gap-2 mb-4 bg-slate-100 p-1 rounded-lg">
+                <button onClick={() => { setIsMalaysian(true); setFormData({...formData, nationality: 'MALAYSIA', ic: ''}); }} className={`flex-1 py-1 text-sm font-bold rounded ${isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Malaysian</button>
+                <button onClick={() => { setIsMalaysian(false); setFormData({...formData, ic: ''}); }} className={`flex-1 py-1 text-sm font-bold rounded ${!isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Non-Malaysian</button>
+            </div>
+
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">IC / Passport Number</label>
-                <input type="text" placeholder="e.g. 900101-14-5533" value={formData.ic} onChange={e => handleICChange(e.target.value)} className="w-full p-3 border rounded-lg outline-none" />
+                <label className="block text-sm font-bold text-slate-700 mb-1">{isMalaysian ? "IC Number" : "Passport Number"}</label>
+                <input type="text" placeholder={isMalaysian ? "e.g. 900101-14-5533" : "Passport ID"} value={formData.ic} onChange={e => handleICChange(e.target.value)} className="w-full p-3 border rounded-lg outline-none font-mono" />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Patient Full Name</label>
@@ -135,13 +169,19 @@ export default function PatientsPage() {
                 </div>
                 <div className="flex-1">
                   <label className="block text-sm font-bold text-slate-700 mb-1">Nationality</label>
-                  <input type="text" placeholder="e.g. MALAYSIA" value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
+                  {isMalaysian ? (
+                      <input type="text" readOnly value="MALAYSIA" className="w-full p-3 border bg-slate-50 rounded-lg outline-none font-bold text-slate-500" />
+                  ) : (
+                      <select value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value})} className="w-full p-3 border rounded-lg outline-none bg-white">
+                        {COUNTRIES.map(c => <option key={c} value={c.toUpperCase()}>{c}</option>)}
+                      </select>
+                  )}
                 </div>
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200">Cancel</button>
-              <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700">Save Patient</button>
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200 transition">Cancel</button>
+              <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition">Save Patient</button>
             </div>
           </div>
         </div>

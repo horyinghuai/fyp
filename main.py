@@ -12,9 +12,14 @@ import random
 app = FastAPI(title="Clinic Smart Assistant Backend")
 
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware, 
+    allow_origins=["*"], 
+    allow_credentials=True, 
+    allow_methods=["*"], 
+    allow_headers=["*"],
 )
 
+# --- PYDANTIC SCHEMAS ---
 class PatientRegister(BaseModel):
     clinic_id: str
     name: str
@@ -98,7 +103,7 @@ class AdminChatReply(BaseModel):
     question: str
     answer: str
 
-# GLOBAL HELPER FUNCTIONS
+# --- GLOBAL HELPER FUNCTIONS ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
@@ -115,6 +120,7 @@ def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
     except: pass
     return start_date + timedelta(days=30) 
 
+# --- DASHBOARD ENDPOINTS ---
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     try:
@@ -179,6 +185,7 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
 def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db)):
     stage = db.query(models.ApptStage).filter_by(id=stage_id).first()
     if not stage: raise HTTPException(status_code=404)
+    
     if 'status' in data: stage.status = data['status']
     if 'scheduled_time' in data:
         dt_str = data['scheduled_time'].replace("T", " ")
@@ -187,6 +194,7 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
     db.commit()
     return {"status": "success"}
 
+# --- PATIENTS ENDPOINTS ---
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
     return db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
@@ -204,9 +212,9 @@ def admin_update_patient(ic: str, data: PatientUpdate, db: Session = Depends(get
             p.nationality = data.nationality
             p.address = data.address
             db.commit()
-        except Exception:
+        except Exception as e:
             db.rollback()
-            raise HTTPException(status_code=400, detail="Update failed. IC may already exist.")
+            raise HTTPException(status_code=400, detail=f"Update failed: {e}")
     return {"status": "success"}
 
 @app.delete("/admin/patients/{ic}")
@@ -215,30 +223,35 @@ def admin_delete_patient(ic: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
+# --- VACCINE ENDPOINTS ---
 @app.get("/admin/global-vaccines")
 def get_global_vaccines(db: Session = Depends(get_db)):
     return db.query(models.Vaccine).all()
 
 @app.post("/admin/ai/vaccine-schedule")
-def ai_vaccine_schedule(req: VaccineAIRequest):
-    return generate_vaccine_schedule_ai(req.search_query)
+async def ai_vaccine_schedule(req: VaccineAIRequest):
+    return await generate_vaccine_schedule_ai(req.search_query)
 
 @app.post("/admin/vaccines")
 def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
-    if data.vaccine_id:
-        v_id = data.vaccine_id
-    else:
-        v = models.Vaccine(name=data.name, type=data.type, total_doses=data.total_doses, has_booster=data.has_booster)
-        db.add(v)
-        db.flush() 
-        v_id = v.id
-        for sched in data.schedules:
-            db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
+    try:
+        if data.vaccine_id:
+            v_id = data.vaccine_id
+        else:
+            v = models.Vaccine(name=data.name, type=data.type, total_doses=data.total_doses, has_booster=data.has_booster)
+            db.add(v)
+            db.flush() 
+            v_id = v.id
+            for sched in data.schedules:
+                db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
+            db.commit()
+        vc = models.VaccineClinic(vaccine_id=v_id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
+        db.add(vc)
         db.commit()
-    vc = models.VaccineClinic(vaccine_id=v_id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
-    db.add(vc)
-    db.commit()
-    return {"status": "success"}
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/admin/vaccines/{v_id}")
 def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)):
@@ -253,28 +266,37 @@ def delete_vaccine(v_id: int, clinic_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
+# --- BLOOD TEST ENDPOINTS ---
 @app.post("/admin/blood-tests")
 def create_bt(data: BloodTestCreate, db: Session = Depends(get_db)):
-    bt = models.BloodTest(clinic_id=data.clinic_id, name=data.name, description=data.description, price=data.price, test_type=data.test_type)
-    db.add(bt)
-    db.flush()
-    if data.test_type == 'package' and data.component_ids:
-        for cid in data.component_ids:
-            db.add(models.BloodTestComponent(package_id=bt.id, test_id=cid))
-    db.commit()
-    return {"status": "success"}
-
-@app.put("/admin/blood-tests/{bt_id}")
-def update_bt(bt_id: int, data: BloodTestCreate, db: Session = Depends(get_db)):
-    bt = db.query(models.BloodTest).filter_by(id=bt_id).first()
-    if bt:
-        bt.name, bt.description, bt.price, bt.test_type = data.name, data.description, data.price, data.test_type
-        if data.test_type == 'package':
-            db.query(models.BloodTestComponent).filter_by(package_id=bt.id).delete()
+    try:
+        bt = models.BloodTest(clinic_id=data.clinic_id, name=data.name, description=data.description, price=data.price, test_type=data.test_type)
+        db.add(bt)
+        db.flush()
+        if data.test_type == 'package' and data.component_ids:
             for cid in data.component_ids:
                 db.add(models.BloodTestComponent(package_id=bt.id, test_id=cid))
         db.commit()
-    return {"status": "success"}
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/admin/blood-tests/{bt_id}")
+def update_bt(bt_id: int, data: BloodTestCreate, db: Session = Depends(get_db)):
+    try:
+        bt = db.query(models.BloodTest).filter_by(id=bt_id).first()
+        if bt:
+            bt.name, bt.description, bt.price, bt.test_type = data.name, data.description, data.price, data.test_type
+            if data.test_type == 'package':
+                db.query(models.BloodTestComponent).filter_by(package_id=bt.id).delete()
+                for cid in data.component_ids:
+                    db.add(models.BloodTestComponent(package_id=bt.id, test_id=cid))
+            db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/admin/blood-tests/{bt_id}")
 def delete_bt(bt_id: int, db: Session = Depends(get_db)):
@@ -282,6 +304,7 @@ def delete_bt(bt_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
+# --- CHAT & AI ENDPOINTS ---
 @app.post("/admin/auto-replies")
 def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db)):
     new_msg = models.ChatMessage(clinic_id=data.clinic_id, message=data.question, reply=data.answer, status='auto_rule')
@@ -290,13 +313,6 @@ def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db))
     logging_agent(db, data.clinic_id, "Automated Message Updated", f"Admin added rule for: {data.question}")
     return {"status": "success"}
 
-@app.post("/ai-extract")
-def ai_extract(req: TextExtractRequest):
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    extracted = extract_appointment_details(req.text, now_str)
-    if isinstance(extracted, dict) and "error" in extracted: return extracted
-    return extracted.dict()
-
 @app.post("/ask-admin")
 def ask_admin(msg: ChatMessageModel, db: Session = Depends(get_db)):
     new_msg = models.ChatMessage(clinic_id=msg.clinic_id, telegram_id=msg.telegram_id, message=msg.message)
@@ -304,6 +320,14 @@ def ask_admin(msg: ChatMessageModel, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
+@app.post("/ai-extract")
+async def ai_extract(req: TextExtractRequest):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    extracted = await extract_appointment_details(req.text, now_str)
+    if isinstance(extracted, dict) and "error" in extracted: return extracted
+    return extracted.dict()
+
+# --- CLINIC DATA & DIRECTORY ENDPOINTS ---
 @app.get("/clinic/{clinic_id}")
 def get_clinic(clinic_id: str, db: Session = Depends(get_db)):
     clinic = db.query(models.Clinic).filter(models.Clinic.id == clinic_id).first()
@@ -404,25 +428,30 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
 
 @app.post("/register-patient")
 def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
-    data_dict = data.dict(exclude_unset=True)
-    existing = db.query(models.Patient).filter(models.Patient.clinic_id == data.clinic_id, models.Patient.ic_passport_number == data.ic_passport_number).first()
-    if existing:
-        for key, value in data_dict.items():
-            if hasattr(existing, key): setattr(existing, key, value)
+    try:
+        data_dict = data.dict(exclude_unset=True)
+        existing = db.query(models.Patient).filter(models.Patient.clinic_id == data.clinic_id, models.Patient.ic_passport_number == data.ic_passport_number).first()
+        if existing:
+            for key, value in data_dict.items():
+                if hasattr(existing, key): setattr(existing, key, value)
+            db.commit()
+            return {"status": "updated"}
+        new_patient = models.Patient(**data_dict)
+        db.add(new_patient)
         db.commit()
-        return {"status": "updated"}
-    new_patient = models.Patient(**data_dict)
-    db.add(new_patient)
-    db.commit()
-    return {"status": "success"}
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
+# --- SCHEDULING & AVAILABILITY ENDPOINTS ---
 def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
     doc_query = db.query(models.Doctor).join(
         models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
     ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id)
     if doctor_pref == "MALE": doc_query = doc_query.filter(models.Doctor.gender == "MALE")
     elif doctor_pref == "FEMALE": doc_query = doc_query.filter(models.Doctor.gender == "FEMALE")
-    elif doctor_pref and doctor_pref not in ["ANY", "MALE", "FEMALE"]: doc_query = doc_query.filter(models.Doctor.name == doctor_pref)
+    elif doctor_pref and str(doctor_pref).upper() not in ["ANY", "NONE"]: doc_query = doc_query.filter(models.Doctor.name == doctor_pref)
     valid_docs = doc_query.distinct().all()
     if not valid_docs: return []
     day_of_week = date_obj.strftime("%a").lower()[:3] 
@@ -504,85 +533,93 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
 
 @app.post("/book-appointment")
 def book_appointment(booking: Booking, db: Session = Depends(get_db)):
-    patient = db.query(models.Patient).filter(models.Patient.clinic_id == booking.clinic_id, models.Patient.ic_passport_number == booking.ic_passport_number).first()
-    if not patient: raise HTTPException(status_code=404, detail="Patient missing")
-    mapped_appt_type = 'single-visit'
-    total_stages = 1
-    v_model = None
-    if booking.service_type == 'Vaccine':
-        mapped_appt_type = 'multi-stage'
-        items_list = booking.details.get('items', [])
-        if items_list:
-            v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
-            if v_model: total_stages = v_model.total_doses
-    
-    doc_ic = booking.details.get('assigned_doctor_id')
-    # FIX: Prevent Foreign Key constraint violation
-    if not doc_ic or doc_ic == "ANY" or doc_ic == "None": doc_ic = None
+    try:
+        patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == booking.ic_passport_number).first()
+        if not patient: raise HTTPException(status_code=404, detail="Patient missing")
+        mapped_appt_type = 'single-visit'
+        total_stages = 1
+        v_model = None
+        if booking.service_type == 'Vaccine':
+            mapped_appt_type = 'multi-stage'
+            items_list = booking.details.get('items', [])
+            if items_list:
+                v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
+                if v_model: total_stages = v_model.total_doses
+        
+        doc_ic = booking.details.get('assigned_doctor_id')
+        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
 
-    new_appt = models.Appointment(clinic_id=booking.clinic_id, patient_ic=patient.ic_passport_number, doctor_ic=doc_ic, appt_type=mapped_appt_type, total_stages=total_stages, general_notes=booking.details.get('reason') if booking.service_type == 'Others' else None)
-    db.add(new_appt)
-    db.flush() 
-    start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
-    prev_stage_id = None
-    if v_model and total_stages > 1:
-        db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number="Multi-Dose Profile"))
-        schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).order_by(models.VaccineDoseSchedule.dose_number).all()
-        current_calc_time = start_time
-        for i in range(total_stages):
-            stage_name = f"Dose {i+1}"
-            if i > 0 and i < len(schedules):
-                interval = schedules[i].interval_description
-                current_calc_time = calculate_future_date(current_calc_time, interval)
-            stage = models.ApptStage(appointment_id=new_appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
+        new_appt = models.Appointment(clinic_id=booking.clinic_id, patient_ic=patient.ic_passport_number, doctor_ic=doc_ic, appt_type=mapped_appt_type, total_stages=total_stages, general_notes=booking.details.get('reason') if booking.service_type == 'Others' else None)
+        db.add(new_appt)
+        db.flush() 
+        start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
+        prev_stage_id = None
+        if v_model and total_stages > 1:
+            db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number="Multi-Dose Profile"))
+            schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).order_by(models.VaccineDoseSchedule.dose_number).all()
+            current_calc_time = start_time
+            for i in range(total_stages):
+                stage_name = f"Dose {i+1}"
+                if i > 0 and i < len(schedules):
+                    interval = schedules[i].interval_description
+                    current_calc_time = calculate_future_date(current_calc_time, interval)
+                stage = models.ApptStage(appointment_id=new_appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
+                db.add(stage)
+                db.flush()
+                prev_stage_id = stage.id 
+        else:
+            if booking.service_type == 'Blood Test':
+                for t_name in booking.details.get('items', []):
+                    bt = db.query(models.BloodTest).filter_by(name=t_name, clinic_id=booking.clinic_id).first()
+                    if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
+            stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
             db.add(stage)
-            db.flush()
-            prev_stage_id = stage.id 
-    else:
-        if booking.service_type == 'Blood Test':
-            for t_name in booking.details.get('items', []):
-                bt = db.query(models.BloodTest).filter_by(name=t_name, clinic_id=booking.clinic_id).first()
-                if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
-        stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
-        db.add(stage)
-    db.commit()
-    return {"status": "success"}
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        print(f"BOOKING FAILED: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/update-appointment")
 def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
-    appt = db.query(models.Appointment).filter(models.Appointment.id == booking.appt_id).first()
-    if not appt: raise HTTPException(status_code=404)
-    db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
-    db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
-    db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
-    
-    doc_ic = booking.details.get('assigned_doctor_id')
-    if not doc_ic or doc_ic == "ANY" or doc_ic == "None": doc_ic = None
-    appt.doctor_ic = doc_ic
-    
-    appt.general_notes = booking.details.get('reason') if booking.service_type == 'Others' else None
-    mapped_appt_type = 'single-visit'
-    total_stages = 1
-    if booking.service_type == 'Vaccine':
-        dose_text = str(booking.details.get('dose', ''))
-        if dose_text.startswith('Dose'):
-            mapped_appt_type = 'multi-stage'
-            total_stages = booking.details.get('total_doses', 1)
-    appt.appt_type = mapped_appt_type
-    appt.total_stages = total_stages
-    service = booking.service_type
-    items_list = booking.details.get('items', [])
-    if service == 'Vaccine' and items_list:
-        v = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
-        if v: db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v.id, dose_number=booking.details.get('dose')))
-    elif service == 'Blood Test' and items_list:
-        for t_name in items_list:
-            bt = db.query(models.BloodTest).filter_by(name=t_name).first()
-            if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
-    new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S"))
-    db.add(new_stage)
-    db.commit()
-    return {"status": "success"}
+    try:
+        appt = db.query(models.Appointment).filter(models.Appointment.id == booking.appt_id).first()
+        if not appt: raise HTTPException(status_code=404)
+        db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
+        db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
+        db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
+        
+        doc_ic = booking.details.get('assigned_doctor_id')
+        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
+        appt.doctor_ic = doc_ic
+        
+        appt.general_notes = booking.details.get('reason') if booking.service_type == 'Others' else None
+        mapped_appt_type = 'single-visit'
+        total_stages = 1
+        if booking.service_type == 'Vaccine':
+            dose_text = str(booking.details.get('dose', ''))
+            if dose_text.startswith('Dose'):
+                mapped_appt_type = 'multi-stage'
+                total_stages = booking.details.get('total_doses', 1)
+        appt.appt_type = mapped_appt_type
+        appt.total_stages = total_stages
+        service = booking.service_type
+        items_list = booking.details.get('items', [])
+        if service == 'Vaccine' and items_list:
+            v = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
+            if v: db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v.id, dose_number=booking.details.get('dose')))
+        elif service == 'Blood Test' and items_list:
+            for t_name in items_list:
+                bt = db.query(models.BloodTest).filter_by(name=t_name).first()
+                if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
+        new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S"))
+        db.add(new_stage)
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/cancel-appointment/{appt_id}")
 def cancel_appointment(appt_id: str, db: Session = Depends(get_db)):

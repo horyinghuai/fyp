@@ -26,15 +26,15 @@ export default function BloodTestsPage() {
     } catch (e) { setIsLoading(false); }
   };
 
-  const handleSave = async (e: any) => {
-    e.preventDefault();
+  const handleSave = async () => {
     try {
         const isEditing = !!editingBt;
         const url = isEditing ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` : `http://127.0.0.1:8000/admin/blood-tests`;
-        await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData }) });
+        const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData }) });
+        if (!res.ok) throw new Error("Failed to save.");
         setShowModal(false); loadData();
-    } catch (err) {
-        console.error(err); alert("Failed to save. Ensure FastAPI is running.");
+    } catch (e) {
+        alert("Failed to save. Ensure FastAPI is running and inputs are valid.");
     }
   };
 
@@ -58,7 +58,6 @@ export default function BloodTestsPage() {
         <button onClick={() => openModal()} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold">+ Add Blood Test</button>
       </div>
 
-      {/* PACKAGES SECTION */}
       <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">1. Packages</h2>
       <div className="grid grid-cols-2 gap-4 mb-12">
         {packages.map(p => (
@@ -90,7 +89,6 @@ export default function BloodTestsPage() {
         ))}
       </div>
 
-      {/* SINGLE TESTS SECTION */}
       <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">2. Standalone Single Tests</h2>
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden mb-12">
         <table className="w-full text-left border-collapse">

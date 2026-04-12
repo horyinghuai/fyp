@@ -55,8 +55,9 @@ export default function VaccinesPage() {
   };
 
   const handleSave = async () => {
+    // ENFORCED PRICE VALIDATION
     if (!formData.price || formData.price <= 0) {
-        alert("Please insert a valid price before saving.");
+        alert("⚠️ Please insert a valid price before saving.");
         return;
     }
     const isEditing = !!editingVac;
@@ -94,9 +95,9 @@ export default function VaccinesPage() {
 
   if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
 
-  // Group vaccines by Type for UI rendering
+  // FIX: Added .trim() and TitleCase map to group identical strings securely (solves Hepatitis B splitting)
   const groupedVaccines = vaccines.reduce((acc: any, v: any) => {
-      const t = v.type || "Other";
+      const t = (v.type || "Other").trim().toLowerCase().replace(/\b\w/g, (l: string) => l.toUpperCase());
       if (!acc[t]) acc[t] = [];
       acc[t].push(v);
       return acc;
