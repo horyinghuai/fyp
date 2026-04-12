@@ -47,20 +47,23 @@ class Appointment(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     patient_ic = Column(String(20), ForeignKey("patients.ic_passport_number", ondelete="CASCADE"), nullable=False)
     doctor_ic = Column(String(20), ForeignKey("doctors.ic_passport_number"), nullable=True) 
-    appt_type = Column(String(50)) 
+    # FIXED: Map the Python attribute "appt_type" to the database column "type"
+    appt_type = Column("type", String(50)) 
     total_stages = Column(Integer, default=1)
     general_notes = Column(String(255), nullable=True)
     
     stages = relationship("ApptStage", back_populates="appointment", cascade="all, delete-orphan")
 
 class ApptStage(Base):
-    __tablename__ = "appt_stages"
+    # FIXED: The table name in the DB is appointment_stages, not appt_stages
+    __tablename__ = "appointment_stages"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     appointment_id = Column(UUID(as_uuid=True), ForeignKey("appointments.id", ondelete="CASCADE"))
     stage_name = Column(String(100))
     scheduled_time = Column(DateTime)
     status = Column(String(20), default="scheduled")
-    depends_on_stage_id = Column(UUID(as_uuid=True), ForeignKey("appt_stages.id"), nullable=True)
+    # FIXED: Map the foreign key to the corrected table name
+    depends_on_stage_id = Column(UUID(as_uuid=True), ForeignKey("appointment_stages.id"), nullable=True)
     appointment = relationship("Appointment", back_populates="stages")
 
 class AgentLog(Base):

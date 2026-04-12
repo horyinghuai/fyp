@@ -157,7 +157,6 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
             elif appt.appt_type == "follow-up":
                 color = "#F97316"
 
-            # FIX: Force strict UTC ISO-8601 formatting so React Big Calendar parses it safely
             start_str = stage.scheduled_time.strftime("%Y-%m-%dT%H:%M:%S")
             end_str = (stage.scheduled_time + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -526,12 +525,17 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         mapped_appt_type = 'single-visit'
         total_stages = 1
         v_model = None
+        dose_val = str(booking.details.get('dose', 'Single Dose'))
+        items_list = booking.details.get('items', [])
+        
         if booking.service_type == 'Vaccine':
-            mapped_appt_type = 'multi-stage'
-            items_list = booking.details.get('items', [])
             if items_list:
                 v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
-                if v_model: total_stages = v_model.total_doses
+                if v_model: 
+                    total_stages = v_model.total_doses
+                    # Only map to multi-stage if the user is explicitly starting the entire series (Dose 1)
+                    if total_stages > 1 and dose_val == 'Dose 1':
+                        mapped_appt_type = 'multi-stage'
         
         doc_ic = booking.details.get('assigned_doctor_id')
         if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
@@ -539,28 +543,38 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         new_appt = models.Appointment(clinic_id=booking.clinic_id, patient_ic=patient.ic_passport_number, doctor_ic=doc_ic, appt_type=mapped_appt_type, total_stages=total_stages, general_notes=booking.details.get('reason') if booking.service_type == 'Others' else None)
         db.add(new_appt)
         db.flush() 
+        
         start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
-        prev_stage_id = None
-        if v_model and total_stages > 1:
+        
+        if mapped_appt_type == 'multi-stage' and v_model:
             db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number="Multi-Dose Profile"))
-            schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).order_by(models.VaccineDoseSchedule.dose_number).all()
+            schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
             current_calc_time = start_time
+            prev_stage_id = None
+            
             for i in range(total_stages):
                 stage_name = f"Dose {i+1}"
-                if i > 0 and i < len(schedules):
-                    interval = schedules[i].interval_description
+                if i > 0:
+                    # Look up the schedule specifically for this dose number to avoid index errors
+                    sched = next((s for s in schedules if s.dose_number == i + 1), None)
+                    interval = sched.interval_description if sched else "1 month"
                     current_calc_time = calculate_future_date(current_calc_time, interval)
+                    
                 stage = models.ApptStage(appointment_id=new_appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
                 db.add(stage)
                 db.flush()
                 prev_stage_id = stage.id 
         else:
-            if booking.service_type == 'Blood Test':
-                for t_name in booking.details.get('items', []):
+            if booking.service_type == 'Vaccine' and v_model:
+                db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+            elif booking.service_type == 'Blood Test':
+                for t_name in items_list:
                     bt = db.query(models.BloodTest).filter_by(name=t_name, clinic_id=booking.clinic_id).first()
                     if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
+                    
             stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
             db.add(stage)
+            
         db.commit()
         return {"status": "success"}
     except Exception as e:
@@ -573,6 +587,8 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
     try:
         appt = db.query(models.Appointment).filter(models.Appointment.id == booking.appt_id).first()
         if not appt: raise HTTPException(status_code=404)
+        
+        # Clear out existing staged mappings for reconstruction
         db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
         db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
         db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
@@ -580,28 +596,56 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         doc_ic = booking.details.get('assigned_doctor_id')
         if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
         appt.doctor_ic = doc_ic
-        
         appt.general_notes = booking.details.get('reason') if booking.service_type == 'Others' else None
-        mapped_appt_type = 'single-visit'
-        total_stages = 1
-        if booking.service_type == 'Vaccine':
-            dose_text = str(booking.details.get('dose', ''))
-            if dose_text.startswith('Dose'):
-                mapped_appt_type = 'multi-stage'
-                total_stages = booking.details.get('total_doses', 1)
-        appt.appt_type = mapped_appt_type
-        appt.total_stages = total_stages
+        
         service = booking.service_type
         items_list = booking.details.get('items', [])
-        if service == 'Vaccine' and items_list:
+        dose_val = str(booking.details.get('dose', 'Single Dose'))
+        
+        mapped_appt_type = 'single-visit'
+        total_stages = 1
+        
+        if service == 'Vaccine':
+            total_stages = booking.details.get('total_doses', 1)
+            if total_stages > 1 and dose_val == 'Dose 1':
+                mapped_appt_type = 'multi-stage'
+                
+        appt.appt_type = mapped_appt_type
+        appt.total_stages = total_stages
+        
+        start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
+        
+        if mapped_appt_type == 'multi-stage' and items_list:
             v = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
-            if v: db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v.id, dose_number=booking.details.get('dose')))
-        elif service == 'Blood Test' and items_list:
-            for t_name in items_list:
-                bt = db.query(models.BloodTest).filter_by(name=t_name).first()
-                if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
-        new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S"))
-        db.add(new_stage)
+            if v: 
+                db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v.id, dose_number="Multi-Dose Profile"))
+                schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v.id).all()
+                current_calc_time = start_time
+                prev_stage_id = None
+                
+                for i in range(total_stages):
+                    stage_name = f"Dose {i+1}"
+                    if i > 0:
+                        sched = next((s for s in schedules if s.dose_number == i + 1), None)
+                        interval = sched.interval_description if sched else "1 month"
+                        current_calc_time = calculate_future_date(current_calc_time, interval)
+                        
+                    stage = models.ApptStage(appointment_id=appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
+                    db.add(stage)
+                    db.flush()
+                    prev_stage_id = stage.id
+        else:
+            if service == 'Vaccine' and items_list:
+                v = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
+                if v: db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v.id, dose_number=dose_val))
+            elif service == 'Blood Test' and items_list:
+                for t_name in items_list:
+                    bt = db.query(models.BloodTest).filter_by(name=t_name).first()
+                    if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
+                    
+            new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
+            db.add(new_stage)
+            
         db.commit()
         return {"status": "success"}
     except Exception as e:
