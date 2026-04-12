@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { Calendar, momentLocalizer } from 'react-big-calendar';
+import { Calendar, momentLocalizer, View } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
-import { X, User, Droplet, Activity, Calendar as CalIcon } from 'lucide-react';
+import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle } from 'lucide-react';
 
 const localizer = momentLocalizer(moment);
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
@@ -22,15 +22,24 @@ export default function AdminDashboard() {
   
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
-  const [isNewBooking, setIsNewBooking] = useState(false);
   
+  const [isNewBooking, setIsNewBooking] = useState(false);
+  const [isCreatingNewPatient, setIsCreatingNewPatient] = useState(false);
+  const [newPatientForm, setNewPatientForm] = useState({ name: '', ic_passport_number: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
+  
+  // Status check pop-up state
+  const [pendingReviewEvent, setPendingReviewEvent] = useState<any>(null);
+
+  // Filters State
+  const [filters, setFilters] = useState({ scheduled: true, completed: true, canceled: false, noShow: true });
+
   const [editForm, setEditForm] = useState({
     status: 'scheduled', scheduled_time: '', doctor_ic: '', patient_ic: '',
     service: 'Consultation', items: [] as string[], dose: 'Single Dose', reason: ''
   });
 
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [currentView, setCurrentView] = useState<any>('week'); 
+  const [currentView, setCurrentView] = useState<View>('week'); 
 
   useEffect(() => { 
     loadAppointments();
@@ -39,12 +48,25 @@ export default function AdminDashboard() {
     loadServices();
   }, []);
 
-  const loadDoctors = () => {
-    fetch(`http://127.0.0.1:8000/doctors/${CLINIC_ID}`).then(res => res.json()).then(data => setDoctors(data));
-  };
-  const loadPatients = () => {
-    fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`).then(res => res.json()).then(data => setPatients(data));
-  };
+  // Time passed interval checker for pop-up
+  useEffect(() => {
+    const interval = setInterval(() => {
+        if (!events.length || pendingReviewEvent) return;
+        const now = new Date();
+        const passedEvent = events.find(e => 
+            e.status === 'scheduled' && 
+            e.end < now && 
+            e.end.toDateString() === now.toDateString() // Restrict to today's events so it doesn't trigger for old history
+        );
+        if (passedEvent) {
+            setPendingReviewEvent(passedEvent);
+        }
+    }, 15000); 
+    return () => clearInterval(interval);
+  }, [events, pendingReviewEvent]);
+
+  const loadDoctors = () => fetch(`http://127.0.0.1:8000/doctors/${CLINIC_ID}`).then(res => res.json()).then(setDoctors);
+  const loadPatients = () => fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`).then(res => res.json()).then(setPatients);
 
   const loadServices = async () => {
     const vRes = await fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`);
@@ -68,8 +90,6 @@ export default function AdminDashboard() {
           if (appt.service === "Vaccine") vacCount++;
           if (appt.service === "Blood Test") btCount++;
           
-          const capStatus = appt.status.charAt(0).toUpperCase() + appt.status.slice(1);
-          
           let detailsText = appt.reason || "General Consultation";
           if (appt.service === "Vaccine") detailsText = `${appt.items[0]} (${appt.dose})`;
           if (appt.service === "Blood Test") detailsText = appt.items.join(", ");
@@ -79,26 +99,57 @@ export default function AdminDashboard() {
             service_details: detailsText,
             start: new Date(appt.start), 
             end: new Date(appt.end), 
-            title: `${appt.title || "Unknown Patient"} (${capStatus})` 
+            title: `${appt.title || "Unknown Patient"}` 
           };
         });
         
         setEvents(formattedEvents);
         setStats({ total: formattedEvents.length, vaccines: vacCount, bloodTests: btCount });
-        
-        const sorted = [...formattedEvents].sort((a,b) => a.start.getTime() - b.start.getTime());
-        if (sorted.length > 0) setCurrentDate(sorted[0].start);
-
         setIsLoading(false);
       })
       .catch(() => { setError(true); setIsLoading(false); });
   };
 
+  const handleReviewAction = async (status: string) => {
+    if (!pendingReviewEvent) return;
+    await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${pendingReviewEvent.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+    });
+    setPendingReviewEvent(null);
+    loadAppointments();
+  };
+
   const handleUpdateOrAddEvent = async () => {
     if(isNewBooking) {
-        if(!editForm.patient_ic) return alert("Please select a patient.");
+        let finalIc = editForm.patient_ic;
+        
+        // Handle Direct Registration
+        if (isCreatingNewPatient) {
+            const isMY = newPatientForm.nationality.toUpperCase() === 'MALAYSIA';
+            if (isMY) {
+                const phoneRegex = /^(\+?60|0)[1-9][0-9]{7,9}$/;
+                if (!phoneRegex.test(newPatientForm.phone.replace(/[\s-]/g, ''))) {
+                    return alert("Invalid Malaysian phone number format.");
+                }
+            }
+            if(!newPatientForm.name || !newPatientForm.ic_passport_number || !newPatientForm.phone) {
+                return alert("Please fill required patient fields.");
+            }
+            
+            const pRes = await fetch(`http://127.0.0.1:8000/register-patient`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ clinic_id: CLINIC_ID, telegram_id: 0, ...newPatientForm })
+            });
+            const pData = await pRes.json();
+            if (pData.status === 'error') return alert(pData.reason);
+            finalIc = newPatientForm.ic_passport_number;
+        } else if (!finalIc) {
+            return alert("Please select a patient.");
+        }
+
         const payload = {
-            clinic_id: CLINIC_ID, telegram_id: 0, ic_passport_number: editForm.patient_ic,
+            clinic_id: CLINIC_ID, telegram_id: 0, ic_passport_number: finalIc,
             service_type: editForm.service,
             details: {
                 items: editForm.items, dose: editForm.dose, reason: editForm.reason, assigned_doctor_id: editForm.doctor_ic
@@ -124,8 +175,10 @@ export default function AdminDashboard() {
   };
 
   const handleCancelBooking = async () => {
-    if(!confirm("Are you sure you want to completely cancel this booking?")) return;
-    await fetch(`http://127.0.0.1:8000/cancel-appointment/${selectedEvent.appt_id}`, { method: 'POST' });
+    if(!confirm("Are you sure you want to cancel this booking?")) return;
+    await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'canceled' })
+    });
     window.location.reload(); 
   };
 
@@ -151,14 +204,18 @@ export default function AdminDashboard() {
       scheduled_time: moment().format("YYYY-MM-DDTHH:mm"),
       doctor_ic: '', patient_ic: '', service: 'Consultation', items: [], dose: 'Single Dose', reason: ''
     });
+    setNewPatientForm({ name: '', ic_passport_number: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
     setSelectedEvent(null);
     setIsEditingEvent(true);
     setIsNewBooking(true);
+    setIsCreatingNewPatient(false);
   };
 
-  // --- Dynamic Groupings (Explicit typings added to fix TS errors) ---
+  // --- Dynamic Groupings (Hep B Normalization) ---
   const groupedVaccines = vaccinesList.reduce((acc: any, v: any) => {
-    const type = v.type || "Other";
+    let type = (v.type || "Other").trim();
+    if (type.toLowerCase().includes("hepatitis b")) type = "Hepatitis B"; 
+    
     if (!acc[type]) acc[type] = [];
     acc[type].push(v); return acc;
   }, {} as Record<string, any[]>);
@@ -171,70 +228,90 @@ export default function AdminDashboard() {
       if (selectedVac.has_booster) doseOptions.push("Booster");
   }
 
+  // --- Blood Test Package Restrictor ---
   const pkgs = bloodTestsList.filter((b: any) => b.test_type === 'package');
   const sgls = bloodTestsList.filter((b: any) => b.test_type === 'single');
+  
   const selectedPkgs = pkgs.filter((p: any) => editForm.items.includes(p.name));
   const includedTestNames = new Set<string>();
   selectedPkgs.forEach((p: any) => {
       if (p.included_tests) p.included_tests.forEach((t: string) => includedTestNames.add(t));
   });
+  const hasOnePackageSelected = selectedPkgs.length > 0;
 
-  const eventStyleGetter = (event: any) => ({
-    style: { backgroundColor: event.color || '#3B82F6', borderRadius: '6px', border: 'none', padding: '4px', opacity: 0.9, fontSize: '0.8rem', fontWeight: 600, color: 'white' }
+  // --- Calendar Filters & Rendering ---
+  const visibleEvents = events.filter(e => {
+      if (e.status === 'canceled' && !filters.canceled) return false;
+      if (e.status === 'completed' && !filters.completed) return false;
+      if (e.status === 'no-show' && !filters.noShow) return false;
+      if (e.status === 'scheduled' && !filters.scheduled) return false;
+      return true;
   });
+
+  const eventStyleGetter = (event: any) => {
+    let style: any = { borderRadius: '6px', border: 'none', padding: '4px', opacity: 0.9, fontSize: '0.8rem', fontWeight: 600, color: 'white' };
+    
+    if (event.status === 'canceled') {
+        style.backgroundColor = '#E2E8F0';
+        style.color = '#64748B';
+        style.textDecoration = 'line-through';
+    } else if (event.status === 'no-show') {
+        style.backgroundColor = '#FECACA';
+        style.color = '#991B1B';
+    } else if (event.status === 'completed') {
+        style.backgroundColor = '#A7F3D0';
+        style.color = '#065F46';
+    } else {
+        style.backgroundColor = event.color || '#3B82F6';
+    }
+    return { style };
+  };
 
   if (isLoading) return <div className="animate-pulse h-[60vh] bg-slate-200 rounded-2xl"></div>;
 
   return (
     <div className="max-w-7xl mx-auto relative">
-      <div className="mb-8 flex justify-between items-center">
+      <div className="mb-6 flex justify-between items-center">
         <div>
             <h1 className="text-3xl font-bold text-slate-800">Dashboard Overview</h1>
             <p className="text-slate-500 mt-1">Manage today's schedule and monitor clinic load.</p>
         </div>
         
-        <div className="flex items-center gap-4">
-            <button onClick={openNewBookingModal} className="bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-emerald-700">
-              + New Booking
-            </button>
-            <div className="flex items-center gap-2 bg-slate-900 rounded-xl px-4 py-2 shadow-lg">
-                <span className="font-bold text-slate-400 text-sm">YEAR</span>
-                <select 
-                    value={currentDate.getFullYear()} 
-                    onChange={(e) => {
-                        const newDate = new Date(currentDate);
-                        newDate.setFullYear(parseInt(e.target.value));
-                        setCurrentDate(newDate);
-                    }}
-                    className="bg-transparent text-white font-bold text-lg outline-none cursor-pointer"
-                >
-                    <option value="2025">2025</option><option value="2026">2026</option><option value="2027">2027</option>
-                </select>
+        <div className="flex flex-col items-end gap-2">
+            <div className="flex items-center gap-4">
+                <button onClick={openNewBookingModal} className="bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-emerald-700">
+                  + New Booking
+                </button>
+                <div className="flex items-center gap-2 bg-slate-900 rounded-xl px-4 py-2 shadow-lg">
+                    <span className="font-bold text-slate-400 text-sm">YEAR</span>
+                    <select 
+                        value={currentDate.getFullYear()} 
+                        onChange={(e) => {
+                            const newDate = new Date(currentDate);
+                            newDate.setFullYear(parseInt(e.target.value));
+                            setCurrentDate(newDate);
+                        }}
+                        className="bg-transparent text-white font-bold text-lg outline-none cursor-pointer"
+                    >
+                        <option value="2025">2025</option><option value="2026">2026</option><option value="2027">2027</option>
+                    </select>
+                </div>
             </div>
-        </div>
-      </div>
-      
-      {error && <div className="bg-red-50 text-red-700 p-4 rounded-xl mb-6 shadow-sm"><strong>⚠️ Connection Error:</strong> Is FastAPI running on 127.0.0.1:8000?</div>}
-
-      <div className="grid grid-cols-3 gap-6 mb-8">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <div className="flex items-center gap-4"><div className="p-3 bg-blue-100 text-blue-600 rounded-xl"><User size={24}/></div>
-          <div><p className="text-sm font-bold text-slate-400 uppercase">Total Appointments</p><h3 className="text-3xl font-black text-slate-800">{stats.total}</h3></div></div>
-        </div>
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <div className="flex items-center gap-4"><div className="p-3 bg-purple-100 text-purple-600 rounded-xl"><Activity size={24}/></div>
-          <div><p className="text-sm font-bold text-slate-400 uppercase">Vaccine Appointments</p><h3 className="text-3xl font-black text-slate-800">{stats.vaccines}</h3></div></div>
-        </div>
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <div className="flex items-center gap-4"><div className="p-3 bg-red-100 text-red-600 rounded-xl"><Droplet size={24}/></div>
-          <div><p className="text-sm font-bold text-slate-400 uppercase">Blood Test Appointments</p><h3 className="text-3xl font-black text-slate-800">{stats.bloodTests}</h3></div></div>
+            
+            {/* FILTER TOGGLES */}
+            <div className="flex gap-4 text-sm font-semibold text-slate-600 bg-white px-4 py-2 rounded-lg shadow-sm border border-slate-100">
+               <label className="flex items-center gap-2 cursor-pointer hover:text-blue-600"><input type="checkbox" className="accent-blue-600 w-4 h-4" checked={filters.scheduled} onChange={e => setFilters({...filters, scheduled: e.target.checked})} /> Scheduled</label>
+               <label className="flex items-center gap-2 cursor-pointer hover:text-emerald-600"><input type="checkbox" className="accent-emerald-600 w-4 h-4" checked={filters.completed} onChange={e => setFilters({...filters, completed: e.target.checked})} /> Completed</label>
+               <label className="flex items-center gap-2 cursor-pointer hover:text-slate-800"><input type="checkbox" className="accent-slate-600 w-4 h-4" checked={filters.canceled} onChange={e => setFilters({...filters, canceled: e.target.checked})} /> Canceled</label>
+               <label className="flex items-center gap-2 cursor-pointer hover:text-red-600"><input type="checkbox" className="accent-red-600 w-4 h-4" checked={filters.noShow} onChange={e => setFilters({...filters, noShow: e.target.checked})} /> No-Show</label>
+            </div>
         </div>
       </div>
 
       <div style={{ height: '650px' }} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <Calendar
           localizer={localizer}
-          events={events}
+          events={visibleEvents}
           startAccessor="start"
           endAccessor="end"
           date={currentDate}
@@ -247,7 +324,27 @@ export default function AdminDashboard() {
         />
       </div>
 
-      {(selectedEvent || isNewBooking) && (
+      {/* PENDING REVIEW POP-UP */}
+      {pendingReviewEvent && (
+        <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-[60] backdrop-blur-sm">
+           <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-2xl transform transition-all scale-100">
+              <div className="mx-auto w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mb-4">
+                 <AlertTriangle size={32} />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-800 mb-2">Appointment Review Needed</h2>
+              <p className="text-slate-600 mb-6">
+                 The scheduled time for <strong>{pendingReviewEvent.title}</strong> has ended. Did the patient attend?
+              </p>
+              <div className="flex gap-4 justify-center">
+                 <button onClick={() => handleReviewAction('no-show')} className="px-6 py-3 bg-red-100 text-red-700 rounded-xl font-bold hover:bg-red-200 transition">No-Show</button>
+                 <button onClick={() => handleReviewAction('completed')} className="px-6 py-3 bg-emerald-500 text-white rounded-xl font-bold hover:bg-emerald-600 transition">Completed</button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* BOOKING MODAL */}
+      {(selectedEvent || isNewBooking) && !pendingReviewEvent && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-[500px] overflow-hidden max-h-[90vh] overflow-y-auto">
             <div className="bg-slate-50 px-6 py-4 border-b flex justify-between items-center">
@@ -257,12 +354,38 @@ export default function AdminDashboard() {
 
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Patient</label>
+                <div className="flex justify-between items-end mb-1">
+                    <label className="block text-xs font-bold text-slate-400 uppercase">Patient</label>
+                    {isNewBooking && (
+                        <button onClick={() => setIsCreatingNewPatient(!isCreatingNewPatient)} className="text-xs font-bold text-blue-600 underline">
+                            {isCreatingNewPatient ? "Select Existing" : "+ Register New Patient"}
+                        </button>
+                    )}
+                </div>
+                
                 {isNewBooking ? (
-                    <select value={editForm.patient_ic} onChange={e => setEditForm({...editForm, patient_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                        <option value="">Select a Registered Patient</option>
-                        {patients.map((p: any) => <option key={p.ic_passport_number} value={p.ic_passport_number}>{p.name} ({p.ic_passport_number})</option>)}
-                    </select>
+                    isCreatingNewPatient ? (
+                        <div className="space-y-3 bg-blue-50 p-4 rounded-lg border border-blue-100">
+                            <div><input type="text" placeholder="Full Name" value={newPatientForm.name} onChange={e => setNewPatientForm({...newPatientForm, name: e.target.value})} className="w-full p-2 border rounded outline-none" /></div>
+                            <div className="grid grid-cols-2 gap-2">
+                                <input type="text" placeholder="IC/Passport" value={newPatientForm.ic_passport_number} onChange={e => setNewPatientForm({...newPatientForm, ic_passport_number: e.target.value})} className="w-full p-2 border rounded outline-none" />
+                                <input type="text" placeholder="Phone Number" value={newPatientForm.phone} onChange={e => setNewPatientForm({...newPatientForm, phone: e.target.value})} className="w-full p-2 border rounded outline-none" />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                                <select value={newPatientForm.nationality} onChange={e => setNewPatientForm({...newPatientForm, nationality: e.target.value})} className="w-full p-2 border rounded outline-none bg-white">
+                                    <option value="MALAYSIA">Malaysian</option><option value="NON-MALAYSIAN">Non-Malaysian</option>
+                                </select>
+                                <select value={newPatientForm.gender} onChange={e => setNewPatientForm({...newPatientForm, gender: e.target.value})} className="w-full p-2 border rounded outline-none bg-white">
+                                    <option value="MALE">Male</option><option value="FEMALE">Female</option>
+                                </select>
+                            </div>
+                        </div>
+                    ) : (
+                        <select value={editForm.patient_ic} onChange={e => setEditForm({...editForm, patient_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
+                            <option value="">Select a Registered Patient</option>
+                            {patients.map((p: any) => <option key={p.ic_passport_number} value={p.ic_passport_number}>{p.name} ({p.ic_passport_number})</option>)}
+                        </select>
+                    )
                 ) : (
                     <p className="font-semibold text-lg">{selectedEvent?.title ? selectedEvent.title.split(' - ')[0] : 'Unknown Patient'}</p>
                 )}
@@ -289,7 +412,10 @@ export default function AdminDashboard() {
                         <div>
                             <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Booking Status</label>
                             <select value={editForm.status} onChange={(e) => setEditForm({...editForm, status: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                            <option value="scheduled">Scheduled</option><option value="completed">Completed</option><option value="canceled">Canceled</option>
+                                <option value="scheduled">Scheduled</option>
+                                <option value="completed">Completed</option>
+                                <option value="canceled">Canceled</option>
+                                <option value="no-show">No-Show</option>
                             </select>
                         </div>
                       )}
@@ -333,18 +459,23 @@ export default function AdminDashboard() {
 
                       {editForm.service === 'Blood Test' && (
                         <div>
-                          <label className="block text-xs font-bold text-slate-500 mb-2">1. Packages</label>
+                          <label className="block text-xs font-bold text-slate-500 mb-2">1. Packages (Max 1)</label>
                           <div className="grid grid-cols-2 gap-2 mb-4">
-                             {pkgs.map((bt: any) => (
-                                <label key={bt.id} className="flex items-center gap-2 bg-white p-2 rounded border text-sm cursor-pointer hover:bg-slate-50">
-                                  <input type="checkbox" className="w-4 h-4 accent-blue-600" checked={editForm.items.includes(bt.name)} 
-                                     onChange={e => {
-                                        const newItems = e.target.checked ? [...editForm.items, bt.name] : editForm.items.filter(i => i !== bt.name);
-                                        setEditForm({...editForm, items: newItems});
-                                     }}
-                                  /> {bt.name}
-                                </label>
-                             ))}
+                             {pkgs.map((bt: any) => {
+                                const isChecked = editForm.items.includes(bt.name);
+                                const disabled = hasOnePackageSelected && !isChecked;
+                                return (
+                                    <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
+                                    <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={disabled} checked={isChecked} 
+                                        onChange={e => {
+                                            if(disabled) return;
+                                            const newItems = e.target.checked ? [...editForm.items, bt.name] : editForm.items.filter(i => i !== bt.name);
+                                            setEditForm({...editForm, items: newItems});
+                                        }}
+                                    /> {bt.name}
+                                    </label>
+                                );
+                             })}
                           </div>
                           
                           <label className="block text-xs font-bold text-slate-500 mb-2">2. Single Tests</label>
@@ -352,7 +483,7 @@ export default function AdminDashboard() {
                              {sgls.map((bt: any) => {
                                 const isIncluded = includedTestNames.has(bt.name);
                                 return (
-                                    <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${isIncluded ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
+                                    <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${isIncluded ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
                                       <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={isIncluded} checked={isIncluded || editForm.items.includes(bt.name)} 
                                          onChange={e => {
                                             if(isIncluded) return;
@@ -402,7 +533,13 @@ export default function AdminDashboard() {
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Status</label>
-                      <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold capitalize ${selectedEvent?.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : selectedEvent?.status === 'canceled' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{selectedEvent?.status}</span>
+                      <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold capitalize 
+                        ${selectedEvent?.status === 'completed' ? 'bg-emerald-100 text-emerald-700' 
+                        : selectedEvent?.status === 'canceled' ? 'bg-slate-200 text-slate-600' 
+                        : selectedEvent?.status === 'no-show' ? 'bg-red-100 text-red-700'
+                        : 'bg-blue-100 text-blue-700'}`}>
+                          {selectedEvent?.status}
+                      </span>
                     </div>
                   </div>
                 </>
@@ -416,7 +553,7 @@ export default function AdminDashboard() {
                     else setIsEditingEvent(false);
                  }} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel Edit</button>
               ) : (
-                 <button onClick={handleCancelBooking} className="px-4 py-2 bg-red-100 text-red-600 rounded-lg font-medium hover:bg-red-200 transition-colors">Cancel Booking</button>
+                 <button onClick={handleCancelBooking} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Cancel Booking</button>
               )}
               
               {isEditingEvent ? (
