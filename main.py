@@ -49,7 +49,7 @@ class VaccineAIRequest(BaseModel):
 class BloodTestCreate(BaseModel):
     clinic_id: str
     name: str
-    description: str
+    description: Optional[str] = None # FIXED: Make description optional to prevent 400 Bad Request
     price: float
     test_type: str
     component_ids: Optional[List[int]] = [] 
@@ -132,10 +132,27 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
         doctors = db.query(models.Doctor).filter(models.Doctor.ic_passport_number.in_(doctor_ics)).all() if doctor_ics else []
         doctor_dict = {str(d.ic_passport_number): d for d in doctors}
 
+        # Fetch mapping details for specific info display
         appt_vaccines = db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id.in_(appt_ids)).all() if appt_ids else []
         appt_tests = db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id.in_(appt_ids)).all() if appt_ids else []
-        vac_appt_ids = {str(av.appointment_id) for av in appt_vaccines}
-        test_appt_ids = {str(at.appointment_id) for at in appt_tests}
+        
+        vac_dict = {}
+        for av in appt_vaccines:
+            key = str(av.appointment_id)
+            if key not in vac_dict: vac_dict[key] = []
+            vac_dict[key].append(av)
+            
+        test_dict = {}
+        for at in appt_tests:
+            key = str(at.appointment_id)
+            if key not in test_dict: test_dict[key] = []
+            test_dict[key].append(at)
+            
+        all_vacs = db.query(models.Vaccine).all()
+        v_name_map = {v.id: v.name for v in all_vacs}
+        
+        all_tests = db.query(models.BloodTest).all()
+        t_name_map = {t.id: t.name for t in all_tests}
 
         result = []
         for stage in stages:
@@ -146,16 +163,32 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
             patient = patient_dict.get(str(appt.patient_ic))
             doctor = doctor_dict.get(str(appt.doctor_ic)) if appt.doctor_ic else None
 
+            key = str(appt.id)
+            service_details = ""
             service = "Consultation"
             color = "#3B82F6" 
-            if str(appt.id) in vac_appt_ids: 
+
+            # Aggregate Vaccine and Blood Test specifics
+            if key in vac_dict:
                 service = "Vaccine"
                 color = "#A855F7"
-            elif str(appt.id) in test_appt_ids: 
+                details_list = []
+                for av in vac_dict[key]:
+                    v_name = v_name_map.get(av.vaccine_id, "Unknown Vaccine")
+                    dose_info = stage.stage_name if stage.stage_name.startswith("Dose") else av.dose_number
+                    details_list.append(f"{v_name} ({dose_info})")
+                service_details = ", ".join(details_list)
+            elif key in test_dict:
                 service = "Blood Test"
-                color = "#EF4444" 
-            elif appt.appt_type == "follow-up":
-                color = "#F97316"
+                color = "#EF4444"
+                details_list = []
+                for at in test_dict[key]:
+                    t_name = t_name_map.get(at.blood_test_id, "Unknown Test")
+                    details_list.append(t_name)
+                service_details = ", ".join(details_list)
+            else:
+                service_details = appt.general_notes or "General Consultation"
+                if appt.appt_type == "follow-up": color = "#F97316"
 
             start_str = stage.scheduled_time.strftime("%Y-%m-%dT%H:%M:%S")
             end_str = (stage.scheduled_time + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -167,8 +200,10 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
                 "end": end_str,
                 "patient_ic": patient.ic_passport_number if patient else "",
                 "doctor": doctor.name if doctor else "Unassigned",
+                "doctor_ic": str(doctor.ic_passport_number) if doctor else "", # Added doctor ID for edits
                 "type": appt.appt_type,
                 "service": service,
+                "service_details": service_details, # Added precise details
                 "status": stage.status,
                 "color": color
             })
@@ -186,6 +221,13 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
         dt_str = data['scheduled_time'].replace("T", " ")
         if len(dt_str) == 16: dt_str += ":00"
         stage.scheduled_time = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+        
+    # Apply doctor modification to the parent appointment mapping
+    if 'doctor_ic' in data:
+        appt = db.query(models.Appointment).filter_by(id=stage.appointment_id).first()
+        if appt:
+            appt.doctor_ic = data['doctor_ic'] if data['doctor_ic'] else None
+
     db.commit()
     return {"status": "success"}
 
@@ -533,7 +575,6 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
                 if v_model: 
                     total_stages = v_model.total_doses
-                    # Only map to multi-stage if the user is explicitly starting the entire series (Dose 1)
                     if total_stages > 1 and dose_val == 'Dose 1':
                         mapped_appt_type = 'multi-stage'
         
@@ -555,7 +596,6 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             for i in range(total_stages):
                 stage_name = f"Dose {i+1}"
                 if i > 0:
-                    # Look up the schedule specifically for this dose number to avoid index errors
                     sched = next((s for s in schedules if s.dose_number == i + 1), None)
                     interval = sched.interval_description if sched else "1 month"
                     current_calc_time = calculate_future_date(current_calc_time, interval)
@@ -588,7 +628,6 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         appt = db.query(models.Appointment).filter(models.Appointment.id == booking.appt_id).first()
         if not appt: raise HTTPException(status_code=404)
         
-        # Clear out existing staged mappings for reconstruction
         db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
         db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
         db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()

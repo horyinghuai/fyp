@@ -11,16 +11,27 @@ const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 
 export default function AdminDashboard() {
   const [events, setEvents] = useState<any[]>([]);
+  const [doctors, setDoctors] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
   const [stats, setStats] = useState({ total: 0, vaccines: 0, bloodTests: 0 });
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
-  const [editEventForm, setEditEventForm] = useState({ status: '', scheduled_time: '' });
+  const [editEventForm, setEditEventForm] = useState({ status: '', scheduled_time: '', doctor_ic: '' });
 
   const [currentDate, setCurrentDate] = useState(new Date());
 
-  useEffect(() => { loadAppointments(); }, []);
+  useEffect(() => { 
+    loadAppointments();
+    loadDoctors(); 
+  }, []);
+
+  const loadDoctors = () => {
+    fetch(`http://127.0.0.1:8000/doctors/${CLINIC_ID}`)
+      .then(res => res.json())
+      .then(data => setDoctors(data))
+      .catch(err => console.error("Error loading doctors:", err));
+  };
 
   const loadAppointments = () => {
     fetch(`http://127.0.0.1:8000/admin/appointments/${CLINIC_ID}`)
@@ -34,8 +45,14 @@ export default function AdminDashboard() {
         const formattedEvents = data.map((appt: any) => {
           if (appt.service === "Vaccine") vacCount++;
           if (appt.service === "Blood Test") btCount++;
-          // FIX: Explicitly enforce valid JS Date object parsing for calendar
-          return { ...appt, start: new Date(appt.start), end: new Date(appt.end), title: appt.title || "Unknown Patient" };
+          
+          const capStatus = appt.status.charAt(0).toUpperCase() + appt.status.slice(1);
+          return { 
+            ...appt, 
+            start: new Date(appt.start), 
+            end: new Date(appt.end), 
+            title: `${appt.title || "Unknown Patient"} (${capStatus})` 
+          };
         });
         
         setEvents(formattedEvents);
@@ -64,7 +81,8 @@ export default function AdminDashboard() {
     setSelectedEvent(event);
     setEditEventForm({
       status: event.status || 'scheduled',
-      scheduled_time: moment(event.start).format("YYYY-MM-DDTHH:mm")
+      scheduled_time: moment(event.start).format("YYYY-MM-DDTHH:mm"),
+      doctor_ic: event.doctor_ic || ''
     });
     setIsEditingEvent(false);
   };
@@ -143,11 +161,25 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
+              <div className="col-span-2 mt-2">
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Specific Details</label>
+                <div className="p-3 bg-slate-50 border rounded-lg text-sm text-slate-700">
+                  {selectedEvent?.service_details || 'N/A'}
+                </div>
+              </div>
+
               {isEditingEvent ? (
                 <>
                   <div>
                     <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Schedule Date & Time</label>
                     <input type="datetime-local" value={editEventForm.scheduled_time} onChange={(e) => setEditEventForm({...editEventForm, scheduled_time: e.target.value})} className="w-full p-2 border rounded-lg outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assign Doctor</label>
+                    <select value={editEventForm.doctor_ic} onChange={(e) => setEditEventForm({...editEventForm, doctor_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
+                      <option value="">Any / Unassigned</option>
+                      {doctors.map(d => <option key={d.ic_passport_number} value={d.ic_passport_number}>{d.name}</option>)}
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Booking Status</label>
@@ -164,7 +196,7 @@ export default function AdminDashboard() {
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Status</label>
-                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${selectedEvent.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : selectedEvent.status === 'canceled' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{selectedEvent.status}</span>
+                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold capitalize ${selectedEvent.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : selectedEvent.status === 'canceled' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{selectedEvent.status}</span>
                   </div>
                 </>
               )}
