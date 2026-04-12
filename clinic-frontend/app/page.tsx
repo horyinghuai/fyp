@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Calendar, momentLocalizer } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
-import { X, User, Activity, Droplet, Calendar as CalIcon } from 'lucide-react';
+import { X, User, Droplet, Activity, Calendar as CalIcon } from 'lucide-react';
 
 const localizer = momentLocalizer(moment);
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
@@ -15,11 +15,12 @@ export default function AdminDashboard() {
   const [error, setError] = useState(false);
   const [stats, setStats] = useState({ total: 0, vaccines: 0, bloodTests: 0 });
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
-  
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [currentView, setCurrentView] = useState<any>('week');
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [editEventForm, setEditEventForm] = useState({ status: '', scheduled_time: '' });
+
+  // Explicit Calendar State
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [currentView, setCurrentView] = useState<any>('week');
 
   useEffect(() => { loadAppointments(); }, []);
 
@@ -27,7 +28,9 @@ export default function AdminDashboard() {
     fetch(`http://127.0.0.1:8000/admin/appointments/${CLINIC_ID}`)
       .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
-        if (!Array.isArray(data)) { setEvents([]); setIsLoading(false); return; }
+        if (!Array.isArray(data) || data.length === 0) { 
+            setEvents([]); setIsLoading(false); return; 
+        }
 
         let vacCount = 0, btCount = 0;
         const formattedEvents = data.map((appt: any) => {
@@ -38,6 +41,12 @@ export default function AdminDashboard() {
         
         setEvents(formattedEvents);
         setStats({ total: formattedEvents.length, vaccines: vacCount, bloodTests: btCount });
+        
+        // CRITICAL FIX: Automatically jump the calendar to the date of the first event (e.g., April 2026)
+        if (formattedEvents.length > 0) {
+            setCurrentDate(new Date(formattedEvents[0].start));
+        }
+
         setIsLoading(false);
       })
       .catch(() => { setError(true); setIsLoading(false); });
@@ -93,7 +102,8 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-[65vh]">
+      {/* Explicit 600px Height ensuring Calendar shows up */}
+      <div style={{ height: '600px' }} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <Calendar
           localizer={localizer}
           events={events}

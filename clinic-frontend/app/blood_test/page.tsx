@@ -12,7 +12,6 @@ export default function BloodTestsPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingBt, setEditingBt] = useState<any>(null);
   
-  // NEW: component_ids array added to formData
   const [formData, setFormData] = useState<{name: string, description: string, price: number, test_type: string, component_ids: number[]}>({ 
     name: '', description: '', price: 0, test_type: 'single', component_ids: [] 
   });
@@ -56,8 +55,9 @@ export default function BloodTestsPage() {
         <button onClick={() => openModal()} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold">+ Add Blood Test</button>
       </div>
 
-      <h2 className="font-bold text-lg border-b pb-2 mb-4 text-slate-700">Packages</h2>
-      <div className="grid grid-cols-2 gap-4 mb-8">
+      {/* PACKAGES SECTION */}
+      <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">1. Packages</h2>
+      <div className="grid grid-cols-2 gap-4 mb-12">
         {packages.map(p => (
           <div key={p.id} className="bg-white rounded-xl p-6 shadow-sm border-t-4 border-emerald-500 flex flex-col">
             <div className="flex justify-between mb-2">
@@ -85,6 +85,34 @@ export default function BloodTestsPage() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* SINGLE TESTS SECTION */}
+      <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">2. Standalone Single Tests</h2>
+      <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden mb-12">
+        <table className="w-full text-left border-collapse">
+          <thead className="bg-slate-50 border-b border-slate-200">
+             <tr>
+               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Test Name</th>
+               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Description</th>
+               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Price</th>
+               <th className="p-4 text-slate-600 font-semibold text-center text-sm uppercase">Actions</th>
+             </tr>
+          </thead>
+          <tbody>
+            {singles.map((s, i) => (
+              <tr key={s.id} className={`border-b border-slate-50 hover:bg-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+                <td className="p-4 font-bold text-slate-800">{s.name}</td>
+                <td className="p-4 text-sm text-slate-500">{s.description}</td>
+                <td className="p-4 font-bold text-emerald-600">RM {s.price}</td>
+                <td className="p-4 text-center space-x-2">
+                  <button onClick={() => openModal(s)} className="text-sm px-3 py-1 bg-slate-100 text-slate-600 rounded font-medium">Edit</button>
+                  <button onClick={() => handleDelete(s.id)} className="text-sm px-3 py-1 bg-red-50 text-red-600 rounded font-medium">Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       {showModal && (
@@ -119,7 +147,7 @@ export default function BloodTestsPage() {
                   <label className="block text-sm font-bold text-slate-700 mb-2">Select Included Single Tests</label>
                   <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
                     {singles.map(s => (
-                      <label key={s.id} className="flex items-center gap-3 cursor-pointer">
+                      <label key={s.id} className="flex items-center gap-3 cursor-pointer bg-white p-2 rounded border border-slate-100 shadow-sm">
                         <input 
                           type="checkbox" 
                           className="w-4 h-4 accent-emerald-600"
