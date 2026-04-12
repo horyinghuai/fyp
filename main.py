@@ -12,14 +12,9 @@ import random
 app = FastAPI(title="Clinic Smart Assistant Backend")
 
 app.add_middleware(
-    CORSMiddleware, 
-    allow_origins=["*"], 
-    allow_credentials=True, 
-    allow_methods=["*"], 
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- PYDANTIC SCHEMAS ---
 class PatientRegister(BaseModel):
     clinic_id: str
     name: str
@@ -103,7 +98,6 @@ class AdminChatReply(BaseModel):
     question: str
     answer: str
 
-# --- GLOBAL HELPER FUNCTIONS ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
@@ -120,7 +114,6 @@ def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
     except: pass
     return start_date + timedelta(days=30) 
 
-# --- DASHBOARD ENDPOINTS ---
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     try:
@@ -164,11 +157,15 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
             elif appt.appt_type == "follow-up":
                 color = "#F97316"
 
+            # FIX: Force strict UTC ISO-8601 formatting so React Big Calendar parses it safely
+            start_str = stage.scheduled_time.strftime("%Y-%m-%dT%H:%M:%S")
+            end_str = (stage.scheduled_time + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
+
             result.append({
                 "id": str(stage.id),
                 "title": f"{patient.name if patient else 'Unknown'} - {stage.stage_name}",
-                "start": stage.scheduled_time.isoformat(),
-                "end": (stage.scheduled_time + timedelta(minutes=30)).isoformat(),
+                "start": start_str,
+                "end": end_str,
                 "patient_ic": patient.ic_passport_number if patient else "",
                 "doctor": doctor.name if doctor else "Unassigned",
                 "type": appt.appt_type,
@@ -185,7 +182,6 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
 def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db)):
     stage = db.query(models.ApptStage).filter_by(id=stage_id).first()
     if not stage: raise HTTPException(status_code=404)
-    
     if 'status' in data: stage.status = data['status']
     if 'scheduled_time' in data:
         dt_str = data['scheduled_time'].replace("T", " ")
@@ -194,7 +190,6 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
     db.commit()
     return {"status": "success"}
 
-# --- PATIENTS ENDPOINTS ---
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
     return db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
@@ -223,7 +218,6 @@ def admin_delete_patient(ic: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-# --- VACCINE ENDPOINTS ---
 @app.get("/admin/global-vaccines")
 def get_global_vaccines(db: Session = Depends(get_db)):
     return db.query(models.Vaccine).all()
@@ -266,7 +260,6 @@ def delete_vaccine(v_id: int, clinic_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-# --- BLOOD TEST ENDPOINTS ---
 @app.post("/admin/blood-tests")
 def create_bt(data: BloodTestCreate, db: Session = Depends(get_db)):
     try:
@@ -304,7 +297,6 @@ def delete_bt(bt_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-# --- CHAT & AI ENDPOINTS ---
 @app.post("/admin/auto-replies")
 def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db)):
     new_msg = models.ChatMessage(clinic_id=data.clinic_id, message=data.question, reply=data.answer, status='auto_rule')
@@ -327,7 +319,6 @@ async def ai_extract(req: TextExtractRequest):
     if isinstance(extracted, dict) and "error" in extracted: return extracted
     return extracted.dict()
 
-# --- CLINIC DATA & DIRECTORY ENDPOINTS ---
 @app.get("/clinic/{clinic_id}")
 def get_clinic(clinic_id: str, db: Session = Depends(get_db)):
     clinic = db.query(models.Clinic).filter(models.Clinic.id == clinic_id).first()
@@ -432,10 +423,7 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
         data_dict = data.dict(exclude_unset=True)
         existing = db.query(models.Patient).filter(models.Patient.clinic_id == data.clinic_id, models.Patient.ic_passport_number == data.ic_passport_number).first()
         if existing:
-            for key, value in data_dict.items():
-                if hasattr(existing, key): setattr(existing, key, value)
-            db.commit()
-            return {"status": "updated"}
+            return {"status": "error", "reason": "Patient IC already exists. Registration aborted."}
         new_patient = models.Patient(**data_dict)
         db.add(new_patient)
         db.commit()
@@ -444,7 +432,6 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
-# --- SCHEDULING & AVAILABILITY ENDPOINTS ---
 def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
     doc_query = db.query(models.Doctor).join(
         models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic

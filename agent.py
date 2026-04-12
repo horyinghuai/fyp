@@ -11,62 +11,55 @@ from dotenv import load_dotenv
 
 load_dotenv()
 LOCAL_LLM_BASE_URL = os.getenv('LOCAL_LLM_BASE_URL', 'http://localhost:1234/v1')
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- DUAL LLM PARALLEL EXECUTION ---
+# --- TRUE ASYNC RACE STRATEGY ---
 async def fetch_local_llm(prompt: str) -> str:
-    """Fetches result from Local LM Studio."""
     async with httpx.AsyncClient() as client:
-        payload = {
-            "model": "local-model",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0
-        }
+        payload = {"model": "local-model", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0}
         url = f"{LOCAL_LLM_BASE_URL}/chat/completions"
         res = await client.post(url, json=payload, timeout=45.0)
         res.raise_for_status()
         return res.json()["choices"][0]["message"]["content"].strip()
 
 async def fetch_gemini(prompt: str) -> str:
-    """Fetches result from Gemini API."""
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_key:
-        await asyncio.sleep(9999) # Will never finish if no key, allowing Local LLM to win
+    if not GEMINI_API_KEY:
+        await asyncio.sleep(9999) 
         return ""
     async with httpx.AsyncClient() as client:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.0}
-        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.0}}
         res = await client.post(url, json=payload, timeout=30.0)
         res.raise_for_status()
         data = res.json()
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-async def run_llm_parallel(prompt: str) -> str:
-    """Runs both LLMs simultaneously. Returns fastest. Cancels the slower one."""
-    task_local = asyncio.create_task(fetch_local_llm(prompt))
-    task_gemini = asyncio.create_task(fetch_gemini(prompt))
+async def run_llm_race(prompt: str) -> str:
+    """Runs Local and Gemini in parallel. Returns the fastest. Cancels the loser immediately."""
+    task_local = asyncio.create_task(fetch_local_llm(prompt), name="Local_LLM")
+    task_gemini = asyncio.create_task(fetch_gemini(prompt), name="Gemini_LLM")
     
     done, pending = await asyncio.wait(
         [task_local, task_gemini],
         return_when=asyncio.FIRST_COMPLETED
     )
     
+    # Aggressively cancel the slower task to free up CPU/GPU/Network
     for p in pending:
-        p.cancel() # Cancel the loser
+        p.cancel()
         
     first_done = list(done)[0]
+    
     try:
         return first_done.result()
     except Exception as e:
-        print(f"First LLM failed: {e}. Falling back to the other...")
+        print(f"[{first_done.get_name()}] failed: {e}. Falling back to the slower LLM...")
         if pending:
             remaining = list(pending)[0]
             try:
                 return await remaining
             except Exception as e2:
-                raise Exception(f"Both LLMs failed. Local: {e}, Gemini: {e2}")
+                raise Exception(f"Both LLMs failed. Local Error: {e} | Gemini Error: {e2}")
         raise e
 
 # --- DATE CALCULATOR ---
@@ -135,7 +128,7 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
     }}
     """
     try:
-        raw_text = await run_llm_parallel(prompt)
+        raw_text = await run_llm_race(prompt)
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         llm_data = json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
         
@@ -165,7 +158,7 @@ async def generate_vaccine_schedule_ai(search_query: str):
     }}
     """
     try:
-        raw_text = await run_llm_parallel(prompt)
+        raw_text = await run_llm_race(prompt)
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         return json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
     except Exception as e:

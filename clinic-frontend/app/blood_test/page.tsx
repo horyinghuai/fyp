@@ -26,15 +26,18 @@ export default function BloodTestsPage() {
     } catch (e) { setIsLoading(false); }
   };
 
-  const handleSave = async () => {
+  const handleSave = async (e: any) => {
+    e.preventDefault();
+    if (!formData.name || !formData.price) { alert("Name and Price are required!"); return; }
+
     try {
         const isEditing = !!editingBt;
         const url = isEditing ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` : `http://127.0.0.1:8000/admin/blood-tests`;
         const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData }) });
         if (!res.ok) throw new Error("Failed to save.");
         setShowModal(false); loadData();
-    } catch (e) {
-        alert("Failed to save. Ensure FastAPI is running and inputs are valid.");
+    } catch (err) {
+        alert("Failed to save. Ensure FastAPI is running.");
     }
   };
 

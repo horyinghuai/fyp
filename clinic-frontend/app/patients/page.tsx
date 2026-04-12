@@ -4,19 +4,39 @@ import { useState, useEffect } from 'react';
 
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 
-// Full generic country list dropdown
-const COUNTRIES = ["Malaysia", "Singapore", "Indonesia", "Thailand", "China", "India", "United States", "United Kingdom", "Australia", "Japan", "South Korea", "Others"];
+const COUNTRIES = [
+  "Malaysia", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia", "Australia", 
+  "Austria", "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", 
+  "Benin", "Bhutan", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "Brunei", "Bulgaria", 
+  "Burkina Faso", "Burundi", "Cambodia", "Cameroon", "Canada", "Central African Republic", "Chad", "Chile", 
+  "China", "Colombia", "Comoros", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czech Republic", "Denmark", 
+  "Djibouti", "Dominican Republic", "East Timor", "Ecuador", "Egypt", "El Salvador", "Equatorial Guinea", 
+  "Eritrea", "Estonia", "Ethiopia", "Fiji", "Finland", "France", "Gabon", "Gambia", "Georgia", "Germany", 
+  "Ghana", "Greece", "Grenada", "Guatemala", "Guinea", "Guyana", "Haiti", "Honduras", "Hungary", "Iceland", 
+  "India", "Indonesia", "Iran", "Iraq", "Ireland", "Israel", "Italy", "Jamaica", "Japan", "Jordan", 
+  "Kazakhstan", "Kenya", "Kiribati", "Kuwait", "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho", 
+  "Liberia", "Libya", "Liechtenstein", "Lithuania", "Luxembourg", "Macedonia", "Madagascar", "Malawi", 
+  "Maldives", "Mali", "Malta", "Mauritania", "Mauritius", "Mexico", "Micronesia", "Moldova", "Monaco", 
+  "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Netherlands", 
+  "New Zealand", "Nicaragua", "Niger", "Nigeria", "Norway", "Oman", "Pakistan", "Palau", "Panama", 
+  "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland", "Portugal", "Qatar", "Romania", 
+  "Russia", "Rwanda", "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent", "Samoa", "San Marino", 
+  "Sao Tome", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia", 
+  "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South Korea", "Spain", "Sri Lanka", "Sudan", 
+  "Suriname", "Swaziland", "Sweden", "Switzerland", "Syria", "Taiwan", "Tajikistan", "Tanzania", "Thailand", 
+  "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu", "Uganda", 
+  "Ukraine", "United Arab Emirates", "United Kingdom", "United States", "Uruguay", "Uzbekistan", "Vanuatu", 
+  "Vatican City", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
+];
 
 export default function PatientsPage() {
   const [patients, setPatients] = useState<any[]>([]);
   const [search, setSearch] = useState("");
-  const [error, setError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState<any>(null);
   
-  // NEW: Malaysian specific flag
   const [isMalaysian, setIsMalaysian] = useState(true);
   const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
 
@@ -26,7 +46,7 @@ export default function PatientsPage() {
     fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`)
       .then(res => res.json())
       .then(data => { setPatients(data); setIsLoading(false); })
-      .catch(() => { setError(true); setIsLoading(false); });
+      .catch(() => { setIsLoading(false); });
   };
 
   const handleICChange = (val: string) => {
@@ -67,11 +87,14 @@ export default function PatientsPage() {
                                   : { clinic_id: CLINIC_ID, ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address };
 
         const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        if (!res.ok) throw new Error();
+        const data = await res.json();
+        
+        if (data.status === "error") { alert("⚠️ " + data.reason); return; }
+        
         setShowModal(false);
         loadData();
     } catch (e) {
-        alert("⚠️ Failed to save. Ensure FastAPI is running and IC does not already exist.");
+        alert("⚠️ Failed to save. Check your connection.");
     }
   };
 

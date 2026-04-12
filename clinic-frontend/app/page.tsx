@@ -18,37 +18,36 @@ export default function AdminDashboard() {
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [editEventForm, setEditEventForm] = useState({ status: '', scheduled_time: '' });
 
-  const [defaultDate, setDefaultDate] = useState<Date | null>(null);
+  const [currentDate, setCurrentDate] = useState(new Date());
 
-  useEffect(() => {
-    let isMounted = true;
+  useEffect(() => { loadAppointments(); }, []);
+
+  const loadAppointments = () => {
     fetch(`http://127.0.0.1:8000/admin/appointments/${CLINIC_ID}`)
       .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
-        if (!isMounted) return;
         if (!Array.isArray(data) || data.length === 0) { 
-            setEvents([]); setDefaultDate(new Date()); setIsLoading(false); return; 
+            setEvents([]); setIsLoading(false); return; 
         }
 
         let vacCount = 0, btCount = 0;
         const formattedEvents = data.map((appt: any) => {
           if (appt.service === "Vaccine") vacCount++;
           if (appt.service === "Blood Test") btCount++;
+          // FIX: Explicitly enforce valid JS Date object parsing for calendar
           return { ...appt, start: new Date(appt.start), end: new Date(appt.end), title: appt.title || "Unknown Patient" };
         });
         
         setEvents(formattedEvents);
         setStats({ total: formattedEvents.length, vaccines: vacCount, bloodTests: btCount });
         
-        // FIX: Force Calendar to open precisely on the month of the first appointment
         const sorted = [...formattedEvents].sort((a,b) => a.start.getTime() - b.start.getTime());
-        setDefaultDate(sorted[0].start);
+        if (sorted.length > 0) setCurrentDate(sorted[0].start);
+
         setIsLoading(false);
       })
-      .catch(() => { if (isMounted) { setError(true); setDefaultDate(new Date()); setIsLoading(false); } });
-      
-    return () => { isMounted = false; };
-  }, []);
+      .catch(() => { setError(true); setIsLoading(false); });
+  };
 
   const handleUpdateEvent = async () => {
     await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`, {
@@ -74,13 +73,18 @@ export default function AdminDashboard() {
     style: { backgroundColor: event.color || '#3B82F6', borderRadius: '6px', border: 'none', padding: '4px', opacity: 0.9, fontSize: '0.8rem', fontWeight: 600, color: 'white' }
   });
 
-  if (isLoading || !defaultDate) return <div className="animate-pulse h-[60vh] bg-slate-200 rounded-2xl"></div>;
+  if (isLoading) return <div className="animate-pulse h-[60vh] bg-slate-200 rounded-2xl"></div>;
 
   return (
     <div className="max-w-7xl mx-auto relative">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-slate-800">Dashboard Overview</h1>
-        <p className="text-slate-500 mt-1">Manage today's schedule and monitor clinic load.</p>
+      <div className="mb-8 flex justify-between items-center">
+        <div>
+            <h1 className="text-3xl font-bold text-slate-800">Dashboard Overview</h1>
+            <p className="text-slate-500 mt-1">Manage today's schedule and monitor clinic load.</p>
+        </div>
+        <div className="bg-slate-900 text-white px-6 py-2 rounded-xl font-bold tracking-widest text-lg shadow-lg">
+            YEAR: {currentDate.getFullYear()}
+        </div>
       </div>
       
       {error && <div className="bg-red-50 text-red-700 p-4 rounded-xl mb-6 shadow-sm"><strong>⚠️ Connection Error:</strong> Is FastAPI running on 127.0.0.1:8000?</div>}
@@ -100,16 +104,17 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      <div style={{ height: '600px' }} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+      <div style={{ height: '650px' }} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <Calendar
           localizer={localizer}
           events={events}
           startAccessor="start"
           endAccessor="end"
-          defaultDate={defaultDate}
-          defaultView="week"
+          date={currentDate}
+          onNavigate={setCurrentDate}
           eventPropGetter={eventStyleGetter}
           views={['month', 'week', 'day']}
+          defaultView="week"
           onSelectEvent={openEventModal}
         />
       </div>
