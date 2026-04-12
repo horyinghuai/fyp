@@ -8,12 +8,40 @@ from typing import Dict, Any, Optional, List
 from agent import extract_appointment_details, generate_vaccine_schedule_ai
 from datetime import datetime, timedelta
 import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 app = FastAPI(title="Clinic Smart Assistant Backend")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class ForgotPasswordReq(BaseModel):
+    email: str
+
+class UserUpdate(BaseModel):
+    email: Optional[str] = None
+    role: Optional[str] = None
+    password: Optional[str] = None
+
+class DoctorCreateReq(BaseModel):
+    clinic_id: str
+    ic: str
+    name: str
+    gender: str
+    specialization: Optional[str] = None
+
+class DoctorScheduleReq(BaseModel):
+    clinic_id: str
+    day_of_week: str
+    start_time: str
+    end_time: str
 
 class PatientRegister(BaseModel):
     clinic_id: str
@@ -755,3 +783,123 @@ def cancel_appointment(appt_id: str, db: Session = Depends(get_db)):
     db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled"})
     db.commit()
     return {"status": "success"}
+
+@app.post("/login")
+def user_login(data: UserLogin, db: Session = Depends(get_db)):
+    # Note: In production use secure hashing comparison (e.g. bcrypt)
+    user = db.query(models.User).filter(models.User.email == data.email).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    # Assuming direct comparison for demo; change to password verification function
+    if user.password_hash != data.password:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    
+    return {"status": "success", "user_ic": user.ic_passport_number, "role": user.role}
+
+@app.post("/forgot-password")
+def forgot_password(data: ForgotPasswordReq, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == data.email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Email not found.")
+    
+    # SMTP GMAIL CONFIGURATION
+    try:
+        sender_email = "yourclinic.gmail@gmail.com"  # Replace with actual Gmail
+        sender_password = "your-app-password"        # Replace with Gmail App Password
+        
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = user.email
+        msg['Subject'] = "AICAS - Password Reset Code"
+        
+        body = "Your verification code is: 123456\n\nPlease use this to reset your password."
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Uncomment and configure safely when ready to send real emails
+        # server = smtplib.SMTP('smtp.gmail.com', 587)
+        # server.starttls()
+        # server.login(sender_email, sender_password)
+        # server.send_message(msg)
+        # server.quit()
+        
+        return {"status": "success", "message": "Email sent (Simulation mode)."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to send email configuration.")
+
+@app.get("/admin/users/{ic}")
+def get_user_details(ic: str, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter_by(ic_passport_number=ic).first()
+    if not user: raise HTTPException(status_code=404)
+    return {"email": user.email, "role": user.role}
+
+@app.put("/admin/users/{ic}")
+def update_user_details(ic: str, data: UserUpdate, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter_by(ic_passport_number=ic).first()
+    if not user: raise HTTPException(status_code=404)
+    if data.email: user.email = data.email
+    if data.role: user.role = data.role
+    if data.password: user.password_hash = data.password # Securely hash this in prod
+    db.commit()
+    return {"status": "success"}
+
+@app.get("/admin/doctors-all/{clinic_id}")
+def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
+    # Assuming we fetch all doctors assigned to clinic schedules 
+    # For a full admin system, consider a pure bridge table if a doctor is registered to a clinic regardless of current availability.
+    # Below retrieves all unique doctors with any availability in that clinic.
+    doctors = db.query(models.Doctor).join(
+        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
+    ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).distinct().all()
+    
+    # Alternatively if you want *all* doctors globally (for demo purposes):
+    # doctors = db.query(models.Doctor).all()
+    return doctors
+
+@app.post("/admin/doctors")
+def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
+    existing = db.query(models.Doctor).filter_by(ic_passport_number=data.ic).first()
+    if not existing:
+        new_doc = models.Doctor(ic_passport_number=data.ic, name=data.name, gender=data.gender, specialization=data.specialization)
+        db.add(new_doc)
+    else:
+        existing.name = data.name
+        existing.gender = data.gender
+        existing.specialization = data.specialization
+    db.commit()
+    return {"status": "success"}
+
+@app.put("/admin/doctors/{ic}")
+def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db)):
+    doc = db.query(models.Doctor).filter_by(ic_passport_number=ic).first()
+    if doc:
+        doc.name = data.name
+        doc.gender = data.gender
+        doc.specialization = data.specialization
+        db.commit()
+    return {"status": "success"}
+
+@app.get("/admin/doctors/{ic}/availability/{clinic_id}")
+def get_doc_availability(ic: str, clinic_id: str, db: Session = Depends(get_db)):
+    avails = db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=ic, clinic_id=clinic_id).all()
+    return [{"day_of_week": a.day_of_week, "start_time": a.start_time.strftime("%H:%M"), "end_time": a.end_time.strftime("%H:%M")} for a in avails]
+
+@app.post("/admin/doctors/{ic}/availability")
+def add_doc_availability(ic: str, data: DoctorScheduleReq, db: Session = Depends(get_db)):
+    st = datetime.strptime(data.start_time, "%H:%M").time()
+    et = datetime.strptime(data.end_time, "%H:%M").time()
+    avail = models.DoctorClinicAvailability(doctor_ic=ic, clinic_id=data.clinic_id, day_of_week=data.day_of_week, start_time=st, end_time=et)
+    db.add(avail)
+    db.commit()
+    return {"status": "success"}
+
+@app.delete("/admin/doctors/{ic}/availability/{clinic_id}/{day}/{start_time}")
+def del_doc_availability(ic: str, clinic_id: str, day: str, start_time: str, db: Session = Depends(get_db)):
+    st = datetime.strptime(start_time, "%H:%M").time()
+    db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=ic, clinic_id=clinic_id, day_of_week=day, start_time=st).delete()
+    db.commit()
+    return {"status": "success"}
+
+@app.get("/admin/chat-history/{clinic_id}")
+def get_chat_history(clinic_id: str, db: Session = Depends(get_db)):
+    msgs = db.query(models.ChatMessage).filter_by(clinic_id=clinic_id).order_by(models.ChatMessage.created_at.desc()).all()
+    return [{"telegram_id": m.telegram_id, "message": m.message, "reply": m.reply, "created_at": m.created_at} for m in msgs]
