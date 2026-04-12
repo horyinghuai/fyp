@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Calendar, momentLocalizer, View } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
-import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle } from 'lucide-react';
+import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle, FileText } from 'lucide-react';
 
 const localizer = momentLocalizer(moment);
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
@@ -18,7 +18,7 @@ export default function AdminDashboard() {
   
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [stats, setStats] = useState({ total: 0, vaccines: 0, bloodTests: 0 });
+  const [stats, setStats] = useState({ total: 0, consultations: 0, vaccines: 0, bloodTests: 0 });
   
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
@@ -27,10 +27,7 @@ export default function AdminDashboard() {
   const [isCreatingNewPatient, setIsCreatingNewPatient] = useState(false);
   const [newPatientForm, setNewPatientForm] = useState({ name: '', ic_passport_number: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
   
-  // Status check pop-up state
   const [pendingReviewEvent, setPendingReviewEvent] = useState<any>(null);
-
-  // Filters State
   const [filters, setFilters] = useState({ scheduled: true, completed: true, canceled: false, noShow: true });
 
   const [editForm, setEditForm] = useState({
@@ -48,7 +45,6 @@ export default function AdminDashboard() {
     loadServices();
   }, []);
 
-  // Time passed interval checker for pop-up
   useEffect(() => {
     const interval = setInterval(() => {
         if (!events.length || pendingReviewEvent) return;
@@ -56,11 +52,9 @@ export default function AdminDashboard() {
         const passedEvent = events.find(e => 
             e.status === 'scheduled' && 
             e.end < now && 
-            e.end.toDateString() === now.toDateString() // Restrict to today's events so it doesn't trigger for old history
+            e.end.toDateString() === now.toDateString() 
         );
-        if (passedEvent) {
-            setPendingReviewEvent(passedEvent);
-        }
+        if (passedEvent) setPendingReviewEvent(passedEvent);
     }, 15000); 
     return () => clearInterval(interval);
   }, [events, pendingReviewEvent]);
@@ -85,10 +79,11 @@ export default function AdminDashboard() {
             setEvents([]); setIsLoading(false); return; 
         }
 
-        let vacCount = 0, btCount = 0;
+        let vacCount = 0, btCount = 0, consultCount = 0;
         const formattedEvents = data.map((appt: any) => {
           if (appt.service === "Vaccine") vacCount++;
           if (appt.service === "Blood Test") btCount++;
+          if (appt.service === "Consultation") consultCount++;
           
           let detailsText = appt.reason || "General Consultation";
           if (appt.service === "Vaccine") detailsText = `${appt.items[0]} (${appt.dose})`;
@@ -99,12 +94,13 @@ export default function AdminDashboard() {
             service_details: detailsText,
             start: new Date(appt.start), 
             end: new Date(appt.end), 
-            title: `${appt.title || "Unknown Patient"}` 
+            // The title already comes dynamically pre-formatted from backend as `Name - Service`
+            title: appt.title || "Unknown Patient"
           };
         });
         
         setEvents(formattedEvents);
-        setStats({ total: formattedEvents.length, vaccines: vacCount, bloodTests: btCount });
+        setStats({ total: formattedEvents.length, consultations: consultCount, vaccines: vacCount, bloodTests: btCount });
         setIsLoading(false);
       })
       .catch(() => { setError(true); setIsLoading(false); });
@@ -124,15 +120,20 @@ export default function AdminDashboard() {
     if(isNewBooking) {
         let finalIc = editForm.patient_ic;
         
-        // Handle Direct Registration
         if (isCreatingNewPatient) {
             const isMY = newPatientForm.nationality.toUpperCase() === 'MALAYSIA';
             if (isMY) {
                 const phoneRegex = /^(\+?60|0)[1-9][0-9]{7,9}$/;
                 if (!phoneRegex.test(newPatientForm.phone.replace(/[\s-]/g, ''))) {
-                    return alert("Invalid Malaysian phone number format.");
+                    return alert("Invalid Malaysian phone number format. Valid examples: 0123456789 or +60123456789.");
+                }
+            } else {
+                const intlPhoneRegex = /^\+?[0-9\s\-\(\)]{7,20}$/;
+                if(!intlPhoneRegex.test(newPatientForm.phone)) {
+                    return alert("Invalid phone number format. Please provide a valid international phone number.");
                 }
             }
+
             if(!newPatientForm.name || !newPatientForm.ic_passport_number || !newPatientForm.phone) {
                 return alert("Please fill required patient fields.");
             }
@@ -215,7 +216,6 @@ export default function AdminDashboard() {
   const groupedVaccines = vaccinesList.reduce((acc: any, v: any) => {
     let type = (v.type || "Other").trim();
     if (type.toLowerCase().includes("hepatitis b")) type = "Hepatitis B"; 
-    
     if (!acc[type]) acc[type] = [];
     acc[type].push(v); return acc;
   }, {} as Record<string, any[]>);
@@ -308,6 +308,26 @@ export default function AdminDashboard() {
         </div>
       </div>
 
+      {/* 4-COLUMN STATS */}
+      <div className="grid grid-cols-4 gap-6 mb-8">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex items-center gap-4"><div className="p-3 bg-blue-100 text-blue-600 rounded-xl"><User size={24}/></div>
+          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Total Bookings</p><h3 className="text-3xl font-black text-slate-800">{stats.total}</h3></div></div>
+        </div>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex items-center gap-4"><div className="p-3 bg-orange-100 text-orange-600 rounded-xl"><FileText size={24}/></div>
+          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Consultations</p><h3 className="text-3xl font-black text-slate-800">{stats.consultations}</h3></div></div>
+        </div>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex items-center gap-4"><div className="p-3 bg-purple-100 text-purple-600 rounded-xl"><Activity size={24}/></div>
+          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Vaccines</p><h3 className="text-3xl font-black text-slate-800">{stats.vaccines}</h3></div></div>
+        </div>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+          <div className="flex items-center gap-4"><div className="p-3 bg-red-100 text-red-600 rounded-xl"><Droplet size={24}/></div>
+          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Blood Tests</p><h3 className="text-3xl font-black text-slate-800">{stats.bloodTests}</h3></div></div>
+        </div>
+      </div>
+
       <div style={{ height: '650px' }} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <Calendar
           localizer={localizer}
@@ -333,7 +353,7 @@ export default function AdminDashboard() {
               </div>
               <h2 className="text-2xl font-bold text-slate-800 mb-2">Appointment Review Needed</h2>
               <p className="text-slate-600 mb-6">
-                 The scheduled time for <strong>{pendingReviewEvent.title}</strong> has ended. Did the patient attend?
+                 The scheduled time for <strong>{pendingReviewEvent.patient_name} - {pendingReviewEvent.stage_name}</strong> has ended. Did the patient attend?
               </p>
               <div className="flex gap-4 justify-center">
                  <button onClick={() => handleReviewAction('no-show')} className="px-6 py-3 bg-red-100 text-red-700 rounded-xl font-bold hover:bg-red-200 transition">No-Show</button>
@@ -387,7 +407,7 @@ export default function AdminDashboard() {
                         </select>
                     )
                 ) : (
-                    <p className="font-semibold text-lg">{selectedEvent?.title ? selectedEvent.title.split(' - ')[0] : 'Unknown Patient'}</p>
+                    <p className="font-semibold text-lg">{selectedEvent?.patient_name || 'Unknown Patient'}</p>
                 )}
               </div>
 
