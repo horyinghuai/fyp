@@ -49,7 +49,7 @@ class VaccineAIRequest(BaseModel):
 class BloodTestCreate(BaseModel):
     clinic_id: str
     name: str
-    description: Optional[str] = None # FIXED: Make description optional to prevent 400 Bad Request
+    description: Optional[str] = None 
     price: float
     test_type: str
     component_ids: Optional[List[int]] = [] 
@@ -67,6 +67,7 @@ class UpdateBooking(BaseModel):
     service_type: str
     details: Dict[str, Any]
     scheduled_time: str
+    status: Optional[str] = "scheduled" # Added to preserve status during updates
 
 class ChatMessageModel(BaseModel):
     clinic_id: str
@@ -132,7 +133,6 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
         doctors = db.query(models.Doctor).filter(models.Doctor.ic_passport_number.in_(doctor_ics)).all() if doctor_ics else []
         doctor_dict = {str(d.ic_passport_number): d for d in doctors}
 
-        # Fetch mapping details for specific info display
         appt_vaccines = db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id.in_(appt_ids)).all() if appt_ids else []
         appt_tests = db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id.in_(appt_ids)).all() if appt_ids else []
         
@@ -164,30 +164,27 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
             doctor = doctor_dict.get(str(appt.doctor_ic)) if appt.doctor_ic else None
 
             key = str(appt.id)
-            service_details = ""
+            items_list = []
+            dose_val = stage.stage_name
+            total_doses = appt.total_stages
+
             service = "Consultation"
             color = "#3B82F6" 
 
-            # Aggregate Vaccine and Blood Test specifics
             if key in vac_dict:
                 service = "Vaccine"
                 color = "#A855F7"
-                details_list = []
                 for av in vac_dict[key]:
                     v_name = v_name_map.get(av.vaccine_id, "Unknown Vaccine")
-                    dose_info = stage.stage_name if stage.stage_name.startswith("Dose") else av.dose_number
-                    details_list.append(f"{v_name} ({dose_info})")
-                service_details = ", ".join(details_list)
+                    items_list.append(v_name)
+                    dose_val = stage.stage_name if stage.stage_name.startswith("Dose") else av.dose_number
             elif key in test_dict:
                 service = "Blood Test"
                 color = "#EF4444"
-                details_list = []
                 for at in test_dict[key]:
                     t_name = t_name_map.get(at.blood_test_id, "Unknown Test")
-                    details_list.append(t_name)
-                service_details = ", ".join(details_list)
+                    items_list.append(t_name)
             else:
-                service_details = appt.general_notes or "General Consultation"
                 if appt.appt_type == "follow-up": color = "#F97316"
 
             start_str = stage.scheduled_time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -195,15 +192,19 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
 
             result.append({
                 "id": str(stage.id),
+                "appt_id": str(appt.id),
                 "title": f"{patient.name if patient else 'Unknown'} - {stage.stage_name}",
                 "start": start_str,
                 "end": end_str,
                 "patient_ic": patient.ic_passport_number if patient else "",
                 "doctor": doctor.name if doctor else "Unassigned",
-                "doctor_ic": str(doctor.ic_passport_number) if doctor else "", # Added doctor ID for edits
+                "doctor_ic": str(doctor.ic_passport_number) if doctor else "",
                 "type": appt.appt_type,
                 "service": service,
-                "service_details": service_details, # Added precise details
+                "items": items_list,
+                "dose": dose_val,
+                "total_doses": total_doses,
+                "reason": appt.general_notes or "",
                 "status": stage.status,
                 "color": color
             })
@@ -221,13 +222,6 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
         dt_str = data['scheduled_time'].replace("T", " ")
         if len(dt_str) == 16: dt_str += ":00"
         stage.scheduled_time = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-        
-    # Apply doctor modification to the parent appointment mapping
-    if 'doctor_ic' in data:
-        appt = db.query(models.Appointment).filter_by(id=stage.appointment_id).first()
-        if appt:
-            appt.doctor_ic = data['doctor_ic'] if data['doctor_ic'] else None
-
     db.commit()
     return {"status": "success"}
 
@@ -669,7 +663,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                         interval = sched.interval_description if sched else "1 month"
                         current_calc_time = calculate_future_date(current_calc_time, interval)
                         
-                    stage = models.ApptStage(appointment_id=appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
+                    stage = models.ApptStage(appointment_id=appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=booking.status if i == 0 else "scheduled")
                     db.add(stage)
                     db.flush()
                     prev_stage_id = stage.id
@@ -682,7 +676,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                     bt = db.query(models.BloodTest).filter_by(name=t_name).first()
                     if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
                     
-            new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
+            new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time, status=booking.status)
             db.add(new_stage)
             
         db.commit()

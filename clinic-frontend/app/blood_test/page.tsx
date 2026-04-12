@@ -30,14 +30,29 @@ export default function BloodTestsPage() {
     e.preventDefault();
     if (!formData.name || !formData.price) { alert("Name and Price are required!"); return; }
 
+    // FIXED Payload Mapping to prevent 400 Bad Request
+    const payload = {
+        clinic_id: CLINIC_ID,
+        name: formData.name,
+        description: formData.description || null, // Force null if empty string
+        price: Number(formData.price) || 0, // Force pure JS Number
+        test_type: formData.test_type,
+        component_ids: formData.component_ids.map(Number) // Enforce Array of Integers
+    };
+
     try {
         const isEditing = !!editingBt;
         const url = isEditing ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` : `http://127.0.0.1:8000/admin/blood-tests`;
-        const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData }) });
+        const res = await fetch(url, { 
+            method: isEditing ? 'PUT' : 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify(payload) 
+        });
+        
         if (!res.ok) throw new Error("Failed to save.");
         setShowModal(false); loadData();
     } catch (err) {
-        alert("Failed to save. Ensure FastAPI is running.");
+        alert("Failed to save. Ensure FastAPI is running and data matches database format.");
     }
   };
 
