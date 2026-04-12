@@ -20,19 +20,22 @@ export default function BloodTestsPage() {
 
   const loadData = async () => {
     try {
-      const [pkgRes, sglRes] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`), fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`)
-      ]);
+      const [pkgRes, sglRes] = await Promise.all([ fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`), fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`) ]);
       setPackages(await pkgRes.json()); setSingles(await sglRes.json());
       setIsLoading(false);
     } catch (e) { setIsLoading(false); }
   };
 
-  const handleSave = async () => {
-    const isEditing = !!editingBt;
-    const url = isEditing ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` : `http://127.0.0.1:8000/admin/blood-tests`;
-    await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData }) });
-    setShowModal(false); loadData();
+  const handleSave = async (e: any) => {
+    e.preventDefault();
+    try {
+        const isEditing = !!editingBt;
+        const url = isEditing ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` : `http://127.0.0.1:8000/admin/blood-tests`;
+        await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData }) });
+        setShowModal(false); loadData();
+    } catch (err) {
+        console.error(err); alert("Failed to save. Ensure FastAPI is running.");
+    }
   };
 
   const handleDelete = async (id: number) => {
@@ -76,7 +79,7 @@ export default function BloodTestsPage() {
             <div className="mt-auto">
               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Included Tests ({p.included_tests?.length || 0})</label>
               <div className="flex flex-wrap gap-2 mb-4">
-                {p.included_tests?.map((t: string, i: number) => <span key={i} className="bg-slate-100 text-xs px-2 py-1 rounded text-slate-600 font-medium">{t}</span>)}
+                {p.included_tests?.map((t: string, i: number) => <span key={i} className="bg-slate-100 text-xs px-2 py-1 rounded text-slate-600 font-medium border border-slate-200">{t}</span>)}
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t pt-4">
@@ -118,7 +121,7 @@ export default function BloodTestsPage() {
       {showModal && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
-            <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingBt ? 'Edit Test' : 'Add Test'}</h3>
+            <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingBt ? 'Modify Test / Package' : 'Add New Record'}</h3>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Test Name</label>
@@ -166,7 +169,7 @@ export default function BloodTestsPage() {
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
               <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded-lg font-medium">Cancel</button>
-              <button onClick={handleSave} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium">Save Setting</button>
+              <button onClick={handleSave} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium">Save Data</button>
             </div>
           </div>
         </div>

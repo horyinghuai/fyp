@@ -26,10 +26,12 @@ class PatientRegister(BaseModel):
     nationality: Optional[str] = None
 
 class PatientUpdate(BaseModel):
+    ic_passport_number: str
     name: str
     phone: str
     gender: str
     nationality: str
+    address: Optional[str] = None
 
 class VaccineCreate(BaseModel):
     clinic_id: str
@@ -96,10 +98,22 @@ class AdminChatReply(BaseModel):
     question: str
     answer: str
 
+# GLOBAL HELPER FUNCTIONS
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
     db.commit()
+
+def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
+    interval_str = interval_str.lower()
+    try:
+        amount = int(''.join(filter(str.isdigit, interval_str)))
+        if 'month' in interval_str: return start_date + timedelta(days=30 * amount)
+        elif 'week' in interval_str: return start_date + timedelta(weeks=amount)
+        elif 'year' in interval_str or 'annual' in interval_str: return start_date + timedelta(days=365 * amount)
+        elif 'day' in interval_str: return start_date + timedelta(days=amount)
+    except: pass
+    return start_date + timedelta(days=30) 
 
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
@@ -165,7 +179,6 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
 def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db)):
     stage = db.query(models.ApptStage).filter_by(id=stage_id).first()
     if not stage: raise HTTPException(status_code=404)
-    
     if 'status' in data: stage.status = data['status']
     if 'scheduled_time' in data:
         dt_str = data['scheduled_time'].replace("T", " ")
@@ -182,8 +195,18 @@ def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
 def admin_update_patient(ic: str, data: PatientUpdate, db: Session = Depends(get_db)):
     p = db.query(models.Patient).filter_by(ic_passport_number=ic).first()
     if p:
-        p.name, p.phone, p.gender, p.nationality = data.name, data.phone, data.gender, data.nationality
-        db.commit()
+        try:
+            if data.ic_passport_number and data.ic_passport_number != ic:
+                p.ic_passport_number = data.ic_passport_number
+            p.name = data.name
+            p.phone = data.phone
+            p.gender = data.gender
+            p.nationality = data.nationality
+            p.address = data.address
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Update failed. IC may already exist.")
     return {"status": "success"}
 
 @app.delete("/admin/patients/{ic}")
@@ -212,7 +235,6 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
         for sched in data.schedules:
             db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
         db.commit()
-
     vc = models.VaccineClinic(vaccine_id=v_id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
     db.add(vc)
     db.commit()
@@ -493,7 +515,11 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         if items_list:
             v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
             if v_model: total_stages = v_model.total_doses
+    
     doc_ic = booking.details.get('assigned_doctor_id')
+    # FIX: Prevent Foreign Key constraint violation
+    if not doc_ic or doc_ic == "ANY" or doc_ic == "None": doc_ic = None
+
     new_appt = models.Appointment(clinic_id=booking.clinic_id, patient_ic=patient.ic_passport_number, doctor_ic=doc_ic, appt_type=mapped_appt_type, total_stages=total_stages, general_notes=booking.details.get('reason') if booking.service_type == 'Others' else None)
     db.add(new_appt)
     db.flush() 
@@ -529,7 +555,11 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
     db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
     db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
     db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
-    appt.doctor_ic = booking.details.get('assigned_doctor_id')
+    
+    doc_ic = booking.details.get('assigned_doctor_id')
+    if not doc_ic or doc_ic == "ANY" or doc_ic == "None": doc_ic = None
+    appt.doctor_ic = doc_ic
+    
     appt.general_notes = booking.details.get('reason') if booking.service_type == 'Others' else None
     mapped_appt_type = 'single-visit'
     total_stages = 1

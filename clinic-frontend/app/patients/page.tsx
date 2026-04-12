@@ -12,7 +12,7 @@ export default function PatientsPage() {
   
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState<any>(null);
-  const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA' });
+  const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
 
   useEffect(() => { loadData(); }, []);
 
@@ -23,13 +23,31 @@ export default function PatientsPage() {
       .catch(() => { setError(true); setIsLoading(false); });
   };
 
-  const handleSave = async () => {
-    const isEditing = !!editingPatient;
-    const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${formData.ic}` : `http://127.0.0.1:8000/register-patient`;
-    const payload = isEditing ? { name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality } 
-                              : { clinic_id: CLINIC_ID, ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality };
+  const handleICChange = (val: string) => {
+      let gender = formData.gender;
+      if (/^\d{6}-\d{2}-\d{4}$/.test(val)) {
+          const lastDigit = parseInt(val[val.length - 1]);
+          gender = lastDigit % 2 === 0 ? 'FEMALE' : 'MALE';
+      }
+      setFormData({...formData, ic: val, gender: gender});
+  };
 
-    await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const handleSave = async () => {
+    if (!formData.ic || !formData.name || !formData.phone) {
+        alert("IC/Passport, Name, and Phone are required fields."); return;
+    }
+    if (formData.nationality === 'MALAYSIA' && !/^\d{6}-\d{2}-\d{4}$/.test(formData.ic)) {
+        alert("Malaysian IC must follow the format XXXXXX-XX-XXXX."); return;
+    }
+
+    const isEditing = !!editingPatient;
+    const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${editingPatient.ic_passport_number}` : `http://127.0.0.1:8000/register-patient`;
+    const payload = isEditing ? { ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address } 
+                              : { clinic_id: CLINIC_ID, ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address };
+
+    const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!res.ok) { alert("Failed to save data. IC may already exist."); return; }
+    
     setShowModal(false);
     loadData();
   };
@@ -43,8 +61,8 @@ export default function PatientsPage() {
 
   const openModal = (patient: any = null) => {
     setEditingPatient(patient);
-    if(patient) setFormData({ ic: patient.ic_passport_number, name: patient.name, phone: patient.phone, gender: patient.gender, nationality: patient.nationality });
-    else setFormData({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA' });
+    if(patient) setFormData({ ic: patient.ic_passport_number, name: patient.name, phone: patient.phone, gender: patient.gender, nationality: patient.nationality, address: patient.address || '' });
+    else setFormData({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
     setShowModal(true);
   };
 
@@ -55,16 +73,12 @@ export default function PatientsPage() {
   return (
     <div className="max-w-7xl mx-auto">
       <div className="flex justify-between items-center mb-8">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-800">👥 Patient Directory</h1>
-        </div>
+        <div><h1 className="text-3xl font-bold text-slate-800">👥 Patient Directory</h1></div>
         <div className="flex gap-4">
           <input type="text" placeholder="Search Name or IC..." value={search} onChange={(e) => setSearch(e.target.value)} className="px-4 py-2 border rounded-lg outline-none w-64" />
-          <button onClick={() => openModal()} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold">+ Add Patient</button>
+          <button onClick={() => openModal()} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold shadow-md">+ Add Patient</button>
         </div>
       </div>
-      
-      {error && <div className="bg-red-50 text-red-600 p-4 rounded-xl mb-4">⚠️ Cannot connect to backend. Is FastAPI running on 127.0.0.1:8000?</div>}
 
       <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100">
         <table className="w-full text-left border-collapse">
@@ -93,37 +107,41 @@ export default function PatientsPage() {
 
       {showModal && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white p-6 rounded-2xl w-[400px] shadow-2xl">
-            <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingPatient ? 'Edit Patient' : 'Add New Patient'}</h3>
+          <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
+            <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingPatient ? 'Modify Patient Data' : 'Add New Patient'}</h3>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">IC / Passport Number</label>
-                <input type="text" placeholder="IC / Passport" disabled={!!editingPatient} value={formData.ic} onChange={e => setFormData({...formData, ic: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500" />
+                <input type="text" placeholder="e.g. 900101-14-5533" value={formData.ic} onChange={e => handleICChange(e.target.value)} className="w-full p-3 border rounded-lg outline-none" />
               </div>
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Patient Name</label>
-                <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500" />
+                <label className="block text-sm font-bold text-slate-700 mb-1">Patient Full Name</label>
+                <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Home Address</label>
+                <input type="text" placeholder="Full Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Phone Number</label>
-                <input type="text" placeholder="+60123456789" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500" />
+                <input type="text" placeholder="+60123456789" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
               </div>
               <div className="flex gap-4">
                 <div className="flex-1">
                   <label className="block text-sm font-bold text-slate-700 mb-1">Gender</label>
-                  <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none bg-white">
+                  <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full p-3 border rounded-lg outline-none bg-white">
                     <option value="MALE">Male</option><option value="FEMALE">Female</option>
                   </select>
                 </div>
                 <div className="flex-1">
                   <label className="block text-sm font-bold text-slate-700 mb-1">Nationality</label>
-                  <input type="text" placeholder="Nationality" value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value})} className="w-full p-3 border border-slate-200 rounded-lg outline-none focus:border-blue-500" />
+                  <input type="text" placeholder="e.g. MALAYSIA" value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
                 </div>
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200 transition">Cancel</button>
-              <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition">Save Patient</button>
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200">Cancel</button>
+              <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700">Save Patient</button>
             </div>
           </div>
         </div>

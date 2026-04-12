@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import requests
 from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
 from datetime import datetime, timedelta
@@ -12,6 +13,33 @@ load_dotenv()
 LOCAL_LLM_BASE_URL = os.getenv('LOCAL_LLM_BASE_URL', 'http://localhost:1234/v1')
 client = OpenAI(base_url=LOCAL_LLM_BASE_URL, api_key='lm-studio')
 
+# --- DUAL LLM FALLBACK SYSTEM ---
+def run_llm_with_fallback(prompt: str) -> str:
+    """Tries Local LLM first (45s timeout). If it fails or times out, falls back to Gemini API."""
+    try:
+        response = client.chat.completions.create(
+            model="local-model", 
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            timeout=45.0 
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Local LLM failed or timed out: {e}. Falling back to Gemini API...")
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_key:
+            raise Exception("Local LLM failed and GEMINI_API_KEY is not set in .env")
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.0}
+        }
+        res = requests.post(url, json=payload, timeout=30.0)
+        res.raise_for_status()
+        data = res.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
 def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_time_str: str):
     now = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
     final_date = None
@@ -19,8 +47,7 @@ def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_tim
 
     if raw_date_text:
         dt_str = raw_date_text.lower().strip()
-        if re.match(r'\d{4}-\d{2}-\d{2}', dt_str):
-            final_date = dt_str
+        if re.match(r'\d{4}-\d{2}-\d{2}', dt_str): final_date = dt_str
         elif match := re.search(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', dt_str):
             d, m, y = match.groups()
             if not y:
@@ -28,10 +55,8 @@ def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_tim
                 if int(m) < now.month: y += 1
             elif len(y) == 2: y = int(y) + 2000
             final_date = f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
-        elif "today" in dt_str:
-            final_date = now.strftime("%Y-%m-%d")
-        elif "tomorrow" in dt_str:
-            final_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif "today" in dt_str: final_date = now.strftime("%Y-%m-%d")
+        elif "tomorrow" in dt_str: final_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
         elif match := re.search(r'in (\d+) day', dt_str):
             days_ahead = int(match.group(1))
             final_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
@@ -39,21 +64,16 @@ def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_tim
             days_of_week = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
             for i, day in enumerate(days_of_week):
                 if day in dt_str:
-                    current_weekday = now.weekday()
-                    target_weekday = i
-                    days_ahead = target_weekday - current_weekday
+                    days_ahead = i - now.weekday()
                     if days_ahead <= 0 or "next" in dt_str: days_ahead += 7
                     final_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
                     break
 
     if raw_time_text:
         tt_str = raw_time_text.lower().strip().replace('.', ':')
-        if re.match(r'\d{2}:\d{2}:\d{2}', tt_str):
-            final_time = tt_str
+        if re.match(r'\d{2}:\d{2}:\d{2}', tt_str): final_time = tt_str
         elif match := re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', tt_str):
-            h = int(match.group(1))
-            m = int(match.group(2) or 0)
-            ampm = match.group(3)
+            h, m, ampm = int(match.group(1)), int(match.group(2) or 0), match.group(3)
             if ampm == 'pm' and h < 12: h += 12
             elif ampm == 'am' and h == 12: h = 0
             final_time = f"{h:02d}:{m:02d}:00"
@@ -68,12 +88,11 @@ class AppointmentExtraction(BaseModel):
     reason: Optional[str]
 
 def extract_appointment_details(user_text: str, current_time_str: str):
-    # SPEED OPTIMIZATION: Forced strict JSON to bypass deepseek-r1 thinking overhead
     prompt = f"""
     You are a strict JSON API. Extract the exact date and time words from the user's text.
     USER TEXT: "{user_text}"
     
-    CRITICAL INSTRUCTION: DO NOT output any <think> tags. DO NOT output explanations. Output ONLY raw valid JSON.
+    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output any conversational text.
     {{
         "intent": "booking",
         "raw_date_text": "extracted exact date words or null",
@@ -83,31 +102,24 @@ def extract_appointment_details(user_text: str, current_time_str: str):
     }}
     """
     try:
-        response = client.chat.completions.create(
-            model="local-model", 
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0 
-        )
-        raw_text = response.choices[0].message.content.strip()
+        raw_text = run_llm_with_fallback(prompt)
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         llm_data = json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
         
         calculated_date, calculated_time = calculate_exact_datetime(llm_data.get("raw_date_text"), llm_data.get("raw_time_text"), current_time_str)
         return AppointmentExtraction(intent=llm_data.get("intent", "booking"), date_preference=calculated_date, time_preference=calculated_time, doctor_preference=llm_data.get("doctor_preference"), reason=llm_data.get("reason"))
     except Exception as e:
-        return {"error": f"LM Studio Request failed: {str(e)}"}
+        return {"error": f"AI Parsing Error: {str(e)}"}
 
 def generate_vaccine_schedule_ai(search_query: str):
-    # SPEED OPTIMIZATION & VACCINE TYPE SEARCH LOGIC
     prompt = f"""
     You are a strict Medical Database JSON API. The user entered: "{search_query}".
     
-    RULES:
-    1. If it is a generic disease/type (e.g., "COVID", "Flu", "Hepatitis"): Return status "multiple_options" and a list of 3-5 specific vaccine brand names in "options".
+    1. If it is a generic disease (e.g., "COVID", "Flu", "Hepatitis"): Return status "multiple_options" and a list of 3-5 specific vaccine brand names in "options".
     2. If it is a specific vaccine brand (e.g., "Pfizer", "Twinrix"): Return status "exact_match", and provide its medical type, total doses, booster status, and interval schedules.
-    3. If it is completely unrecognized/fake: Return status "invalid".
+    3. If it is unrecognized or fake: Return status "invalid".
     
-    CRITICAL INSTRUCTION: DO NOT output <think> tags. Output ONLY raw valid JSON.
+    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text.
     {{
         "status": "exact_match", 
         "options": ["Brand A", "Brand B"], 
@@ -120,16 +132,11 @@ def generate_vaccine_schedule_ai(search_query: str):
     }}
     """
     try:
-        response = client.chat.completions.create(
-            model="local-model", 
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0 
-        )
-        raw_text = response.choices[0].message.content.strip()
+        raw_text = run_llm_with_fallback(prompt)
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         return json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
     except Exception as e:
-        return {"error": f"LM Studio Request failed: {str(e)}"}
+        return {"error": f"AI Request failed: {str(e)}"}
 
 class AgentState(TypedDict):
     requested_time: str

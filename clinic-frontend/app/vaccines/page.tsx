@@ -33,9 +33,7 @@ export default function VaccinesPage() {
 
   const handleAIAutoFill = async (queryToSearch: string) => {
     if (!queryToSearch) return;
-    setAiLoading(true);
-    setAiErrorMsg("");
-    setAiOptions([]);
+    setAiLoading(true); setAiErrorMsg(""); setAiOptions([]);
     try {
       const res = await fetch(`http://127.0.0.1:8000/admin/ai/vaccine-schedule`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ search_query: queryToSearch })
@@ -57,6 +55,10 @@ export default function VaccinesPage() {
   };
 
   const handleSave = async () => {
+    if (!formData.price || formData.price <= 0) {
+        alert("Please insert a valid price before saving.");
+        return;
+    }
     const isEditing = !!editingVac;
     const url = isEditing ? `http://127.0.0.1:8000/admin/vaccines/${editingVac.id}` : `http://127.0.0.1:8000/admin/vaccines`;
     await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData }) });
@@ -70,8 +72,7 @@ export default function VaccinesPage() {
   };
 
   const openModal = (v: any = null) => {
-    setEditingVac(v);
-    setAiOptions([]); setAiErrorMsg(""); setSearchQuery("");
+    setEditingVac(v); setAiOptions([]); setAiErrorMsg(""); setSearchQuery("");
     if(v) { setModalMode('existing'); setFormData({ vaccine_id: v.id, name: v.name, type: v.type, total_doses: v.total_doses, price: v.price, has_booster: v.has_booster, schedules: [] }); } 
     else { setModalMode('existing'); setFormData({ vaccine_id: null, name: '', type: '', total_doses: 1, price: 0, has_booster: false, schedules: [] }); }
     setShowModal(true);
@@ -93,46 +94,58 @@ export default function VaccinesPage() {
 
   if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
 
+  // Group vaccines by Type for UI rendering
+  const groupedVaccines = vaccines.reduce((acc: any, v: any) => {
+      const t = v.type || "Other";
+      if (!acc[t]) acc[t] = [];
+      acc[t].push(v);
+      return acc;
+  }, {});
+  
+  const unaddedGlobalVaccines = globalVaccines.filter(g => !vaccines.some(v => v.name === g.name));
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="flex justify-between items-center mb-8">
         <div><h1 className="text-3xl font-bold text-slate-800">💉 Vaccine Inventory</h1></div>
-        <button onClick={() => openModal()} className="px-4 py-2 bg-purple-600 text-white rounded-lg font-bold">+ Add Vaccine</button>
+        <button onClick={() => openModal()} className="px-4 py-2 bg-purple-600 text-white rounded-lg font-bold shadow-md">+ Add Vaccine</button>
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
-        {vaccines.map((v) => (
-          <div key={v.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 group relative">
-            <div className="absolute top-0 left-0 w-1 h-full bg-purple-500"></div>
-            <div className="flex justify-between">
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase">Vaccine Name</label>
-                <h3 className="text-xl font-bold flex items-center gap-2"><Syringe size={20} className="text-purple-500"/> {v.name}</h3>
-                
-                <label className="block text-xs font-bold text-slate-400 uppercase mt-3">Type</label>
-                <span className="text-sm font-semibold text-slate-700">{v.type}</span>
-                {v.has_booster && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full ml-3 font-bold">⭐ Booster</span>}
+      {Object.keys(groupedVaccines).map(type => (
+        <div key={type} className="mb-10">
+            <h2 className="text-2xl font-bold text-slate-800 mb-4 border-b-2 border-slate-200 pb-2">{type}</h2>
+            <div className="grid grid-cols-2 gap-6">
+            {groupedVaccines[type].map((v: any) => (
+              <div key={v.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 group relative">
+                <div className="absolute top-0 left-0 w-1 h-full bg-purple-500"></div>
+                <div className="flex justify-between">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase">Vaccine Name</label>
+                    <h3 className="text-xl font-bold flex items-center gap-2"><Syringe size={20} className="text-purple-500"/> {v.name}</h3>
+                    {v.has_booster && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full mt-2 font-bold inline-block">⭐ Booster Included</span>}
+                  </div>
+                  <div className="text-right">
+                     <label className="block text-xs font-bold text-slate-400 uppercase">Price</label>
+                     <span className="text-2xl font-black text-emerald-500">RM {v.price}</span>
+                  </div>
+                </div>
+                <div className="mt-4 p-4 bg-slate-50 rounded-xl">
+                  <DoseTimeline total={v.total_doses} />
+                </div>
+                <div className="mt-4 flex justify-end gap-2 border-t pt-4">
+                  <button onClick={() => openModal(v)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg text-sm font-medium">Edit Pricing</button>
+                  <button onClick={() => handleDelete(v.id)} className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm font-medium">Remove</button>
+                </div>
               </div>
-              <div className="text-right">
-                 <label className="block text-xs font-bold text-slate-400 uppercase">Price</label>
-                 <span className="text-2xl font-black text-emerald-500">RM {v.price}</span>
-              </div>
+            ))}
             </div>
-            <div className="mt-4 p-4 bg-slate-50 rounded-xl">
-              <DoseTimeline total={v.total_doses} />
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => openModal(v)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg text-sm font-medium">Edit Pricing</button>
-              <button onClick={() => handleDelete(v.id)} className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-sm font-medium">Remove</button>
-            </div>
-          </div>
-        ))}
-      </div>
+        </div>
+      ))}
 
       {showModal && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
-            <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingVac ? 'Edit Vaccine Pricing' : 'Add Vaccine'}</h3>
+            <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingVac ? 'Edit Vaccine Pricing' : 'Add Vaccine to Clinic'}</h3>
             
             {!editingVac && (
               <div className="flex gap-2 mb-4 bg-slate-100 p-1 rounded-lg">
@@ -145,9 +158,9 @@ export default function VaccinesPage() {
               {modalMode === 'existing' && !editingVac && (
                 <div>
                   <label className="block text-sm font-bold text-slate-700 mb-1">Select Vaccine Name</label>
-                  <select onChange={e => { const s = globalVaccines.find(g => g.id === parseInt(e.target.value)); if (s) setFormData({...formData, vaccine_id: s.id, name: s.name, type: s.type, total_doses: s.total_doses, has_booster: s.has_booster}); }} className="w-full p-3 border rounded-lg outline-none bg-white">
+                  <select onChange={e => { const s = unaddedGlobalVaccines.find(g => g.id === parseInt(e.target.value)); if (s) setFormData({...formData, vaccine_id: s.id, name: s.name, type: s.type, total_doses: s.total_doses, has_booster: s.has_booster}); }} className="w-full p-3 border rounded-lg outline-none bg-white">
                     <option value="">-- Choose Vaccine --</option>
-                    {globalVaccines.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                    {unaddedGlobalVaccines.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
                   </select>
                 </div>
               )}
@@ -162,7 +175,6 @@ export default function VaccinesPage() {
                     </div>
                     {aiErrorMsg && <p className="text-red-500 text-xs font-bold mt-2">{aiErrorMsg}</p>}
                     
-                    {/* NEW: Displays Options if User searches a broad type like "COVID" */}
                     {aiOptions.length > 0 && (
                       <div className="mt-3 bg-slate-50 p-3 rounded-lg border border-slate-200">
                         <p className="text-xs font-bold text-slate-500 uppercase mb-2">Select a specific brand:</p>
@@ -176,7 +188,7 @@ export default function VaccinesPage() {
                   </div>
                   {formData.name && (
                     <>
-                      <div><label className="block text-sm font-bold text-slate-700 mb-1">AI Detected Name</label><input type="text" readOnly value={formData.name} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" /></div>
+                      <div><label className="block text-sm font-bold text-slate-700 mb-1">AI Detected Name</label><input type="text" readOnly value={formData.name} className="w-full p-3 border bg-slate-50 rounded-lg outline-none font-bold" /></div>
                       <div><label className="block text-sm font-bold text-slate-700 mb-1">AI Detected Type</label><input type="text" readOnly value={formData.type} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" /></div>
                       <div className="flex gap-4">
                         <div className="flex-1"><label className="block text-sm font-bold text-slate-700 mb-1">Total Doses</label><input type="number" readOnly value={formData.total_doses} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" /></div>
@@ -193,7 +205,7 @@ export default function VaccinesPage() {
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded-lg font-medium">Cancel</button>
+              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium">Cancel</button>
               <button onClick={handleSave} className="px-4 py-2 bg-purple-600 text-white rounded-lg font-medium">Save Data</button>
             </div>
           </div>

@@ -18,17 +18,16 @@ export default function AdminDashboard() {
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [editEventForm, setEditEventForm] = useState({ status: '', scheduled_time: '' });
 
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [currentView, setCurrentView] = useState<any>('week');
+  const [defaultDate, setDefaultDate] = useState<Date | null>(null);
 
-  useEffect(() => { loadAppointments(); }, []);
-
-  const loadAppointments = () => {
+  useEffect(() => {
+    let isMounted = true;
     fetch(`http://127.0.0.1:8000/admin/appointments/${CLINIC_ID}`)
       .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
+        if (!isMounted) return;
         if (!Array.isArray(data) || data.length === 0) { 
-            setEvents([]); setIsLoading(false); return; 
+            setEvents([]); setDefaultDate(new Date()); setIsLoading(false); return; 
         }
 
         let vacCount = 0, btCount = 0;
@@ -41,14 +40,15 @@ export default function AdminDashboard() {
         setEvents(formattedEvents);
         setStats({ total: formattedEvents.length, vaccines: vacCount, bloodTests: btCount });
         
-        // FIX: Time Travel Bug - Jump calendar to the date of the first event (e.g. 2026)
+        // FIX: Force Calendar to open precisely on the month of the first appointment
         const sorted = [...formattedEvents].sort((a,b) => a.start.getTime() - b.start.getTime());
-        if (sorted.length > 0) setCurrentDate(sorted[0].start);
-
+        setDefaultDate(sorted[0].start);
         setIsLoading(false);
       })
-      .catch(() => { setError(true); setIsLoading(false); });
-  };
+      .catch(() => { if (isMounted) { setError(true); setDefaultDate(new Date()); setIsLoading(false); } });
+      
+    return () => { isMounted = false; };
+  }, []);
 
   const handleUpdateEvent = async () => {
     await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`, {
@@ -58,7 +58,7 @@ export default function AdminDashboard() {
     });
     setSelectedEvent(null);
     setIsEditingEvent(false);
-    loadAppointments();
+    window.location.reload(); 
   };
 
   const openEventModal = (event: any) => {
@@ -74,7 +74,7 @@ export default function AdminDashboard() {
     style: { backgroundColor: event.color || '#3B82F6', borderRadius: '6px', border: 'none', padding: '4px', opacity: 0.9, fontSize: '0.8rem', fontWeight: 600, color: 'white' }
   });
 
-  if (isLoading) return <div className="animate-pulse h-[60vh] bg-slate-200 rounded-2xl"></div>;
+  if (isLoading || !defaultDate) return <div className="animate-pulse h-[60vh] bg-slate-200 rounded-2xl"></div>;
 
   return (
     <div className="max-w-7xl mx-auto relative">
@@ -106,10 +106,8 @@ export default function AdminDashboard() {
           events={events}
           startAccessor="start"
           endAccessor="end"
-          date={currentDate}
-          onNavigate={setCurrentDate}
-          view={currentView}
-          onView={setCurrentView}
+          defaultDate={defaultDate}
+          defaultView="week"
           eventPropGetter={eventStyleGetter}
           views={['month', 'week', 'day']}
           onSelectEvent={openEventModal}
@@ -117,7 +115,7 @@ export default function AdminDashboard() {
       </div>
 
       {selectedEvent && (
-        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-[450px] overflow-hidden">
             <div className="bg-slate-50 px-6 py-4 border-b flex justify-between items-center">
               <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><CalIcon size={18}/> Booking Details</h3>
