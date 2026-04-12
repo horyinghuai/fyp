@@ -11,35 +11,48 @@ export default function VaccinesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiOptions, setAiOptions] = useState<string[]>([]);
+  const [aiErrorMsg, setAiErrorMsg] = useState("");
   
   const [showModal, setShowModal] = useState(false);
   const [editingVac, setEditingVac] = useState<any>(null);
   const [modalMode, setModalMode] = useState<'existing' | 'new'>('existing');
+  const [searchQuery, setSearchQuery] = useState("");
   
-  const [formData, setFormData] = useState({ vaccine_id: null, name: '', type: '', total_doses: 1, price: 0, has_booster: false, schedules: [] });
+  const [formData, setFormData] = useState({ vaccine_id: null as any, name: '', type: '', total_doses: 1, price: 0, has_booster: false, schedules: [] });
 
   useEffect(() => { loadData(); }, []);
 
   const loadData = async () => {
     try {
-      const [resClinic, resGlobal] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`), fetch(`http://127.0.0.1:8000/admin/global-vaccines`)
-      ]);
+      const [resClinic, resGlobal] = await Promise.all([ fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`), fetch(`http://127.0.0.1:8000/admin/global-vaccines`) ]);
       setVaccines(await resClinic.json()); setGlobalVaccines(await resGlobal.json());
       setIsLoading(false); setError(false);
     } catch (e) { setIsLoading(false); setError(true); }
   };
 
-  const handleAIAutoFill = async () => {
-    if (!formData.name) return;
+  const handleAIAutoFill = async (queryToSearch: string) => {
+    if (!queryToSearch) return;
     setAiLoading(true);
+    setAiErrorMsg("");
+    setAiOptions([]);
     try {
       const res = await fetch(`http://127.0.0.1:8000/admin/ai/vaccine-schedule`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vaccine_name: formData.name })
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ search_query: queryToSearch })
       });
       const data = await res.json();
-      setFormData({ ...formData, type: data.type || '', total_doses: data.total_doses || 1, has_booster: data.has_booster || false, schedules: data.schedules || [] });
-    } catch (e) { console.error(e); }
+      
+      if (data.status === "invalid") {
+          setAiErrorMsg("Invalid vaccine name or type. Please try a valid medical term.");
+          setFormData({...formData, name: ''});
+      } else if (data.status === "multiple_options") {
+          setAiOptions(data.options || []);
+          setFormData({...formData, name: ''});
+      } else if (data.status === "exact_match") {
+          setSearchQuery(queryToSearch);
+          setFormData({ ...formData, name: queryToSearch, type: data.type || '', total_doses: data.total_doses || 1, has_booster: data.has_booster || false, schedules: data.schedules || [] });
+      }
+    } catch (e) { setAiErrorMsg("Failed to connect to AI server."); }
     setAiLoading(false);
   };
 
@@ -58,6 +71,7 @@ export default function VaccinesPage() {
 
   const openModal = (v: any = null) => {
     setEditingVac(v);
+    setAiOptions([]); setAiErrorMsg(""); setSearchQuery("");
     if(v) { setModalMode('existing'); setFormData({ vaccine_id: v.id, name: v.name, type: v.type, total_doses: v.total_doses, price: v.price, has_booster: v.has_booster, schedules: [] }); } 
     else { setModalMode('existing'); setFormData({ vaccine_id: null, name: '', type: '', total_doses: 1, price: 0, has_booster: false, schedules: [] }); }
     setShowModal(true);
@@ -92,8 +106,10 @@ export default function VaccinesPage() {
             <div className="absolute top-0 left-0 w-1 h-full bg-purple-500"></div>
             <div className="flex justify-between">
               <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase">Vaccine Name</label>
                 <h3 className="text-xl font-bold flex items-center gap-2"><Syringe size={20} className="text-purple-500"/> {v.name}</h3>
-                <label className="block text-xs font-bold text-slate-400 uppercase mt-2">Type</label>
+                
+                <label className="block text-xs font-bold text-slate-400 uppercase mt-3">Type</label>
                 <span className="text-sm font-semibold text-slate-700">{v.type}</span>
                 {v.has_booster && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full ml-3 font-bold">⭐ Booster</span>}
               </div>
@@ -139,26 +155,35 @@ export default function VaccinesPage() {
               {modalMode === 'new' && !editingVac && (
                 <>
                   <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-1">New Vaccine Name</label>
+                    <label className="block text-sm font-bold text-slate-700 mb-1">Search Vaccine Type or Name</label>
                     <div className="flex gap-2">
-                      <input type="text" placeholder="e.g. Hepatitis B" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="flex-1 p-3 border rounded-lg outline-none" />
-                      <button onClick={handleAIAutoFill} className="bg-purple-100 text-purple-700 px-3 rounded-lg font-bold">{aiLoading ? "..." : <Sparkles size={20}/>}</button>
+                      <input type="text" placeholder="e.g. COVID or Hepatitis B" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="flex-1 p-3 border rounded-lg outline-none" />
+                      <button onClick={() => handleAIAutoFill(searchQuery)} className="bg-purple-100 text-purple-700 px-3 rounded-lg font-bold">{aiLoading ? "..." : <Sparkles size={20}/>}</button>
                     </div>
+                    {aiErrorMsg && <p className="text-red-500 text-xs font-bold mt-2">{aiErrorMsg}</p>}
+                    
+                    {/* NEW: Displays Options if User searches a broad type like "COVID" */}
+                    {aiOptions.length > 0 && (
+                      <div className="mt-3 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                        <p className="text-xs font-bold text-slate-500 uppercase mb-2">Select a specific brand:</p>
+                        <div className="flex flex-wrap gap-2">
+                           {aiOptions.map(opt => (
+                               <button key={opt} onClick={() => handleAIAutoFill(opt)} className="bg-white border border-purple-200 text-purple-700 px-3 py-1 rounded-full text-xs font-bold hover:bg-purple-50 transition">{opt}</button>
+                           ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-1">AI Detected Type</label>
-                    <input type="text" readOnly value={formData.type} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" />
-                  </div>
-                  <div className="flex gap-4">
-                    <div className="flex-1">
-                      <label className="block text-sm font-bold text-slate-700 mb-1">Total Doses</label>
-                      <input type="number" readOnly value={formData.total_doses} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" />
-                    </div>
-                    <div className="flex-1">
-                      <label className="block text-sm font-bold text-slate-700 mb-1">Booster Requirement</label>
-                      <input type="text" readOnly value={formData.has_booster ? "Yes" : "No"} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" />
-                    </div>
-                  </div>
+                  {formData.name && (
+                    <>
+                      <div><label className="block text-sm font-bold text-slate-700 mb-1">AI Detected Name</label><input type="text" readOnly value={formData.name} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" /></div>
+                      <div><label className="block text-sm font-bold text-slate-700 mb-1">AI Detected Type</label><input type="text" readOnly value={formData.type} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" /></div>
+                      <div className="flex gap-4">
+                        <div className="flex-1"><label className="block text-sm font-bold text-slate-700 mb-1">Total Doses</label><input type="number" readOnly value={formData.total_doses} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" /></div>
+                        <div className="flex-1"><label className="block text-sm font-bold text-slate-700 mb-1">Booster Requirement</label><input type="text" readOnly value={formData.has_booster ? "Yes" : "No"} className="w-full p-3 border bg-slate-50 rounded-lg outline-none" /></div>
+                      </div>
+                    </>
+                  )}
                 </>
               )}
 
@@ -167,7 +192,7 @@ export default function VaccinesPage() {
                 <input type="number" placeholder="RM Price" value={formData.price || ''} onChange={e => setFormData({...formData, price: parseFloat(e.target.value) || 0})} className="w-full p-3 border rounded-lg outline-none" />
               </div>
             </div>
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="mt-6 flex justify-end gap-3 border-t pt-4">
               <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded-lg font-medium">Cancel</button>
               <button onClick={handleSave} className="px-4 py-2 bg-purple-600 text-white rounded-lg font-medium">Save Data</button>
             </div>

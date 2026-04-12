@@ -101,17 +101,6 @@ def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     db.add(log)
     db.commit()
 
-def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
-    interval_str = interval_str.lower()
-    try:
-        amount = int(''.join(filter(str.isdigit, interval_str)))
-        if 'month' in interval_str: return start_date + timedelta(days=30 * amount)
-        elif 'week' in interval_str: return start_date + timedelta(weeks=amount)
-        elif 'year' in interval_str or 'annual' in interval_str: return start_date + timedelta(days=365 * amount)
-        elif 'day' in interval_str: return start_date + timedelta(days=amount)
-    except: pass
-    return start_date + timedelta(days=30) 
-
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     try:
@@ -138,7 +127,6 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
         result = []
         for stage in stages:
             if not stage.scheduled_time: continue
-
             appt = appt_dict.get(str(stage.appointment_id))
             if not appt: continue
             

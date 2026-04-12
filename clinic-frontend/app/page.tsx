@@ -18,7 +18,6 @@ export default function AdminDashboard() {
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [editEventForm, setEditEventForm] = useState({ status: '', scheduled_time: '' });
 
-  // Explicit Calendar State
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<any>('week');
 
@@ -42,10 +41,9 @@ export default function AdminDashboard() {
         setEvents(formattedEvents);
         setStats({ total: formattedEvents.length, vaccines: vacCount, bloodTests: btCount });
         
-        // CRITICAL FIX: Automatically jump the calendar to the date of the first event (e.g., April 2026)
-        if (formattedEvents.length > 0) {
-            setCurrentDate(new Date(formattedEvents[0].start));
-        }
+        // FIX: Time Travel Bug - Jump calendar to the date of the first event (e.g. 2026)
+        const sorted = [...formattedEvents].sort((a,b) => a.start.getTime() - b.start.getTime());
+        if (sorted.length > 0) setCurrentDate(sorted[0].start);
 
         setIsLoading(false);
       })
@@ -102,7 +100,6 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Explicit 600px Height ensuring Calendar shows up */}
       <div style={{ height: '600px' }} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
         <Calendar
           localizer={localizer}
