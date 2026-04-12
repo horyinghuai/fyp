@@ -94,7 +94,6 @@ export default function AdminDashboard() {
             service_details: detailsText,
             start: new Date(appt.start), 
             end: new Date(appt.end), 
-            // The title already comes dynamically pre-formatted from backend as `Name - Service`
             title: appt.title || "Unknown Patient"
           };
         });
@@ -212,7 +211,6 @@ export default function AdminDashboard() {
     setIsCreatingNewPatient(false);
   };
 
-  // --- Dynamic Groupings (Hep B Normalization) ---
   const groupedVaccines = vaccinesList.reduce((acc: any, v: any) => {
     let type = (v.type || "Other").trim();
     if (type.toLowerCase().includes("hepatitis b")) type = "Hepatitis B"; 
@@ -228,7 +226,6 @@ export default function AdminDashboard() {
       if (selectedVac.has_booster) doseOptions.push("Booster");
   }
 
-  // --- Blood Test Package Restrictor ---
   const pkgs = bloodTestsList.filter((b: any) => b.test_type === 'package');
   const sgls = bloodTestsList.filter((b: any) => b.test_type === 'single');
   
@@ -239,7 +236,6 @@ export default function AdminDashboard() {
   });
   const hasOnePackageSelected = selectedPkgs.length > 0;
 
-  // --- Calendar Filters & Rendering ---
   const visibleEvents = events.filter(e => {
       if (e.status === 'canceled' && !filters.canceled) return false;
       if (e.status === 'completed' && !filters.completed) return false;
@@ -293,12 +289,14 @@ export default function AdminDashboard() {
                         }}
                         className="bg-transparent text-white font-bold text-lg outline-none cursor-pointer"
                     >
-                        <option value="2025">2025</option><option value="2026">2026</option><option value="2027">2027</option>
+                        {/* Options rendered with solid background to prevent transparency overlap issues on native browser UI */}
+                        <option value="2025" className="bg-black text-white">2025</option>
+                        <option value="2026" className="bg-black text-white">2026</option>
+                        <option value="2027" className="bg-black text-white">2027</option>
                     </select>
                 </div>
             </div>
             
-            {/* FILTER TOGGLES */}
             <div className="flex gap-4 text-sm font-semibold text-slate-600 bg-white px-4 py-2 rounded-lg shadow-sm border border-slate-100">
                <label className="flex items-center gap-2 cursor-pointer hover:text-blue-600"><input type="checkbox" className="accent-blue-600 w-4 h-4" checked={filters.scheduled} onChange={e => setFilters({...filters, scheduled: e.target.checked})} /> Scheduled</label>
                <label className="flex items-center gap-2 cursor-pointer hover:text-emerald-600"><input type="checkbox" className="accent-emerald-600 w-4 h-4" checked={filters.completed} onChange={e => setFilters({...filters, completed: e.target.checked})} /> Completed</label>
@@ -308,7 +306,6 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* 4-COLUMN STATS */}
       <div className="grid grid-cols-4 gap-6 mb-8">
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-blue-100 text-blue-600 rounded-xl"><User size={24}/></div>
@@ -316,7 +313,7 @@ export default function AdminDashboard() {
         </div>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-orange-100 text-orange-600 rounded-xl"><FileText size={24}/></div>
-          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Consultations</p><h3 className="text-3xl font-black text-slate-800">{stats.consultations}</h3></div></div>
+          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Total Consultations</p><h3 className="text-3xl font-black text-slate-800">{stats.consultations}</h3></div></div>
         </div>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-purple-100 text-purple-600 rounded-xl"><Activity size={24}/></div>
@@ -344,7 +341,6 @@ export default function AdminDashboard() {
         />
       </div>
 
-      {/* PENDING REVIEW POP-UP */}
       {pendingReviewEvent && (
         <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-[60] backdrop-blur-sm">
            <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-2xl transform transition-all scale-100">
@@ -363,7 +359,6 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* BOOKING MODAL */}
       {(selectedEvent || isNewBooking) && !pendingReviewEvent && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-[500px] overflow-hidden max-h-[90vh] overflow-y-auto">
@@ -447,7 +442,6 @@ export default function AdminDashboard() {
                       </div>
                   </div>
 
-                  {/* DYNAMIC DETAILS EDITING */}
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                       {editForm.service === 'Vaccine' && (
                         <div className="grid grid-cols-2 gap-4">

@@ -190,7 +190,6 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
             start_str = stage.scheduled_time.strftime("%Y-%m-%dT%H:%M:%S")
             end_str = (stage.scheduled_time + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
 
-            # FORMAT FIXED: (Name) - (Service)
             patient_name = patient.name if patient else 'Unknown Patient'
 
             result.append({
@@ -691,6 +690,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                     elif dose_val == "Booster":
                         start_dose_num = v_model.total_doses + 1
                         
+                    # Re-evaluating type based on whether the chosen dose has follow up stages remaining.
                     if (total_stages - start_dose_num + 1) > 1:
                         mapped_appt_type = 'multi-stage'
                 
@@ -705,6 +705,8 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
             current_calc_time = start_time
             prev_stage_id = None
             
+            # The system accurately iterates from the selected dose number onwards, predicting the intervals natively
+            # and automatically mapping 'depends_on_stage_id' locally via 'prev_stage_id' buffer.
             for i in range(start_dose_num, v_model.total_doses + 1):
                 stage_name = f"Dose {i}"
                 if i > start_dose_num:
@@ -731,6 +733,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                 db.add(stage)
                 db.flush()
         else:
+            # Handles edge case where you specifically chose the final single stage, no extra dependent paths created.
             if service == 'Vaccine' and items_list and v_model:
                 db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
             elif service == 'Blood Test' and items_list:

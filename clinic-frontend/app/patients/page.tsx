@@ -73,10 +73,20 @@ export default function PatientsPage() {
     if (!formData.ic || !formData.name || !formData.phone) {
         alert("⚠️ IC/Passport, Name, and Phone are required fields."); return;
     }
+
     if (isMalaysian) {
         const cleanIC = formData.ic.replace(/[^0-9]/g, '');
         if (cleanIC.length !== 12) {
             alert("⚠️ Malaysian IC must be exactly 12 digits."); return;
+        }
+        const phoneRegex = /^(\+?60|0)[1-9][0-9]{7,9}$/;
+        if (!phoneRegex.test(formData.phone.replace(/[\s-]/g, ''))) {
+            alert("⚠️ Invalid Malaysian phone number format. Valid examples: 0123456789 or +60123456789."); return;
+        }
+    } else {
+        const intlPhoneRegex = /^\+?[0-9\s\-\(\)]{7,20}$/;
+        if(!intlPhoneRegex.test(formData.phone)) {
+            alert("⚠️ Invalid phone number format. Please provide a valid international phone number."); return;
         }
     }
 
