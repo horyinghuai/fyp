@@ -27,7 +27,6 @@ async def fetch_gemini(prompt: str) -> str:
         await asyncio.sleep(9999) 
         return ""
     async with httpx.AsyncClient() as client:
-        # FIXED: Upgraded from the deprecated gemini-1.5-flash to the active gemini-2.5-flash
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.0}}
         res = await client.post(url, json=payload, timeout=30.0)
@@ -50,31 +49,25 @@ async def run_llm_race(prompt: str) -> str:
 
         for task in done:
             try:
-                # Check if this completed task succeeded
                 result = task.result()
-                
-                # If we get here, it succeeded! Cancel all remaining pending tasks safely.
                 for p in pending:
                     p.cancel()
-                    
                 return result
             except Exception as e:
-                # Task failed. Print the error type and message for better debugging.
                 print(f"[{task.get_name()}] failed: {type(e).__name__} - {str(e)}. Falling back...")
-                
                 if not pending:
                     raise Exception("Both LLMs failed. Check your Local LLM server and Gemini API Key.")
 
     raise Exception("All LLM tasks failed unexpectedly.")
 
 # --- DATE CALCULATOR ---
-def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_time_str: str):
+def calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str):
     now = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
     final_date = None
     final_time = None
 
-    if raw_date_text:
-        dt_str = raw_date_text.lower().strip()
+    if raw_date_text and str(raw_date_text).lower() not in ['null', 'none']:
+        dt_str = str(raw_date_text).lower().strip()
         if re.match(r'\d{4}-\d{2}-\d{2}', dt_str): final_date = dt_str
         elif match := re.search(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', dt_str):
             d, m, y = match.groups()
@@ -97,8 +90,8 @@ def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_tim
                     final_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
                     break
 
-    if raw_time_text:
-        tt_str = raw_time_text.lower().strip().replace('.', ':')
+    if raw_time_text and str(raw_time_text).lower() not in ['null', 'none']:
+        tt_str = str(raw_time_text).lower().strip().replace('.', ':')
         if re.match(r'\d{2}:\d{2}:\d{2}', tt_str): final_time = tt_str
         elif match := re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', tt_str):
             h, m, ampm = int(match.group(1)), int(match.group(2) or 0), match.group(3)
@@ -110,26 +103,23 @@ def calculate_exact_datetime(raw_date_text: str, raw_time_text: str, current_tim
 
 class AppointmentExtraction(BaseModel):
     intent: str
-    date_preference: Optional[str]
-    time_preference: Optional[str]
-    doctor_preference: Optional[str]
-    reason: Optional[str]
+    date_preference: Optional[str] = None
+    time_preference: Optional[str] = None
+    doctor_preference: Optional[str] = None
+    reason: Optional[str] = None
 
 async def extract_appointment_details(user_text: str, current_time_str: str):
     prompt = f"""
-    You are a strict JSON API. Extract details from the user's text.
+    Extract appointment details from the user text. Return ONLY a raw JSON object. Do not include markdown tags.
     USER TEXT: "{user_text}"
     
-    CRITICAL INSTRUCTIONS:
-    - DO NOT output <think> tags. Output ONLY raw JSON.
-    - If the user uses relative words like "next monday", "tomorrow", "this friday", you MUST extract those exact words into `raw_date_text`. Do NOT return null if a day is mentioned.
-    
+    JSON SCHEMA:
     {{
         "intent": "booking",
-        "raw_date_text": "extracted exact date words or null",
-        "raw_time_text": "extracted exact time words or null",
-        "doctor_preference": "Dr. Name or null",
-        "reason": "Extracted reason or null"
+        "raw_date_text": "string (exact date phrase) or null",
+        "raw_time_text": "string (exact time phrase) or null",
+        "doctor_preference": "string or null",
+        "reason": "string (symptoms, reason for visit, e.g., 'fever', 'cough') or null"
     }}
     """
     try:
@@ -138,7 +128,13 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
         llm_data = json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
         
         calculated_date, calculated_time = calculate_exact_datetime(llm_data.get("raw_date_text"), llm_data.get("raw_time_text"), current_time_str)
-        return AppointmentExtraction(intent=llm_data.get("intent", "booking"), date_preference=calculated_date, time_preference=calculated_time, doctor_preference=llm_data.get("doctor_preference"), reason=llm_data.get("reason"))
+        return AppointmentExtraction(
+            intent=llm_data.get("intent", "booking"), 
+            date_preference=calculated_date, 
+            time_preference=calculated_time, 
+            doctor_preference=llm_data.get("doctor_preference"), 
+            reason=llm_data.get("reason")
+        )
     except Exception as e:
         return {"error": f"AI Parsing Error: {str(e)}"}
 

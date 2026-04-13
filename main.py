@@ -302,18 +302,31 @@ async def ai_vaccine_schedule(req: VaccineAIRequest):
 @app.post("/admin/vaccines")
 def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
     try:
-        if data.vaccine_id:
-            v_id = data.vaccine_id
-        else:
+        v_id = data.vaccine_id
+        
+        # Check if an AI generated vaccine name already formally exists in the global 'vaccines' table
+        if not v_id and data.name:
+            existing_v = db.query(models.Vaccine).filter(models.Vaccine.name.ilike(data.name)).first()
+            if existing_v:
+                v_id = existing_v.id
+                
+        if not v_id:
             v = models.Vaccine(name=data.name, type=data.type, total_doses=data.total_doses, has_booster=data.has_booster)
             db.add(v)
             db.flush() 
             v_id = v.id
             for sched in data.schedules:
                 db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
-            db.commit()
-        vc = models.VaccineClinic(vaccine_id=v_id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
-        db.add(vc)
+            db.flush() 
+
+        # Finalize the relationship mapping to the specific clinic
+        existing_vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
+        if existing_vc:
+            existing_vc.price = data.price
+        else:
+            vc = models.VaccineClinic(vaccine_id=v_id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
+            db.add(vc)
+            
         db.commit()
         return {"status": "success"}
     except Exception as e:
@@ -733,8 +746,6 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
             current_calc_time = start_time
             prev_stage_id = None
             
-            # The system accurately iterates from the selected dose number onwards, predicting the intervals natively
-            # and automatically mapping 'depends_on_stage_id' locally via 'prev_stage_id' buffer.
             for i in range(start_dose_num, v_model.total_doses + 1):
                 stage_name = f"Dose {i}"
                 if i > start_dose_num:
@@ -761,7 +772,6 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                 db.add(stage)
                 db.flush()
         else:
-            # Handles edge case where you specifically chose the final single stage, no extra dependent paths created.
             if service == 'Vaccine' and items_list and v_model:
                 db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
             elif service == 'Blood Test' and items_list:
@@ -786,11 +796,9 @@ def cancel_appointment(appt_id: str, db: Session = Depends(get_db)):
 
 @app.post("/login")
 def user_login(data: UserLogin, db: Session = Depends(get_db)):
-    # Note: In production use secure hashing comparison (e.g. bcrypt)
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
-    # Assuming direct comparison for demo; change to password verification function
     if user.password_hash != data.password:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     
@@ -801,27 +809,15 @@ def forgot_password(data: ForgotPasswordReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user:
         raise HTTPException(status_code=404, detail="Email not found.")
-    
-    # SMTP GMAIL CONFIGURATION
     try:
-        sender_email = "yourclinic.gmail@gmail.com"  # Replace with actual Gmail
-        sender_password = "your-app-password"        # Replace with Gmail App Password
-        
+        sender_email = "yourclinic.gmail@gmail.com"
+        sender_password = "your-app-password"
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = user.email
         msg['Subject'] = "AICAS - Password Reset Code"
-        
         body = "Your verification code is: 123456\n\nPlease use this to reset your password."
         msg.attach(MIMEText(body, 'plain'))
-        
-        # Uncomment and configure safely when ready to send real emails
-        # server = smtplib.SMTP('smtp.gmail.com', 587)
-        # server.starttls()
-        # server.login(sender_email, sender_password)
-        # server.send_message(msg)
-        # server.quit()
-        
         return {"status": "success", "message": "Email sent (Simulation mode)."}
     except Exception as e:
         raise HTTPException(status_code=500, detail="Failed to send email configuration.")
@@ -838,21 +834,15 @@ def update_user_details(ic: str, data: UserUpdate, db: Session = Depends(get_db)
     if not user: raise HTTPException(status_code=404)
     if data.email: user.email = data.email
     if data.role: user.role = data.role
-    if data.password: user.password_hash = data.password # Securely hash this in prod
+    if data.password: user.password_hash = data.password
     db.commit()
     return {"status": "success"}
 
 @app.get("/admin/doctors-all/{clinic_id}")
 def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
-    # Assuming we fetch all doctors assigned to clinic schedules 
-    # For a full admin system, consider a pure bridge table if a doctor is registered to a clinic regardless of current availability.
-    # Below retrieves all unique doctors with any availability in that clinic.
     doctors = db.query(models.Doctor).join(
         models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
     ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).distinct().all()
-    
-    # Alternatively if you want *all* doctors globally (for demo purposes):
-    # doctors = db.query(models.Doctor).all()
     return doctors
 
 @app.post("/admin/doctors")

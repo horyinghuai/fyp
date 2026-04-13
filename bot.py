@@ -14,7 +14,6 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, MessageHandler, filters, InlineQueryHandler
 )
 
-# --- ENABLE LOGGING ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -29,9 +28,6 @@ if not TOKEN:
     logger.error("CRITICAL ERROR: TELEGRAM_BOT_TOKEN is missing in the .env file! The bot cannot start.")
     exit(1)
 
-if not CLINIC_ID:
-    logger.warning("WARNING: CLINIC_ID is missing from .env. API calls will fail.")
-
 ocr_reader = None
 def get_ocr_reader():
     global ocr_reader
@@ -42,7 +38,6 @@ def get_ocr_reader():
 
 NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP = range(22)
 
-# --- DYNAMIC CALENDARS ---
 async def generate_date_picker(service, doctor_pref, is_editing=False):
     duration = 15 if service == 'Vaccine' else 30
     async with httpx.AsyncClient() as client:
@@ -94,7 +89,6 @@ async def generate_time_picker(service, date_str, doctor_pref):
     
     return InlineKeyboardMarkup(keyboard)
 
-# --- OCR ENGINE ---
 def extract_ic_info(image_path: str):
     reader = get_ocr_reader()
     results = reader.readtext(image_path)
@@ -143,7 +137,6 @@ def clean_bot_username(text: str) -> str:
     cleaned = re.sub(r'^(via\s+)?@[A-Za-z0-9_]+\s*', '', text, flags=re.IGNORECASE)
     return cleaned.strip().upper()
 
-# --- 1. PROFILE REGISTRATION FLOW ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
     context.user_data['is_editing'] = False 
@@ -324,7 +317,6 @@ async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return await show_profile_summary(update.message, context)
 
-# --- PROFILE EDITING (Native Telegram Edit) ---
 async def show_profile_summary(message, context):
     context.user_data['edit_mode'] = False
     msg = (f"📋 *Please confirm your details:*\nName: {context.user_data['name']}\n"
@@ -383,7 +375,6 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
         "phone": "Phone Number"
     }
     
-    # State key mapping to ensure database keys are extracted correctly
     state_keys = {
         "name": "name",
         "ic": "ic",
@@ -410,7 +401,6 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     if field == "address": return MAN_ADDRESS
     if field == "phone": return MAN_PHONE
 
-# --- 2. SERVICE BOOKING FLOW ---
 async def show_main_services(message, context):
     btns = [[InlineKeyboardButton("Vaccines", callback_data="svc_Vaccine")],
             [InlineKeyboardButton("Blood Tests", callback_data="svc_Blood Test")],
@@ -454,7 +444,6 @@ async def restart_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query: await query.edit_message_text("Returning to Services...")
     return await show_main_services(query.message, context)
 
-# --- VACCINES ---
 async def render_v_dose_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, vaccine_name: str):
     vaccines = context.user_data.get('vaccines_list', [])
     selected_vac = next((v for v in vaccines if v['name'] == vaccine_name), None)
@@ -502,7 +491,6 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_booking_summary(query.message, context)
     return await show_doctor_preference(update, context)
 
-# --- BLOOD TESTS ---
 async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t_type):
     async with httpx.AsyncClient() as client:
         try:
@@ -604,7 +592,6 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await show_booking_summary(query.message, context)
         return await show_doctor_preference(update, context)
 
-# --- DOCTOR PREFERENCES ---
 async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_TYPE):
     btns = [
         [InlineKeyboardButton("Any Doctor", callback_data="doc_ANY")],
@@ -717,7 +704,6 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=markup)
     elif update.message: await update.message.reply_text(msg, reply_markup=markup)
 
-# --- DATE / TIME & AI ---
 async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = context.user_data['service']
     doctor_pref = context.user_data.get('doctor_pref', 'ANY')
@@ -761,7 +747,6 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         
         async with httpx.AsyncClient() as client:
             try:
-                # CHANGED: Increased timeout from 15.0 to 120.0 to allow DeepSeek to "think"
                 res = await client.post(f"{API_BASE}/ai-extract", json={"text": text}, timeout=120.0)
                 ext = res.json() if res.status_code == 200 else {"error": "Backend offline."}
             except Exception as e:
@@ -773,8 +758,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         if "error" in ext:
             is_editing = context.user_data.get('is_editing', False)
             markup = await generate_date_picker(service, doctor_pref, is_editing)
-            if service in ['Vaccine', 'Blood Test']: msg = f"⚠️ AI Process Error: {ext['error']}\n\nPlease select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
-            else: msg = f"⚠️ AI Process Error: {ext['error']}\n\nPlease select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
+            msg = f"⚠️ AI Process Error: {ext['error']}\n\nPlease select a Date below."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
 
@@ -798,9 +782,13 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             return BOOK_DATE_TIME
         else:
             is_editing = context.user_data.get('is_editing', False)
+            # If the user exclusively updated their reason text (and didn't provide dates) during editing:
+            if is_editing and ext.get('reason') and context.user_data.get('book_time'):
+                await update.message.reply_text(f"✅ Reason noted: {ext.get('reason')}")
+                return await show_booking_summary(update.message, context)
+            
             markup = await generate_date_picker(service, context.user_data.get('doctor_pref'), is_editing)
-            if service in ['Vaccine', 'Blood Test']: msg = "I couldn't fully extract the date and time.\nPlease select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
-            else: msg = "I couldn't fully extract the date and time.\nPlease select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
+            msg = "I couldn't fully extract the date and time.\nPlease select a Date below, \nOR type your request naturally:"
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
 
@@ -844,7 +832,6 @@ async def process_availability(update, context, full_time_str):
 
     return await show_booking_summary(update.callback_query.message if update.callback_query else update.message, context)
 
-# --- BOOKING EDIT / SUMMARY ---
 async def show_booking_summary(message, context):
     service = context.user_data['service']
     name = context.user_data['name']
