@@ -517,6 +517,50 @@ def get_clinic(clinic_id: str, db: Session = Depends(get_db)):
     if not clinic: raise HTTPException(status_code=404)
     return clinic
 
+def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
+    doc_query = db.query(models.Doctor).join(
+        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
+    ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id)
+    
+    # FORCED DB CASE-INSENSITIVE MATCHING FOR GENDER AND NAME
+    if doctor_pref:
+        pref_upper = str(doctor_pref).upper()
+        if pref_upper == "MALE": 
+            doc_query = doc_query.filter(models.Doctor.gender.ilike("MALE"))
+        elif pref_upper == "FEMALE": 
+            doc_query = doc_query.filter(models.Doctor.gender.ilike("FEMALE"))
+        elif pref_upper not in ["ANY", "NONE"]: 
+            doc_query = doc_query.filter(models.Doctor.name.ilike(f"%{doctor_pref}%"))
+            
+    valid_docs = doc_query.distinct().all()
+    if not valid_docs: return []
+    
+    day_of_week = date_obj.strftime("%a").lower()[:3] 
+    now = datetime.now()
+    start_of_day = datetime.combine(date_obj, datetime.min.time())
+    end_of_day = datetime.combine(date_obj, datetime.max.time())
+    
+    clashes = db.query(models.ApptStage.scheduled_time, models.Appointment.doctor_ic).join(models.Appointment).filter(models.Appointment.clinic_id == clinic_id, models.ApptStage.scheduled_time >= start_of_day, models.ApptStage.scheduled_time <= end_of_day).all()
+    clash_dict = {}
+    for c_time, d_ic in clashes:
+        if d_ic not in clash_dict: clash_dict[d_ic] = []
+        clash_dict[d_ic].append(c_time)
+        
+    doc_slots = []
+    for doc in valid_docs:
+        availabilities = db.query(models.DoctorClinicAvailability).filter(models.DoctorClinicAvailability.doctor_ic == doc.ic_passport_number, models.DoctorClinicAvailability.clinic_id == clinic_id, models.DoctorClinicAvailability.day_of_week == day_of_week).all()
+        slots = []
+        for avail in availabilities:
+            if not avail.start_time or not avail.end_time: continue
+            curr = datetime.combine(date_obj, avail.start_time)
+            end_dt = datetime.combine(date_obj, avail.end_time)
+            busy_times = clash_dict.get(doc.ic_passport_number, [])
+            while curr < end_dt:
+                if curr > now and curr not in busy_times: slots.append(curr)
+                curr += timedelta(minutes=duration)
+        if slots: doc_slots.append({"doc": doc, "slots": slots, "free_count": len(slots)})
+    return doc_slots
+
 @app.get("/doctors/{clinic_id}")
 def get_doctors(clinic_id: str, db: Session = Depends(get_db)):
     doctors = db.query(models.Doctor).join(
@@ -630,47 +674,6 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
-def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: datetime.date, duration: int, doctor_pref: str):
-    doc_query = db.query(models.Doctor).join(
-        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
-    ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id)
-    
-    # FORCED DB CASE-INSENSITIVE MATCHING FOR LLM STRING OUTPUT
-    if doctor_pref:
-        pref_upper = str(doctor_pref).upper()
-        if pref_upper == "MALE": 
-            doc_query = doc_query.filter(models.Doctor.gender.ilike("MALE"))
-        elif pref_upper == "FEMALE": 
-            doc_query = doc_query.filter(models.Doctor.gender.ilike("FEMALE"))
-        elif pref_upper not in ["ANY", "NONE"]: 
-            doc_query = doc_query.filter(models.Doctor.name.ilike(f"%{doctor_pref}%"))
-            
-    valid_docs = doc_query.distinct().all()
-    if not valid_docs: return []
-    day_of_week = date_obj.strftime("%a").lower()[:3] 
-    now = datetime.now()
-    start_of_day = datetime.combine(date_obj, datetime.min.time())
-    end_of_day = datetime.combine(date_obj, datetime.max.time())
-    clashes = db.query(models.ApptStage.scheduled_time, models.Appointment.doctor_ic).join(models.Appointment).filter(models.Appointment.clinic_id == clinic_id, models.ApptStage.scheduled_time >= start_of_day, models.ApptStage.scheduled_time <= end_of_day).all()
-    clash_dict = {}
-    for c_time, d_ic in clashes:
-        if d_ic not in clash_dict: clash_dict[d_ic] = []
-        clash_dict[d_ic].append(c_time)
-    doc_slots = []
-    for doc in valid_docs:
-        availabilities = db.query(models.DoctorClinicAvailability).filter(models.DoctorClinicAvailability.doctor_ic == doc.ic_passport_number, models.DoctorClinicAvailability.clinic_id == clinic_id, models.DoctorClinicAvailability.day_of_week == day_of_week).all()
-        slots = []
-        for avail in availabilities:
-            if not avail.start_time or not avail.end_time: continue
-            curr = datetime.combine(date_obj, avail.start_time)
-            end_dt = datetime.combine(date_obj, avail.end_time)
-            busy_times = clash_dict.get(doc.ic_passport_number, [])
-            while curr < end_dt:
-                if curr > now and curr not in busy_times: slots.append(curr)
-                curr += timedelta(minutes=duration)
-        if slots: doc_slots.append({"doc": doc, "slots": slots, "free_count": len(slots)})
-    return doc_slots
-
 @app.post("/available-dates")
 def get_available_dates(req: DateRequest, db: Session = Depends(get_db)):
     valid_dates = []
@@ -696,8 +699,31 @@ def get_available_times(req: TimeRequest, db: Session = Depends(get_db)):
 def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
     try: req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
     except: return {"is_valid": False, "reason": "Invalid format.", "suggestions": []}
+    
     date_obj = req_dt.date()
     now = datetime.now()
+    
+    # --- INTELLIGENT DOCTOR COLLISION RESOLUTION ---
+    if req.doctor_pref and req.doctor_pref.upper() not in ["ANY", "NONE", "MALE", "FEMALE"]:
+        matched_docs = db.query(models.Doctor).join(
+            models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
+        ).filter(
+            models.DoctorClinicAvailability.clinic_id == req.clinic_id,
+            models.Doctor.name.ilike(f"%{req.doctor_pref}%")
+        ).distinct().all()
+        
+        if len(matched_docs) == 0:
+            return {"is_valid": False, "reason": f"No doctor matching '{req.doctor_pref}' was found in the system.", "suggestions": []}
+        elif len(matched_docs) > 1:
+            exact_match = [d for d in matched_docs if d.name.upper() == req.doctor_pref.upper()]
+            if len(exact_match) == 1:
+                req.doctor_pref = exact_match[0].name
+            else:
+                names = ", ".join([d.name for d in matched_docs])
+                return {"is_valid": False, "reason": f"Multiple doctors match '{req.doctor_pref}': {names}. Please clarify your preference.", "suggestions": []}
+        else:
+            req.doctor_pref = matched_docs[0].name
+
     def find_nearest_3_slots(start_date):
         sugs_set = set()
         for i in range(7):
@@ -711,18 +737,22 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
                         if len(sugs_set) >= 3: return sorted(list(sugs_set))
             if len(sugs_set) >= 3: return sorted(list(sugs_set))
         return sorted(list(sugs_set))
+        
     if req_dt < now: return {"is_valid": False, "reason": "You cannot book an appointment in the past.", "suggestions": find_nearest_3_slots(now.date())}
+    
     doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, date_obj, req.duration, req.doctor_pref)
     available_docs_for_this_slot = []
+    
     for ds in doc_slots:
         if req_dt in ds['slots']: available_docs_for_this_slot.append(ds)
+        
     if available_docs_for_this_slot:
         max_free = max(ds['free_count'] for ds in available_docs_for_this_slot)
         best_docs = [ds for ds in available_docs_for_this_slot if ds['free_count'] == max_free]
         chosen = random.choice(best_docs)
         return {"is_valid": True, "reason": "Slot available.", "doctor_id": str(chosen['doc'].ic_passport_number), "doctor_name": chosen['doc'].name, "suggestions": []}
     else:
-        return {"is_valid": False, "reason": "That exact time is unavailable.", "suggestions": find_nearest_3_slots(date_obj)}
+        return {"is_valid": False, "reason": "That exact time is unavailable for the selected preference.", "suggestions": find_nearest_3_slots(date_obj)}
 
 @app.post("/book-appointment")
 def book_appointment(booking: Booking, db: Session = Depends(get_db)):
@@ -760,8 +790,7 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             doctor_ic=doc_ic, 
             appt_type=mapped_appt_type, 
             total_stages=total_stages, 
-            # UNCONDITIONALLY MATCHING DB 'general_notes' COLUMN 
-            general_notes=booking.details.get('general_notes') 
+            general_notes=booking.details.get('general_notes')  # ONLY INSERTED TO APPOINTMENT DB COLUMN 
         )
         db.add(new_appt)
         db.flush() 

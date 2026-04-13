@@ -509,7 +509,6 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             pkg_cache = context.user_data.get('bt_cache_package', [])
             for pkg in pkg_cache:
                 if pkg['name'] in selected_names:
-                    # REMOVED JSON.LOADS: It's an array returned from bridge table
                     included = pkg.get('included_tests', [])
                     if isinstance(included, list):
                         excluded_singles.update(included)
@@ -769,7 +768,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         
         if ext.get('doctor_preference'): context.user_data['doctor_pref'] = ext.get('doctor_preference')
         
-        # MAPPED reason -> general_notes 
+        # PROPER MAPPING TO DATABASE COLUMN
         if ext.get('general_notes'): context.user_data['general_notes'] = ext.get('general_notes')
         
         if date_pref and time_pref:
@@ -815,7 +814,12 @@ async def process_availability(update, context, full_time_str):
     if not data.get('is_valid'):
         sugs = data.get('suggestions', [])
         btns = [[InlineKeyboardButton(s, callback_data=f"sug_{s}")] for s in sugs]
-        btns.append([InlineKeyboardButton("📅 Choose Another Time", callback_data="back_date")])
+        
+        # INTELLIGENT ROUTING: Offer reselection if Doctor collision occurs
+        if "Multiple doctors match" in data.get('reason', '') or "No doctor matching" in data.get('reason', ''):
+             btns.append([InlineKeyboardButton("👩‍⚕️ Reselect Doctor Preference", callback_data="back_doc_pref")])
+        else:
+             btns.append([InlineKeyboardButton("📅 Choose Another Time", callback_data="back_date")])
         
         msg = f"❌ {data.get('reason', 'Slot unavailable')}"
         if sugs: msg += "\nHere are alternative slots:"
@@ -888,7 +892,7 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
         "items": context.user_data.get('selected_items', []), 
         "dose": context.user_data.get('dose'),
         "total_doses": total_doses,
-        "general_notes": context.user_data.get('general_notes'), # DB Mapping
+        "general_notes": context.user_data.get('general_notes'), # mapped
         "doctor_pref": context.user_data.get('doctor_pref', 'ANY'),
         "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
         "assigned_doctor_id": context.user_data.get('assigned_doctor_id')

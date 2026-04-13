@@ -28,7 +28,6 @@ async def fetch_gemini(prompt: str) -> str:
         return ""
     async with httpx.AsyncClient() as client:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        # FORCED JSON RESPONSE FORMAT 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}], 
             "generationConfig": {
@@ -42,7 +41,6 @@ async def fetch_gemini(prompt: str) -> str:
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 async def run_llm_race(prompt: str) -> str:
-    """Runs Local and Gemini in parallel. Returns the FIRST successful response. Safely cancels the loser."""
     task_local = asyncio.create_task(fetch_local_llm(prompt), name="Local_LLM")
     task_gemini = asyncio.create_task(fetch_gemini(prompt), name="Gemini_LLM")
     
@@ -113,7 +111,7 @@ class AppointmentExtraction(BaseModel):
     date_preference: Optional[str] = None
     time_preference: Optional[str] = None
     doctor_preference: Optional[str] = None
-    general_notes: Optional[str] = None # Aligned to database column
+    general_notes: Optional[str] = None 
 
 async def extract_appointment_details(user_text: str, current_time_str: str):
     prompt = f"""
