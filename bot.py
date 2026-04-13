@@ -844,7 +844,7 @@ async def show_booking_summary(message, context):
     
     if service == 'Vaccine': details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
     elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
-    else: details = f"Reason: {context.user_data.get('general_notes', 'General Consultation')}"
+    else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
         
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))}"
     full_time_str = context.user_data['book_time']
@@ -912,7 +912,7 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
     
     if service == 'Vaccine': details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
     elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
-    else: details = f"Reason: {context.user_data.get('general_notes', 'General Consultation')}"
+    else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
         
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}"
 
