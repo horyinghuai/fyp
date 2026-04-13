@@ -28,7 +28,14 @@ async def fetch_gemini(prompt: str) -> str:
         return ""
     async with httpx.AsyncClient() as client:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.0}}
+        # FORCED JSON RESPONSE FORMAT 
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}], 
+            "generationConfig": {
+                "temperature": 0.0,
+                "responseMimeType": "application/json"
+            }
+        }
         res = await client.post(url, json=payload, timeout=30.0)
         res.raise_for_status()
         data = res.json()
@@ -106,20 +113,21 @@ class AppointmentExtraction(BaseModel):
     date_preference: Optional[str] = None
     time_preference: Optional[str] = None
     doctor_preference: Optional[str] = None
-    reason: Optional[str] = None
+    general_notes: Optional[str] = None # Aligned to database column
 
 async def extract_appointment_details(user_text: str, current_time_str: str):
     prompt = f"""
-    Extract appointment details from the user text. Return ONLY a raw JSON object. Do not include markdown tags.
+    Extract appointment details from the user text. 
     USER TEXT: "{user_text}"
     
+    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output markdown tags.
     JSON SCHEMA:
     {{
         "intent": "booking",
         "raw_date_text": "string (exact date phrase) or null",
         "raw_time_text": "string (exact time phrase) or null",
-        "doctor_preference": "string or null",
-        "reason": "string (symptoms, reason for visit, e.g., 'fever', 'cough') or null"
+        "doctor_preference": "string ('ANY', 'MALE', 'FEMALE', or exact name) or null",
+        "general_notes": "string (symptoms, reason for visit, e.g., 'fever', 'cough') or null"
     }}
     """
     try:
@@ -133,7 +141,7 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
             date_preference=calculated_date, 
             time_preference=calculated_time, 
             doctor_preference=llm_data.get("doctor_preference"), 
-            reason=llm_data.get("reason")
+            general_notes=llm_data.get("general_notes")
         )
     except Exception as e:
         return {"error": f"AI Parsing Error: {str(e)}"}

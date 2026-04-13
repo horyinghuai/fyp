@@ -509,11 +509,10 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             pkg_cache = context.user_data.get('bt_cache_package', [])
             for pkg in pkg_cache:
                 if pkg['name'] in selected_names:
+                    # REMOVED JSON.LOADS: It's an array returned from bridge table
                     included = pkg.get('included_tests', [])
-                    if isinstance(included, str):
-                        try: included = json.loads(included)
-                        except: pass
-                    excluded_singles.update(included)
+                    if isinstance(included, list):
+                        excluded_singles.update(included)
         
         btns = []
         for t in tests:
@@ -769,7 +768,9 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         time_pref = ext.get('time_preference')
         
         if ext.get('doctor_preference'): context.user_data['doctor_pref'] = ext.get('doctor_preference')
-        if ext.get('reason'): context.user_data['reason'] = ext.get('reason')
+        
+        # MAPPED reason -> general_notes 
+        if ext.get('general_notes'): context.user_data['general_notes'] = ext.get('general_notes')
         
         if date_pref and time_pref:
             full_time_str = f"{date_pref} {time_pref}"
@@ -782,9 +783,8 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             return BOOK_DATE_TIME
         else:
             is_editing = context.user_data.get('is_editing', False)
-            # If the user exclusively updated their reason text (and didn't provide dates) during editing:
-            if is_editing and ext.get('reason') and context.user_data.get('book_time'):
-                await update.message.reply_text(f"✅ Reason noted: {ext.get('reason')}")
+            if is_editing and ext.get('general_notes') and context.user_data.get('book_time'):
+                await update.message.reply_text(f"✅ Notes noted: {ext.get('general_notes')}")
                 return await show_booking_summary(update.message, context)
             
             markup = await generate_date_picker(service, context.user_data.get('doctor_pref'), is_editing)
@@ -840,7 +840,7 @@ async def show_booking_summary(message, context):
     
     if service == 'Vaccine': details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
     elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
-    else: details = f"Reason: {context.user_data.get('reason', 'General Consultation')}"
+    else: details = f"Reason: {context.user_data.get('general_notes', 'General Consultation')}"
         
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))}"
     full_time_str = context.user_data['book_time']
@@ -888,7 +888,7 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
         "items": context.user_data.get('selected_items', []), 
         "dose": context.user_data.get('dose'),
         "total_doses": total_doses,
-        "reason": context.user_data.get('reason'),
+        "general_notes": context.user_data.get('general_notes'), # DB Mapping
         "doctor_pref": context.user_data.get('doctor_pref', 'ANY'),
         "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
         "assigned_doctor_id": context.user_data.get('assigned_doctor_id')
@@ -908,7 +908,7 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
     
     if service == 'Vaccine': details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
     elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
-    else: details = f"Reason: {context.user_data.get('reason', 'General Consultation')}"
+    else: details = f"Reason: {context.user_data.get('general_notes', 'General Consultation')}"
         
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}"
 
