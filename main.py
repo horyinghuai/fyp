@@ -70,6 +70,8 @@ class VaccineCreate(BaseModel):
     has_booster: Optional[bool] = None
     schedules: Optional[List[Dict[str, Any]]] = []
     price: float
+    stock_quantity: int
+    low_stock_threshold: int
 
 class VaccineAIRequest(BaseModel):
     search_query: str
@@ -142,6 +144,19 @@ def calculate_future_date(start_date: datetime, interval_str: str) -> datetime:
         elif 'day' in interval_str: return start_date + timedelta(days=amount)
     except: pass
     return start_date + timedelta(days=30) 
+
+def normalize_vaccine_type(db: Session, given_type: str):
+    if not given_type: return "Other"
+    given_lower = given_type.lower().strip()
+    existing_types = db.query(models.Vaccine.type).distinct().all()
+    
+    for (t,) in existing_types:
+        if t:
+            t_lower = t.lower().strip()
+            # Basic NLP: check if existing base type is inside the given detailed type (or vice versa)
+            if t_lower in given_lower or given_lower in t_lower:
+                return t
+    return given_type
 
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
@@ -304,14 +319,14 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
     try:
         v_id = data.vaccine_id
         
-        # Check if an AI generated vaccine name already formally exists in the global 'vaccines' table
         if not v_id and data.name:
             existing_v = db.query(models.Vaccine).filter(models.Vaccine.name.ilike(data.name)).first()
             if existing_v:
                 v_id = existing_v.id
                 
         if not v_id:
-            v = models.Vaccine(name=data.name, type=data.type, total_doses=data.total_doses, has_booster=data.has_booster)
+            normalized_type = normalize_vaccine_type(db, data.type)
+            v = models.Vaccine(name=data.name, type=normalized_type, total_doses=data.total_doses, has_booster=data.has_booster)
             db.add(v)
             db.flush() 
             v_id = v.id
@@ -319,12 +334,13 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
                 db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
             db.flush() 
 
-        # Finalize the relationship mapping to the specific clinic
         existing_vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
         if existing_vc:
             existing_vc.price = data.price
+            existing_vc.stock_quantity = data.stock_quantity
+            existing_vc.low_stock_threshold = data.low_stock_threshold
         else:
-            vc = models.VaccineClinic(vaccine_id=v_id, clinic_id=data.clinic_id, price=data.price, stock_quantity=100, low_stock_threshold=10)
+            vc = models.VaccineClinic(vaccine_id=v_id, clinic_id=data.clinic_id, price=data.price, stock_quantity=data.stock_quantity, low_stock_threshold=data.low_stock_threshold)
             db.add(vc)
             
         db.commit()
@@ -335,10 +351,30 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
 
 @app.put("/admin/vaccines/{v_id}")
 def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)):
-    vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
-    if vc: vc.price = data.price
-    db.commit()
-    return {"status": "success"}
+    try:
+        v = db.query(models.Vaccine).filter_by(id=v_id).first()
+        if v:
+            v.name = data.name
+            v.type = normalize_vaccine_type(db, data.type)
+            v.total_doses = data.total_doses
+            v.has_booster = data.has_booster
+            
+        vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
+        if vc: 
+            vc.price = data.price
+            vc.stock_quantity = data.stock_quantity
+            vc.low_stock_threshold = data.low_stock_threshold
+
+        # Overwrite Schedules
+        db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_id).delete()
+        for sched in data.schedules:
+            db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
+
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/admin/vaccines/{v_id}/{clinic_id}")
 def delete_vaccine(v_id: int, clinic_id: str, db: Session = Depends(get_db)):
@@ -422,15 +458,20 @@ def get_doctors(clinic_id: str, db: Session = Depends(get_db)):
 def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
     results = db.query(
         models.Vaccine.id, models.Vaccine.name, models.Vaccine.type, 
-        models.Vaccine.total_doses, models.Vaccine.has_booster, models.VaccineClinic.price
+        models.Vaccine.total_doses, models.Vaccine.has_booster, 
+        models.VaccineClinic.price, models.VaccineClinic.stock_quantity, models.VaccineClinic.low_stock_threshold
     ).join(
         models.VaccineClinic, models.Vaccine.id == models.VaccineClinic.vaccine_id
     ).filter(models.VaccineClinic.clinic_id == clinic_id).all()
     
     vaccines = []
     for r in results:
+        schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=r.id).all()
+        sched_list = [{"dose_number": s.dose_number, "interval_description": s.interval_description} for s in schedules]
         vaccines.append({
-            "id": r.id, "name": r.name, "type": r.type, "total_doses": r.total_doses, "has_booster": r.has_booster, "price": float(r.price)
+            "id": r.id, "name": r.name, "type": r.type, "total_doses": r.total_doses, "has_booster": r.has_booster, 
+            "price": float(r.price), "stock_quantity": r.stock_quantity, "low_stock_threshold": r.low_stock_threshold,
+            "schedules": sched_list
         })
     return vaccines
 
@@ -700,7 +741,6 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         appt = db.query(models.Appointment).filter(models.Appointment.id == booking.appt_id).first()
         if not appt: raise HTTPException(status_code=404)
         
-        # Clear out existing stages and bridge data so we can cleanly recreate based on modifying dose / package
         db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
         db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
         db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
@@ -731,7 +771,6 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                     elif dose_val == "Booster":
                         start_dose_num = v_model.total_doses + 1
                         
-                    # Re-evaluating type based on whether the chosen dose has follow up stages remaining.
                     if (total_stages - start_dose_num + 1) > 1:
                         mapped_appt_type = 'multi-stage'
                 
