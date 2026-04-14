@@ -19,7 +19,7 @@ class User(Base):
     ic_passport_number = Column(String(20), primary_key=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    password_hash = Column(String(255), nullable=False)
+    auth_user_id = Column(UUID(as_uuid=True), unique=True, nullable=True) # Linked to Supabase Auth
     role = Column(String(50), default='admin')
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
