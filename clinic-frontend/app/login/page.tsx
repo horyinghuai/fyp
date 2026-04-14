@@ -2,6 +2,12 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { createClient } from '@supabase/supabase-js';
+
+// Initialize Supabase Client
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function LoginPage() {
   const router = useRouter();
@@ -16,21 +22,19 @@ export default function LoginPage() {
     setStatusMsg({ type: '', text: '' });
     
     try {
-      const res = await fetch(`http://127.0.0.1:8000/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email,
+        password: password,
       });
-      const data = await res.json();
-      
-      if (data.status === 'success') {
-        // Successful login
+
+      if (error) {
+        setStatusMsg({ type: 'error', text: error.message });
+      } else if (data.session) {
+        // Successful login via Supabase
         router.push('/');
-      } else {
-        setStatusMsg({ type: 'error', text: data.detail || 'Login failed. Check credentials.' });
       }
     } catch (err) {
-      setStatusMsg({ type: 'error', text: 'Server error. Please try again.' });
+      setStatusMsg({ type: 'error', text: 'Authentication error. Please try again.' });
     }
   };
 
@@ -39,21 +43,18 @@ export default function LoginPage() {
     setStatusMsg({ type: '', text: '' });
 
     try {
-      const res = await fetch(`http://127.0.0.1:8000/forgot-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: forgotEmail })
+      const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail, {
+        redirectTo: 'http://localhost:3000/settings', // Adjust to your reset password page route
       });
-      const data = await res.json();
 
-      if (data.status === 'success') {
-        setStatusMsg({ type: 'success', text: 'Verification code sent to your email.' });
-        setIsForgotPassword(false);
+      if (error) {
+        setStatusMsg({ type: 'error', text: error.message });
       } else {
-        setStatusMsg({ type: 'error', text: data.detail || 'Failed to send email.' });
+        setStatusMsg({ type: 'success', text: 'Password reset instructions sent to your email.' });
+        setIsForgotPassword(false);
       }
     } catch (err) {
-      setStatusMsg({ type: 'error', text: 'Server error. Please try again.' });
+      setStatusMsg({ type: 'error', text: 'Authentication error. Please try again.' });
     }
   };
 
@@ -97,7 +98,7 @@ export default function LoginPage() {
               <input type="email" value={forgotEmail} onChange={e => setForgotEmail(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="admin@clinic.com" />
             </div>
             <button type="submit" className="w-full py-3 bg-emerald-600 text-white font-bold rounded-xl shadow-md hover:bg-emerald-700 transition duration-200">
-              Send Verification Code
+              Send Password Reset Link
             </button>
             <button type="button" onClick={() => setIsForgotPassword(false)} className="w-full py-3 bg-slate-100 text-slate-600 font-bold rounded-xl shadow-sm hover:bg-slate-200 transition duration-200">
               Back to Login

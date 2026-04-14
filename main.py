@@ -9,22 +9,12 @@ from agent import extract_appointment_details, generate_vaccine_schedule_ai
 from datetime import datetime, timedelta
 import random
 import re
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 app = FastAPI(title="Clinic Smart Assistant Backend")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
-
-class UserLogin(BaseModel):
-    email: str
-    password: str
-
-class ForgotPasswordReq(BaseModel):
-    email: str
 
 class UserUpdate(BaseModel):
     email: Optional[str] = None
@@ -703,7 +693,6 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
     date_obj = req_dt.date()
     now = datetime.now()
     
-    # --- INTELLIGENT DOCTOR COLLISION RESOLUTION ---
     if req.doctor_pref and req.doctor_pref.upper() not in ["ANY", "NONE", "MALE", "FEMALE"]:
         matched_docs = db.query(models.Doctor).join(
             models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
@@ -790,7 +779,7 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             doctor_ic=doc_ic, 
             appt_type=mapped_appt_type, 
             total_stages=total_stages, 
-            general_notes=booking.details.get('general_notes')  # ONLY INSERTED TO APPOINTMENT DB COLUMN 
+            general_notes=booking.details.get('general_notes')  
         )
         db.add(new_appt)
         db.flush() 
@@ -853,7 +842,6 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         return {"status": "success"}
     except Exception as e:
         db.rollback()
-        print(f"BOOKING FAILED: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/update-appointment")
@@ -965,34 +953,6 @@ def cancel_appointment(appt_id: str, db: Session = Depends(get_db)):
     db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled"})
     db.commit()
     return {"status": "success"}
-
-@app.post("/login")
-def user_login(data: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == data.email).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    if user.password_hash != data.password:
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    
-    return {"status": "success", "user_ic": user.ic_passport_number, "role": user.role}
-
-@app.post("/forgot-password")
-def forgot_password(data: ForgotPasswordReq, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == data.email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Email not found.")
-    try:
-        sender_email = "yourclinic.gmail@gmail.com"
-        sender_password = "your-app-password"
-        msg = MIMEMultipart()
-        msg['From'] = sender_email
-        msg['To'] = user.email
-        msg['Subject'] = "AICAS - Password Reset Code"
-        body = "Your verification code is: 123456\n\nPlease use this to reset your password."
-        msg.attach(MIMEText(body, 'plain'))
-        return {"status": "success", "message": "Email sent (Simulation mode)."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Failed to send email configuration.")
 
 @app.get("/admin/users/{ic}")
 def get_user_details(ic: str, db: Session = Depends(get_db)):
