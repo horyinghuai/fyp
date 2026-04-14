@@ -980,7 +980,17 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     pass
 
 if __name__ == '__main__':
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Fix 1: Added extended timeouts to prevent the bot from crashing 
+    # when attempting to connect to the Telegram API on slow/restricted networks.
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
+        .build()
+    )
     
     async def error_handler(update, context):
         logger.error(f"Exception while handling an update: {context.error}")

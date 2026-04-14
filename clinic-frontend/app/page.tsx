@@ -59,16 +59,40 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, [events, pendingReviewEvent]);
 
-  const loadDoctors = () => fetch(`http://127.0.0.1:8000/doctors/${CLINIC_ID}`).then(res => res.json()).then(setDoctors);
-  const loadPatients = () => fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`).then(res => res.json()).then(setPatients);
+  // Fix 2: Added try...catch and response.ok checks to prevent unhandled promise rejections
+  const loadDoctors = async () => {
+      try {
+          const res = await fetch(`http://127.0.0.1:8000/doctors/${CLINIC_ID}`);
+          if (res.ok) setDoctors(await res.json());
+      } catch (err) {
+          console.error("Backend offline (Doctors):", err);
+      }
+  };
+
+  const loadPatients = async () => {
+      try {
+          const res = await fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`);
+          if (res.ok) setPatients(await res.json());
+      } catch (err) {
+          console.error("Backend offline (Patients):", err);
+      }
+  };
 
   const loadServices = async () => {
-    const vRes = await fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`);
-    setVaccinesList(await vRes.json());
-    
-    const pkgs = await (await fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`)).json();
-    const sgls = await (await fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`)).json();
-    setBloodTestsList([...pkgs, ...sgls]);
+      try {
+          const vRes = await fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`);
+          if (vRes.ok) setVaccinesList(await vRes.json());
+          
+          const pkgsRes = await fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`);
+          const pkgs = pkgsRes.ok ? await pkgsRes.json() : [];
+          
+          const sglsRes = await fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`);
+          const sgls = sglsRes.ok ? await sglsRes.json() : [];
+          
+          setBloodTestsList([...pkgs, ...sgls]);
+      } catch (err) {
+          console.error("Backend offline (Services):", err);
+      }
   };
 
   const loadAppointments = () => {
@@ -107,79 +131,91 @@ export default function AdminDashboard() {
 
   const handleReviewAction = async (status: string) => {
     if (!pendingReviewEvent) return;
-    await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${pendingReviewEvent.id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
-    });
-    setPendingReviewEvent(null);
-    loadAppointments();
+    try {
+        await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${pendingReviewEvent.id}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status })
+        });
+        setPendingReviewEvent(null);
+        loadAppointments();
+    } catch (err) {
+        alert("Failed to connect to backend");
+    }
   };
 
   const handleUpdateOrAddEvent = async () => {
-    if(isNewBooking) {
-        let finalIc = editForm.patient_ic;
-        
-        if (isCreatingNewPatient) {
-            const isMY = newPatientForm.nationality.toUpperCase() === 'MALAYSIA';
-            if (isMY) {
-                const phoneRegex = /^(\+?60|0)[1-9][0-9]{7,9}$/;
-                if (!phoneRegex.test(newPatientForm.phone.replace(/[\s-]/g, ''))) {
-                    return alert("Invalid Malaysian phone number format. Valid examples: 0123456789 or +60123456789.");
-                }
-            } else {
-                const intlPhoneRegex = /^\+?[0-9\s\-\(\)]{7,20}$/;
-                if(!intlPhoneRegex.test(newPatientForm.phone)) {
-                    return alert("Invalid phone number format. Please provide a valid international phone number.");
-                }
-            }
-
-            if(!newPatientForm.name || !newPatientForm.ic_passport_number || !newPatientForm.phone) {
-                return alert("Please fill required patient fields.");
-            }
+    try {
+        if(isNewBooking) {
+            let finalIc = editForm.patient_ic;
             
-            const pRes = await fetch(`http://127.0.0.1:8000/register-patient`, {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ clinic_id: CLINIC_ID, telegram_id: 0, ...newPatientForm })
-            });
-            const pData = await pRes.json();
-            if (pData.status === 'error') return alert(pData.reason);
-            finalIc = newPatientForm.ic_passport_number;
-        } else if (!finalIc) {
-            return alert("Please select a patient.");
-        }
+            if (isCreatingNewPatient) {
+                const isMY = newPatientForm.nationality.toUpperCase() === 'MALAYSIA';
+                if (isMY) {
+                    const phoneRegex = /^(\+?60|0)[1-9][0-9]{7,9}$/;
+                    if (!phoneRegex.test(newPatientForm.phone.replace(/[\s-]/g, ''))) {
+                        return alert("Invalid Malaysian phone number format. Valid examples: 0123456789 or +60123456789.");
+                    }
+                } else {
+                    const intlPhoneRegex = /^\+?[0-9\s\-\(\)]{7,20}$/;
+                    if(!intlPhoneRegex.test(newPatientForm.phone)) {
+                        return alert("Invalid phone number format. Please provide a valid international phone number.");
+                    }
+                }
 
-        const payload = {
-            clinic_id: CLINIC_ID, telegram_id: 0, ic_passport_number: finalIc,
-            service_type: editForm.service,
-            details: {
-                items: editForm.items, dose: editForm.dose, reason: editForm.reason, assigned_doctor_id: editForm.doctor_ic
-            },
-            scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss")
-        };
-        await fetch(`http://127.0.0.1:8000/book-appointment`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-        });
-    } else {
-        const payload = {
-            appt_id: selectedEvent.appt_id, service_type: editForm.service,
-            details: {
-                items: editForm.items, dose: editForm.dose, total_doses: 1, assigned_doctor_id: editForm.doctor_ic, reason: editForm.reason
-            },
-            scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss"), status: editForm.status
-        };
-        await fetch(`http://127.0.0.1:8000/update-appointment`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-        });
+                if(!newPatientForm.name || !newPatientForm.ic_passport_number || !newPatientForm.phone) {
+                    return alert("Please fill required patient fields.");
+                }
+                
+                const pRes = await fetch(`http://127.0.0.1:8000/register-patient`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ clinic_id: CLINIC_ID, telegram_id: 0, ...newPatientForm })
+                });
+                const pData = await pRes.json();
+                if (pData.status === 'error') return alert(pData.reason);
+                finalIc = newPatientForm.ic_passport_number;
+            } else if (!finalIc) {
+                return alert("Please select a patient.");
+            }
+
+            const payload = {
+                clinic_id: CLINIC_ID, telegram_id: 0, ic_passport_number: finalIc,
+                service_type: editForm.service,
+                details: {
+                    items: editForm.items, dose: editForm.dose, reason: editForm.reason, assigned_doctor_id: editForm.doctor_ic
+                },
+                scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss")
+            };
+            await fetch(`http://127.0.0.1:8000/book-appointment`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+        } else {
+            const payload = {
+                appt_id: selectedEvent.appt_id, service_type: editForm.service,
+                details: {
+                    items: editForm.items, dose: editForm.dose, total_doses: 1, assigned_doctor_id: editForm.doctor_ic, reason: editForm.reason
+                },
+                scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss"), status: editForm.status
+            };
+            await fetch(`http://127.0.0.1:8000/update-appointment`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+        }
+        window.location.reload(); 
+    } catch (err) {
+        alert("Failed to connect to backend");
     }
-    window.location.reload(); 
   };
 
   const handleCancelBooking = async () => {
     if(!confirm("Are you sure you want to cancel this booking?")) return;
-    await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'canceled' })
-    });
-    window.location.reload(); 
+    try {
+        await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'canceled' })
+        });
+        window.location.reload();
+    } catch (err) {
+        alert("Failed to connect to backend");
+    }
   };
 
   const openEventModal = (event: any) => {
@@ -263,7 +299,17 @@ export default function AdminDashboard() {
     return { style };
   };
 
-  if (isLoading) return <div className="animate-pulse h-[60vh] bg-slate-200 rounded-2xl"></div>;
+  if (isLoading) return (
+    <div className="max-w-7xl mx-auto relative">
+      <div className="mb-6 flex justify-between items-center"><h1 className="text-3xl font-bold text-slate-800">Dashboard Overview</h1></div>
+      {error && (
+         <div className="mb-6 p-4 bg-red-100 text-red-700 rounded-xl font-medium flex items-center gap-3">
+             <AlertTriangle size={20} /> Failed to connect to the backend server. Please ensure your Python FastAPI server is running on port 8000.
+         </div>
+      )}
+      <div className="animate-pulse h-[60vh] bg-slate-200 rounded-2xl"></div>
+    </div>
+  );
 
   return (
     <div className="max-w-7xl mx-auto relative">
@@ -305,6 +351,12 @@ export default function AdminDashboard() {
             </div>
         </div>
       </div>
+
+      {error && (
+         <div className="mb-6 p-4 bg-red-100 text-red-700 rounded-xl font-medium flex items-center gap-3">
+             <AlertTriangle size={20} /> Failed to connect to the backend server. Please ensure your Python FastAPI server is running.
+         </div>
+      )}
 
       <div className="grid grid-cols-4 gap-6 mb-8">
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
