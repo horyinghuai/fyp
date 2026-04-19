@@ -18,7 +18,7 @@ const COUNTRIES = [
   "Liberia", "Libya", "Liechtenstein", "Lithuania", "Luxembourg", "Macedonia", "Madagascar", "Malawi", 
   "Maldives", "Mali", "Malta", "Mauritania", "Mauritius", "Mexico", "Micronesia", "Moldova", "Monaco", 
   "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Netherlands", 
-  "New Zealand", "Nicaragua", "Niger", "Nigeria", "Norway", "Oman", "Pakistan", "Palau", "Panama", 
+  "New Zealand", "Nicaragua", "Niger", "Nigeria", "Norway", "Oman", "Pakistan", "Palau", "Palestine", "Panama", 
   "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland", "Portugal", "Qatar", "Romania", 
   "Russia", "Rwanda", "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent", "Samoa", "San Marino", 
   "Sao Tome", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia", 
@@ -28,6 +28,19 @@ const COUNTRIES = [
   "Ukraine", "United Arab Emirates", "United Kingdom", "United States", "Uruguay", "Uzbekistan", "Vanuatu", 
   "Vatican City", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
 ];
+
+const COUNTRY_PHONE_CODES: Record<string, string> = {
+  "MALAYSIA": "+60",
+  "UNITED STATES": "+1",
+  "SINGAPORE": "+65",
+  "CHINA": "+86",
+  "PALESTINE": "+970",
+  "UNITED KINGDOM": "+44",
+  "AUSTRALIA": "+61",
+  "INDONESIA": "+62",
+  "INDIA": "+91",
+  "JAPAN": "+81"
+};
 
 export default function PatientsPage() {
   const [patients, setPatients] = useState<any[]>([]);
@@ -65,8 +78,28 @@ export default function PatientsPage() {
               setFormData({...formData, ic: formatted, gender: gender, nationality: 'MALAYSIA'});
           }
       } else {
-          setFormData({...formData, ic: val});
+          setFormData({...formData, ic: val.toUpperCase()});
       }
+  };
+
+  const handleNationalityChange = (country: string) => {
+      const upperCountry = country.toUpperCase();
+      const code = COUNTRY_PHONE_CODES[upperCountry] || "+";
+      setFormData({...formData, nationality: upperCountry, phone: code});
+  };
+
+  const formatPhoneNumberBeforeSave = (phone: string, isMy: boolean) => {
+      let cleanPhone = phone.replace(/[\s-]/g, '');
+      if (isMy) {
+          if (cleanPhone.startsWith('01')) {
+              cleanPhone = '+60' + cleanPhone.substring(1);
+          } else if (cleanPhone.startsWith('60')) {
+              cleanPhone = '+' + cleanPhone;
+          } else if (cleanPhone.startsWith('1') && cleanPhone.length >= 8) {
+              cleanPhone = '+60' + cleanPhone;
+          }
+      }
+      return cleanPhone;
   };
 
   const handleSave = async () => {
@@ -74,18 +107,20 @@ export default function PatientsPage() {
         alert("⚠️ IC/Passport, Name, and Phone are required fields."); return;
     }
 
+    let finalPhone = formatPhoneNumberBeforeSave(formData.phone, isMalaysian);
+
     if (isMalaysian) {
         const cleanIC = formData.ic.replace(/[^0-9]/g, '');
         if (cleanIC.length !== 12) {
-            alert("⚠️ Malaysian IC must be exactly 12 digits."); return;
+            alert("⚠️ Malaysian IC must be exactly 12 digits or in XXXXXX-XX-XXXX format."); return;
         }
-        const phoneRegex = /^(\+?60|0)[1-9][0-9]{7,9}$/;
-        if (!phoneRegex.test(formData.phone.replace(/[\s-]/g, ''))) {
-            alert("⚠️ Invalid Malaysian phone number format. Valid examples: 0123456789 or +60123456789."); return;
+        const phoneRegex = /^\+60[1-9][0-9]{7,9}$/;
+        if (!phoneRegex.test(finalPhone)) {
+            alert("⚠️ Invalid Malaysian phone number format. It should contain a valid mobile prefix."); return;
         }
     } else {
-        const intlPhoneRegex = /^\+?[0-9\s\-\(\)]{7,20}$/;
-        if(!intlPhoneRegex.test(formData.phone)) {
+        const intlPhoneRegex = /^\+?[0-9]{7,15}$/;
+        if(!intlPhoneRegex.test(finalPhone.replace(/[\s\-\(\)]/g, ''))) {
             alert("⚠️ Invalid phone number format. Please provide a valid international phone number."); return;
         }
     }
@@ -93,8 +128,23 @@ export default function PatientsPage() {
     try {
         const isEditing = !!editingPatient;
         const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${editingPatient.ic_passport_number}` : `http://127.0.0.1:8000/register-patient`;
-        const payload = isEditing ? { ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address } 
-                                  : { clinic_id: CLINIC_ID, ic_passport_number: formData.ic, name: formData.name, phone: formData.phone, gender: formData.gender, nationality: formData.nationality, address: formData.address };
+        
+        const payload = isEditing ? { 
+            ic_passport_number: formData.ic.toUpperCase(), 
+            name: formData.name.toUpperCase(), 
+            phone: finalPhone, 
+            gender: formData.gender.toUpperCase(), 
+            nationality: formData.nationality.toUpperCase(), 
+            address: formData.address.toUpperCase() 
+        } : { 
+            clinic_id: CLINIC_ID, 
+            ic_passport_number: formData.ic.toUpperCase(), 
+            name: formData.name.toUpperCase(), 
+            phone: finalPhone, 
+            gender: formData.gender.toUpperCase(), 
+            nationality: formData.nationality.toUpperCase(), 
+            address: formData.address.toUpperCase() 
+        };
 
         const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         const data = await res.json();
@@ -119,7 +169,14 @@ export default function PatientsPage() {
     if(patient) {
         const isMy = patient.nationality.toUpperCase() === 'MALAYSIA';
         setIsMalaysian(isMy);
-        setFormData({ ic: patient.ic_passport_number, name: patient.name, phone: patient.phone, gender: patient.gender, nationality: patient.nationality, address: patient.address || '' });
+        setFormData({ 
+            ic: patient.ic_passport_number, 
+            name: patient.name, 
+            phone: patient.phone, 
+            gender: patient.gender, 
+            nationality: patient.nationality, 
+            address: patient.address || '' 
+        });
     } else {
         setIsMalaysian(true);
         setFormData({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
@@ -144,7 +201,12 @@ export default function PatientsPage() {
       <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100">
         <table className="w-full text-left border-collapse">
           <thead className="bg-slate-50 border-b border-slate-200">
-            <tr><th className="p-4 font-semibold text-slate-600">Patient Details</th><th className="p-4 font-semibold text-slate-600">IC / Passport</th><th className="p-4 font-semibold text-slate-600">Contact</th><th className="p-4 font-semibold text-slate-600 text-center">Actions</th></tr>
+            <tr>
+              <th className="p-4 font-semibold text-slate-600">Patient Details</th>
+              <th className="p-4 font-semibold text-slate-600">IC / Passport</th>
+              <th className="p-4 font-semibold text-slate-600">Contact</th>
+              <th className="p-4 font-semibold text-slate-600 text-center">Actions</th>
+            </tr>
           </thead>
           <tbody>
             {filteredPatients.map((p, i) => (
@@ -172,44 +234,55 @@ export default function PatientsPage() {
             <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingPatient ? 'Modify Patient Data' : 'Add New Patient'}</h3>
             
             <div className="flex gap-2 mb-4 bg-slate-100 p-1 rounded-lg">
-                <button onClick={() => { setIsMalaysian(true); setFormData({...formData, nationality: 'MALAYSIA', ic: ''}); }} className={`flex-1 py-1 text-sm font-bold rounded ${isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Malaysian</button>
-                <button onClick={() => { setIsMalaysian(false); setFormData({...formData, ic: ''}); }} className={`flex-1 py-1 text-sm font-bold rounded ${!isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Non-Malaysian</button>
+                <button onClick={() => { setIsMalaysian(true); setFormData({...formData, nationality: 'MALAYSIA', ic: '', phone: ''}); }} className={`flex-1 py-1 text-sm font-bold rounded ${isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Malaysian</button>
+                <button onClick={() => { setIsMalaysian(false); setFormData({...formData, ic: '', nationality: '', phone: ''}); }} className={`flex-1 py-1 text-sm font-bold rounded ${!isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Non-Malaysian</button>
             </div>
 
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">{isMalaysian ? "IC Number" : "Passport Number"}</label>
-                <input type="text" placeholder={isMalaysian ? "e.g. 900101-14-5533" : "Passport ID"} value={formData.ic} onChange={e => handleICChange(e.target.value)} className="w-full p-3 border rounded-lg outline-none font-mono" />
+                <input type="text" placeholder={isMalaysian ? "e.g. 900101-14-5533" : "Passport ID"} value={formData.ic} onChange={e => handleICChange(e.target.value)} className="w-full p-3 border rounded-lg outline-none font-mono uppercase" />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Patient Full Name</label>
-                <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
+                <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Home Address</label>
-                <input type="text" placeholder="Full Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
+                <input type="text" placeholder="Full Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
               </div>
-              <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Phone Number</label>
-                <input type="text" placeholder="+60123456789" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="w-full p-3 border rounded-lg outline-none" />
-              </div>
+              
               <div className="flex gap-4">
                 <div className="flex-1">
                   <label className="block text-sm font-bold text-slate-700 mb-1">Gender</label>
-                  <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full p-3 border rounded-lg outline-none bg-white">
-                    <option value="MALE">Male</option><option value="FEMALE">Female</option>
+                  <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none bg-white uppercase">
+                    <option value="MALE">MALE</option>
+                    <option value="FEMALE">FEMALE</option>
                   </select>
                 </div>
                 <div className="flex-1">
                   <label className="block text-sm font-bold text-slate-700 mb-1">Nationality</label>
                   {isMalaysian ? (
-                      <input type="text" readOnly value="MALAYSIA" className="w-full p-3 border bg-slate-50 rounded-lg outline-none font-bold text-slate-500" />
+                      <input type="text" readOnly value="MALAYSIA" className="w-full p-3 border bg-slate-50 rounded-lg outline-none font-bold text-slate-500 uppercase" />
                   ) : (
-                      <select value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value})} className="w-full p-3 border rounded-lg outline-none bg-white">
-                        {COUNTRIES.map(c => <option key={c} value={c.toUpperCase()}>{c}</option>)}
+                      <select value={formData.nationality} onChange={e => handleNationalityChange(e.target.value)} className="w-full p-3 border rounded-lg outline-none bg-white uppercase">
+                        <option value="">-- Select Country --</option>
+                        {COUNTRIES.map(c => <option key={c} value={c.toUpperCase()}>{c.toUpperCase()}</option>)}
                       </select>
                   )}
                 </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Phone Number</label>
+                <input 
+                  type="text" 
+                  placeholder={isMalaysian ? "+6012-3456789" : "Select nationality first..."} 
+                  value={formData.phone} 
+                  onChange={e => setFormData({...formData, phone: e.target.value})} 
+                  disabled={!isMalaysian && !formData.nationality}
+                  className={`w-full p-3 border rounded-lg outline-none font-mono ${(!isMalaysian && !formData.nationality) ? 'bg-slate-100 cursor-not-allowed text-slate-400' : ''}`} 
+                />
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">

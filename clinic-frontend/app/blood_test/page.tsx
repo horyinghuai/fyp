@@ -12,8 +12,8 @@ export default function BloodTestsPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingBt, setEditingBt] = useState<any>(null);
   
-  const [formData, setFormData] = useState<{name: string, description: string, price: number | string, test_type: string, component_ids: number[]}>({ 
-    name: '', description: '', price: '', test_type: 'single', component_ids: [] 
+  const [formData, setFormData] = useState<{name: string, description: string, price: number | string, test_type: string, component_ids: number[], target_gender: string}>({ 
+    name: '', description: '', price: '', test_type: 'single', component_ids: [], target_gender: 'ANY' 
   });
 
   useEffect(() => { loadData(); }, []);
@@ -44,14 +44,14 @@ export default function BloodTestsPage() {
       return;
     }
 
-    // Build payload exactly matching BloodTestCreate Pydantic model
     const payload = {
       clinic_id: CLINIC_ID,
       name: formData.name.trim(),
       description: formData.description.trim() === '' ? null : formData.description.trim(),
       price: priceNum,
       test_type: formData.test_type,
-      component_ids: formData.component_ids.map(Number)  // ensure array of integers
+      component_ids: formData.component_ids.map(Number),
+      target_gender: formData.target_gender || 'ANY'
     };
 
     try {
@@ -93,7 +93,8 @@ export default function BloodTestsPage() {
         description: bt.description || '',
         price: bt.price,
         test_type: bt.test_type,
-        component_ids: bt.component_ids || []
+        component_ids: bt.component_ids || [],
+        target_gender: bt.target_gender || 'ANY'
       });
     } else {
       setFormData({
@@ -101,7 +102,8 @@ export default function BloodTestsPage() {
         description: '',
         price: '',
         test_type: 'single',
-        component_ids: []
+        component_ids: [],
+        target_gender: 'ANY'
       });
     }
     setShowModal(true);
@@ -118,7 +120,6 @@ export default function BloodTestsPage() {
         </button>
       </div>
 
-      {/* Packages Section */}
       <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">1. Packages</h2>
       <div className="grid grid-cols-2 gap-4 mb-12">
         {packages.map(p => (
@@ -127,6 +128,9 @@ export default function BloodTestsPage() {
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase">Package Name</label>
                 <h3 className="font-bold text-lg text-slate-800">{p.name}</h3>
+                {p.target_gender && p.target_gender !== 'ANY' && (
+                    <span className="text-xs bg-pink-100 text-pink-700 px-2 py-1 rounded-full font-bold inline-block mt-1">👩‍⚕️ {p.target_gender} ONLY</span>
+                )}
               </div>
               <div className="text-right">
                 <label className="block text-xs font-bold text-slate-400 uppercase">Price</label>
@@ -160,13 +164,13 @@ export default function BloodTestsPage() {
         ))}
       </div>
 
-      {/* Single Tests Section */}
       <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">2. Standalone Single Tests</h2>
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden mb-12">
         <table className="w-full text-left border-collapse">
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Test Name</th>
+              <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Gender Logic</th>
               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Description</th>
               <th className="p-4 text-slate-600 font-semibold text-sm uppercase">Price</th>
               <th className="p-4 text-slate-600 font-semibold text-center text-sm uppercase">Actions</th>
@@ -176,6 +180,7 @@ export default function BloodTestsPage() {
             {singles.map((s, i) => (
               <tr key={s.id} className={`border-b border-slate-50 hover:bg-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                 <td className="p-4 font-bold text-slate-800">{s.name}</td>
+                <td className="p-4 text-sm font-bold text-pink-600">{s.target_gender !== 'ANY' ? s.target_gender : 'General'}</td>
                 <td className="p-4 text-sm text-slate-500">{s.description || "N/A"}</td>
                 <td className="p-4 font-bold text-emerald-600">RM {s.price}</td>
                 <td className="p-4 text-center space-x-2">
@@ -192,7 +197,6 @@ export default function BloodTestsPage() {
         </table>
       </div>
 
-      {/* Modal for Add/Edit */}
       {showModal && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white p-6 rounded-2xl w-[500px] shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -210,6 +214,20 @@ export default function BloodTestsPage() {
                   placeholder="e.g., Complete Blood Count"
                 />
               </div>
+              
+              <div>
+                 <label className="block text-sm font-bold text-slate-700 mb-1">Target Gender Rule *</label>
+                 <select
+                    value={formData.target_gender}
+                    onChange={e => setFormData({...formData, target_gender: e.target.value})}
+                    className="w-full p-3 border rounded-lg outline-none bg-white font-bold"
+                 >
+                    <option value="ANY">Any Gender</option>
+                    <option value="MALE">Male Only</option>
+                    <option value="FEMALE">Female Only</option>
+                 </select>
+              </div>
+
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Short Description (Optional)</label>
                 <input

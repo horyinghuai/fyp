@@ -28,7 +28,8 @@ export default function VaccinesPage() {
   const [formData, setFormData] = useState({ 
       vaccine_id: null as any, name: '', type: '', total_doses: 1, 
       price: 0, has_booster: false, schedules: [] as any[], 
-      stock_quantity: '' as number | string, low_stock_threshold: 10 as number | string 
+      stock_quantity: '' as number | string, low_stock_threshold: 10 as number | string,
+      target_gender: 'ANY'
   });
 
   useEffect(() => { loadData(); }, []);
@@ -134,7 +135,8 @@ export default function VaccinesPage() {
         name: capitalizeFirstLetter(formData.name),
         type: capitalizeFirstLetter(formData.type),
         stock_quantity: finalStock,
-        low_stock_threshold: finalThreshold
+        low_stock_threshold: finalThreshold,
+        target_gender: formData.target_gender || 'ANY'
     }
 
     const isEditing = !!editingVac;
@@ -180,7 +182,8 @@ export default function VaccinesPage() {
             vaccine_id: v.id, name: capitalizeFirstLetter(v.name), type: capitalizeFirstLetter(v.type), total_doses: v.total_doses, 
             price: v.price, has_booster: v.has_booster, schedules: scheds,
             stock_quantity: v.stock_quantity !== undefined ? v.stock_quantity : '', 
-            low_stock_threshold: v.low_stock_threshold !== undefined ? v.low_stock_threshold : 10
+            low_stock_threshold: v.low_stock_threshold !== undefined ? v.low_stock_threshold : 10,
+            target_gender: v.target_gender || 'ANY'
         }); 
     } 
     else { 
@@ -188,7 +191,7 @@ export default function VaccinesPage() {
         setFormData({ 
             vaccine_id: null, name: '', type: '', total_doses: 1, 
             price: 0, has_booster: false, schedules: [],
-            stock_quantity: '', low_stock_threshold: 10
+            stock_quantity: '', low_stock_threshold: 10, target_gender: 'ANY'
         }); 
     }
     setShowModal(true);
@@ -238,8 +241,13 @@ export default function VaccinesPage() {
                 <div className="flex justify-between">
                   <div>
                     <label className="block text-xs font-bold text-slate-400 uppercase">Vaccine Name</label>
-                    <h3 className="text-xl font-bold flex items-center gap-2"><Syringe size={20} className={isLowStock ? 'text-red-500' : 'text-purple-500'}/> {capitalizeFirstLetter(v.name)}</h3>
-                    {v.has_booster && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full mt-2 font-bold inline-block">⭐ Booster Included</span>}
+                    <h3 className="text-xl font-bold flex items-center gap-2">
+                        <Syringe size={20} className={isLowStock ? 'text-red-500' : 'text-purple-500'}/> {capitalizeFirstLetter(v.name)}
+                    </h3>
+                    <div className="mt-2 space-x-2">
+                        {v.has_booster && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-bold inline-block">⭐ Booster Included</span>}
+                        {v.target_gender && v.target_gender !== 'ANY' && <span className="text-xs bg-pink-100 text-pink-700 px-2 py-1 rounded-full font-bold inline-block">👩‍⚕️ {v.target_gender} ONLY</span>}
+                    </div>
                   </div>
                   <div className="text-right">
                      <label className="block text-xs font-bold text-slate-400 uppercase">Price & Stock</label>
@@ -287,9 +295,9 @@ export default function VaccinesPage() {
                           } else if (scheds.length === 0 && s.total_doses > 0) {
                                scheds.push({dose_number: 1, interval_description: "Initial"});
                           }
-                          setFormData({...formData, vaccine_id: s.id, name: capitalizeFirstLetter(s.name), type: capitalizeFirstLetter(s.type), total_doses: s.total_doses, has_booster: s.has_booster, schedules: scheds}); 
+                          setFormData({...formData, vaccine_id: s.id, name: capitalizeFirstLetter(s.name), type: capitalizeFirstLetter(s.type), total_doses: s.total_doses, has_booster: s.has_booster, target_gender: s.target_gender || 'ANY', schedules: scheds}); 
                       } else {
-                          setFormData({...formData, vaccine_id: null, name: '', type: '', total_doses: 1, has_booster: false, schedules: []});
+                          setFormData({...formData, vaccine_id: null, name: '', type: '', total_doses: 1, has_booster: false, target_gender: 'ANY', schedules: []});
                       }
                   }} className="w-full p-3 border rounded-lg outline-none bg-white">
                     <option value="">-- Choose Vaccine --</option>
@@ -320,7 +328,6 @@ export default function VaccinesPage() {
                 </div>
               )}
 
-              {/* Editable Fields rendered for New AI/Manual additions, Modifying Clinic existing, OR once an Existing DB dropdown item is selected */}
               {((modalMode === 'new') || editingVac || (modalMode === 'existing' && formData.vaccine_id)) && (
                   <div className="space-y-4 border-t pt-4 border-slate-100">
                     <h4 className="font-bold text-xs text-slate-500 uppercase">General Details</h4>
@@ -329,6 +336,17 @@ export default function VaccinesPage() {
                     
                     <div><label className="block text-xs font-bold text-slate-700 mb-1">Vaccine Type</label><input type="text" placeholder="e.g. Hepatitis B" value={formData.type} onChange={e => setFormData({...formData, type: capitalizeFirstLetter(e.target.value)})} className="w-full p-3 border rounded-lg outline-none" /></div>
                     
+                    <div className="flex gap-4">
+                      <div className="flex-1">
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Target Gender</label>
+                          <select value={formData.target_gender} onChange={e => setFormData({...formData, target_gender: e.target.value})} className="w-full p-3 border rounded-lg outline-none bg-white font-bold">
+                              <option value="ANY">Any Gender</option>
+                              <option value="MALE">Male Only</option>
+                              <option value="FEMALE">Female Only</option>
+                          </select>
+                      </div>
+                    </div>
+
                     <div className="flex gap-4">
                       <div className="flex-1">
                           <label className="block text-xs font-bold text-slate-700 mb-1">Total Doses</label>
@@ -343,7 +361,6 @@ export default function VaccinesPage() {
                       </div>
                     </div>
 
-                    {/* Schedules Section */}
                     {formData.total_doses > 0 && (
                         <div className="bg-slate-50 p-4 rounded-xl space-y-3 border border-slate-100 mt-4">
                             <h4 className="font-bold text-xs text-slate-500 uppercase">Dose Schedules</h4>
@@ -371,7 +388,6 @@ export default function VaccinesPage() {
                   </div>
               )}
 
-              {/* Clinic Specific Details for ALL modes (Hidden completely if Existing DB has no selected item yet) */}
               {((modalMode === 'new') || editingVac || (modalMode === 'existing' && formData.vaccine_id)) && (
                   <div className="space-y-4 border-t pt-4 border-slate-100">
                       <h4 className="font-bold text-xs text-slate-500 uppercase">Clinic Offerings & Stock</h4>
