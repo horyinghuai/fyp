@@ -19,7 +19,7 @@ class User(Base):
     ic_passport_number = Column(String(20), primary_key=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    auth_user_id = Column(UUID(as_uuid=True), unique=True, nullable=True) # Linked to Supabase Auth
+    auth_user_id = Column(UUID(as_uuid=True), unique=True, nullable=True) 
     role = Column(String(50), default='admin')
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
@@ -79,6 +79,7 @@ class BloodTest(Base):
     price = Column(Numeric(10, 2), nullable=False)
     description = Column(String)
     test_type = Column(String(20), nullable=False) 
+    target_gender = Column(String(10), default="ANY")
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
@@ -97,10 +98,7 @@ class Vaccine(Base):
     type = Column(String(50))
     total_doses = Column(Integer, default=1) 
     has_booster = Column(Boolean, default=False) 
-
-# ========================================================
-# BRIDGE TABLES
-# ========================================================
+    target_gender = Column(String(10), default="ANY")
 
 class DoctorClinicAvailability(Base):
     __tablename__ = "doctor_clinic_availability"

@@ -333,7 +333,6 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
                 
         if not v_id:
             normalized_type = normalize_vaccine_type(db, data.type)
-            # Assuming target_gender exists in model
             v = models.Vaccine(name=formatted_name, type=normalized_type, total_doses=data.total_doses, has_booster=data.has_booster, target_gender=data.target_gender.upper())
             db.add(v)
             db.flush() 
@@ -349,8 +348,7 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
                 v.type = normalize_vaccine_type(db, data.type)
                 v.total_doses = data.total_doses
                 v.has_booster = data.has_booster
-                if hasattr(v, 'target_gender'):
-                    v.target_gender = data.target_gender.upper()
+                v.target_gender = data.target_gender.upper()
             db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_id).delete()
             for sched in data.schedules:
                 db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
@@ -380,8 +378,7 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
             v.type = normalize_vaccine_type(db, data.type)
             v.total_doses = data.total_doses
             v.has_booster = data.has_booster
-            if hasattr(v, 'target_gender'):
-                v.target_gender = data.target_gender.upper()
+            v.target_gender = data.target_gender.upper()
             
         vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
         if vc: 
@@ -453,9 +450,7 @@ def delete_vaccine(v_id: int, clinic_id: str, db: Session = Depends(get_db)):
 @app.post("/admin/blood-tests")
 def create_bt(data: BloodTestCreate, db: Session = Depends(get_db)):
     try:
-        bt = models.BloodTest(clinic_id=data.clinic_id, name=data.name.title(), description=data.description, price=data.price, test_type=data.test_type)
-        if hasattr(bt, 'target_gender'):
-            bt.target_gender = data.target_gender.upper()
+        bt = models.BloodTest(clinic_id=data.clinic_id, name=data.name.title(), description=data.description, price=data.price, test_type=data.test_type, target_gender=data.target_gender.upper())
         db.add(bt)
         db.flush()
         if data.test_type == 'package' and data.component_ids:
@@ -473,8 +468,7 @@ def update_bt(bt_id: int, data: BloodTestCreate, db: Session = Depends(get_db)):
         bt = db.query(models.BloodTest).filter_by(id=bt_id).first()
         if bt:
             bt.name, bt.description, bt.price, bt.test_type = data.name.title(), data.description, data.price, data.test_type
-            if hasattr(bt, 'target_gender'):
-                bt.target_gender = data.target_gender.upper()
+            bt.target_gender = data.target_gender.upper()
             if data.test_type == 'package':
                 db.query(models.BloodTestComponent).filter_by(package_id=bt.id).delete()
                 for cid in data.component_ids:
@@ -571,7 +565,6 @@ def get_doctors(clinic_id: str, db: Session = Depends(get_db)):
 
 @app.get("/vaccines/{clinic_id}")
 def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
-    # Include target_gender for the bot to filter automatically
     results = db.query(
         models.Vaccine.id, models.Vaccine.name, models.Vaccine.type, 
         models.Vaccine.total_doses, models.Vaccine.has_booster, getattr(models.Vaccine, 'target_gender', None),
@@ -584,7 +577,7 @@ def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
     for r in results:
         schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=r.id).all()
         sched_list = [{"dose_number": s.dose_number, "interval_description": s.interval_description} for s in schedules]
-        target_gen = r[5] if r[5] else 'ANY' # dynamic index check
+        target_gen = r[5] if r[5] else 'ANY' 
         vaccines.append({
             "id": r.id, "name": r.name, "type": r.type, "total_doses": r.total_doses, "has_booster": r.has_booster, 
             "target_gender": target_gen,
@@ -673,7 +666,6 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
         if existing:
             return {"status": "error", "reason": "Patient IC already exists. Registration aborted."}
         
-        # ALL CAPS ENFORCEMENT
         data_dict['name'] = data_dict['name'].upper() 
         data_dict['ic_passport_number'] = data_dict['ic_passport_number'].upper()
         if data_dict.get('address'): data_dict['address'] = data_dict['address'].upper()

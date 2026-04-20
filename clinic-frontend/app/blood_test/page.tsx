@@ -180,7 +180,7 @@ export default function BloodTestsPage() {
             {singles.map((s, i) => (
               <tr key={s.id} className={`border-b border-slate-50 hover:bg-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                 <td className="p-4 font-bold text-slate-800">{s.name}</td>
-                <td className="p-4 text-sm font-bold text-pink-600">{s.target_gender !== 'ANY' ? s.target_gender : 'General'}</td>
+                <td className="p-4 text-sm font-bold text-pink-600">{s.target_gender !== 'ANY' ? s.target_gender : 'ANY'}</td>
                 <td className="p-4 text-sm text-slate-500">{s.description || "N/A"}</td>
                 <td className="p-4 font-bold text-emerald-600">RM {s.price}</td>
                 <td className="p-4 text-center space-x-2">
