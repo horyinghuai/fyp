@@ -43,7 +43,7 @@ COUNTRIES_LIST = [
     "MALDIVES", "MALI", "MALTA", "MAURITANIA", "MAURITIUS", "MEXICO", "MICRONESIA", "MOLDOVA", "MONACO", 
     "MONGOLIA", "MONTENEGRO", "MOROCCO", "MOZAMBIQUE", "MYANMAR", "NAMIBIA", "NAURU", "NEPAL", "NETHERLANDS", 
     "NEW ZEALAND", "NICARAGUA", "NIGER", "NIGERIA", "NORWAY", "OMAN", "PAKISTAN", "PALAU", "PALESTINE", "PANAMA", 
-    "PAPUA MAPUA NEW GUINEA", "PARAGUAY", "PERU", "PHILIPPINES", "POLAND", "PORTUGAL", "QATAR", "ROMANIA", 
+    "PAPUA NEW GUINEA", "PARAGUAY", "PERU", "PHILIPPINES", "POLAND", "PORTUGAL", "QATAR", "ROMANIA", 
     "RUSSIA", "RWANDA", "SAINT KITTS AND NEVIS", "SAINT LUCIA", "SAINT VINCENT", "SAMOA", "SAN MARINO", 
     "SAO TOME", "SAUDI ARABIA", "SENEGAL", "SERBIA", "SEYCHELLES", "SIERRA LEONE", "SINGAPORE", "SLOVAKIA", 
     "SLOVENIA", "SOLOMON ISLANDS", "SOMALIA", "SOUTH AFRICA", "SOUTH KOREA", "SPAIN", "SRI LANKA", "SUDAN", 
@@ -61,7 +61,7 @@ def get_ocr_reader():
         ocr_reader = easyocr.Reader(['en', 'ms'])
     return ocr_reader
 
-NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON = range(26)
+NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON, BASIC_CONFIRM = range(27)
 
 async def generate_date_picker(service, doctor_pref, is_editing=False):
     duration = 15 if service == 'Vaccine' else 30
@@ -312,22 +312,49 @@ async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
         return MAN_ID_CHECK
 
-async def handle_existing_patient_bypass(message, context, patient):
+async def handle_existing_patient_basic_confirm(message, context, patient):
     context.user_data['name'] = patient['name'].upper()
     context.user_data['phone'] = patient['phone']
     context.user_data['address'] = patient.get('address', 'UNKNOWN').upper()
     context.user_data['gender'] = patient.get('gender', 'UNKNOWN').upper()
     context.user_data['nationality'] = patient.get('nationality', 'UNKNOWN').upper()
+    context.user_data['ic'] = patient['ic_passport_number']
     
-    msg = (f"Welcome back, {patient['name']}!\n\n📋 *Stored Details:*\nIC/Passport: {context.user_data['ic']}\n"
-           f"Gender: {context.user_data['gender']}\nPhone: {context.user_data['phone']}\n"
-           f"\nAre these details correct?")
+    msg = (f"Welcome {patient['name'].upper()}\n\n"
+           f"📋 Please confirm your details:\n"
+           f"Name: {patient['name'].upper()}\n"
+           f"IC Number: {patient['ic_passport_number']}\n"
+           f"Phone: {patient['phone']}\n")
            
-    btns = [[InlineKeyboardButton("Yes", callback_data="prof_yes")],
-            [InlineKeyboardButton("No, I need to edit", callback_data="prof_edit")]]
+    btns = [[InlineKeyboardButton("✅ Yes, it's me", callback_data="basic_yes")],
+            [InlineKeyboardButton("❌ No, it's not me", callback_data="basic_no")]]
             
-    await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
-    return CONFIRM_PROFILE
+    await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    return BASIC_CONFIRM
+
+async def basic_confirm_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "basic_no":
+        await query.edit_message_text("Please re-enter your IC/Passport number.")
+        return MAN_ID_CHECK
+
+    elif query.data == "basic_yes":
+        msg = (f"📋 Please confirm your details:\n"
+               f"Name: {context.user_data['name']}\n"
+               f"IC Number: {context.user_data['ic']}\n"
+               f"Gender: {context.user_data['gender']}\n"
+               f"Nationality: {context.user_data['nationality']}\n"
+               f"Address: {context.user_data['address']}\n"
+               f"Phone: {context.user_data['phone']}\n\n"
+               f"Is there any information you want to update?")
+
+        btns = [[InlineKeyboardButton("✏️ Yes, I want to edit", callback_data="prof_edit")],
+                [InlineKeyboardButton("✅ No, all information are correct", callback_data="prof_yes")]]
+
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+        return CONFIRM_PROFILE
 
 async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()
@@ -359,7 +386,7 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{ic}", timeout=5.0)
             if res.status_code == 200:
                 patient = res.json()
-                return await handle_existing_patient_bypass(update.message, context, patient)
+                return await handle_existing_patient_basic_confirm(update.message, context, patient)
         except Exception as e:
             logger.error(f"Backend patient check failed: {e}")
 
@@ -394,7 +421,7 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{context.user_data['ic']}", timeout=5.0)
             if res.status_code == 200:
                 patient = res.json()
-                return await handle_existing_patient_bypass(update.message, context, patient)
+                return await handle_existing_patient_basic_confirm(update.message, context, patient)
         except Exception as e:
             logger.error(f"Backend patient check failed: {e}")
 
@@ -496,15 +523,20 @@ async def man_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_profile_summary(message, context):
     context.user_data['edit_mode'] = False
-    msg = (f"📋 *Please confirm your details:*\nName: {context.user_data['name']}\n"
-           f"IC Number: {context.user_data['ic']}\nGender: {context.user_data['gender']}\n"
-           f"Nationality: {context.user_data['nationality']}\nAddress: {context.user_data['address']}\n"
-           f"Phone: {context.user_data['phone']}\n\nAre you sure this details are correct?")
-    btns = [[InlineKeyboardButton("Yes", callback_data="prof_yes")],
-            [InlineKeyboardButton("No, edit details", callback_data="prof_edit")]]
+    msg = (f"📋 Please confirm your details:\n"
+           f"Name: {context.user_data['name']}\n"
+           f"IC Number: {context.user_data['ic']}\n"
+           f"Gender: {context.user_data['gender']}\n"
+           f"Nationality: {context.user_data['nationality']}\n"
+           f"Address: {context.user_data['address']}\n"
+           f"Phone: {context.user_data['phone']}\n\n"
+           f"Is there any information you want to update?")
+           
+    btns = [[InlineKeyboardButton("✏️ Yes, I want to edit", callback_data="prof_edit")],
+            [InlineKeyboardButton("✅ No, all information are correct", callback_data="prof_yes")]]
     
-    if hasattr(message, 'edit_text'): await message.edit_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
-    else: await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+    if hasattr(message, 'edit_text'): await message.edit_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    else: await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return CONFIRM_PROFILE
 
 async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1230,6 +1262,9 @@ if __name__ == '__main__':
             MAN_ID_CHECK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, man_id_check),
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
+            ],
+            BASIC_CONFIRM: [
+                CallbackQueryHandler(basic_confirm_logic, pattern="^basic_")
             ],
             MAN_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, man_name),
