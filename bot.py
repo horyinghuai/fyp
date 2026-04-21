@@ -43,7 +43,7 @@ COUNTRIES_LIST = [
     "MALDIVES", "MALI", "MALTA", "MAURITANIA", "MAURITIUS", "MEXICO", "MICRONESIA", "MOLDOVA", "MONACO", 
     "MONGOLIA", "MONTENEGRO", "MOROCCO", "MOZAMBIQUE", "MYANMAR", "NAMIBIA", "NAURU", "NEPAL", "NETHERLANDS", 
     "NEW ZEALAND", "NICARAGUA", "NIGER", "NIGERIA", "NORWAY", "OMAN", "PAKISTAN", "PALAU", "PALESTINE", "PANAMA", 
-    "PAPUA NEW GUINEA", "PARAGUAY", "PERU", "PHILIPPINES", "POLAND", "PORTUGAL", "QATAR", "ROMANIA", 
+    "PAPUA MAPUA NEW GUINEA", "PARAGUAY", "PERU", "PHILIPPINES", "POLAND", "PORTUGAL", "QATAR", "ROMANIA", 
     "RUSSIA", "RWANDA", "SAINT KITTS AND NEVIS", "SAINT LUCIA", "SAINT VINCENT", "SAMOA", "SAN MARINO", 
     "SAO TOME", "SAUDI ARABIA", "SENEGAL", "SERBIA", "SEYCHELLES", "SIERRA LEONE", "SINGAPORE", "SLOVAKIA", 
     "SLOVENIA", "SOLOMON ISLANDS", "SOMALIA", "SOUTH AFRICA", "SOUTH KOREA", "SPAIN", "SRI LANKA", "SUDAN", 
@@ -218,13 +218,17 @@ async def cancel_reason_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
                 [InlineKeyboardButton("Change of schedule", callback_data="creason_Change of schedule")],
                 [InlineKeyboardButton("Feeling better", callback_data="creason_Feeling better")],
                 [InlineKeyboardButton("Booked wrong service", callback_data="creason_Booked wrong service")],
-                [InlineKeyboardButton("Personal reasons", callback_data="creason_Personal reasons")]
+                [InlineKeyboardButton("Personal reasons", callback_data="creason_Personal reasons")],
+                [InlineKeyboardButton("Other (Type below)", callback_data="creason_Other")]
             ]
             await query.edit_message_text("Why are you cancelling this appointment?\nSelect a reason below or type your own reason in the chat.", reply_markup=InlineKeyboardMarkup(btns))
             return CANCEL_REASON
             
         if data.startswith("creason_"):
             reason = data.replace("creason_", "")
+            if reason == "Other":
+                await query.edit_message_text("Please type your cancellation reason:")
+                return CANCEL_REASON
             return await execute_cancellation(query.message, context, reason)
 
     elif update.message and update.message.text:
@@ -547,7 +551,7 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
         "gender": "Gender (Male/Female)",
         "nat": "Nationality",
         "address": "Home Address",
-        "phone": "Phone Number (Exclude Country Code)"
+        "phone": "Phone Number"
     }
     
     state_keys = {
@@ -555,7 +559,7 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     }
     
     current_val = str(context.user_data.get(state_keys[field], ''))
-    if field == "phone":
+    if field == "phone" and context.user_data.get('is_malaysian'):
         current_val = current_val.replace("+60", "0")
         
     btns = [
@@ -835,7 +839,6 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_TYPE):
     btns = [
         [InlineKeyboardButton("Any Doctor", callback_data="doc_ANY")],
-        [InlineKeyboardButton("Male Doctor", callback_data="doc_MALE"), InlineKeyboardButton("Female Doctor", callback_data="doc_FEMALE")],
         [InlineKeyboardButton("Specific Doctor", callback_data="doc_SPECIFIC")]
     ]
     
@@ -872,7 +875,7 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DOC_SELECT
     else:
         context.user_data['doctor_pref'] = pref
-        await query.edit_message_text(f"You selected: {pref.title()} Doctor")
+        await query.edit_message_text(f"You selected: Any Doctor")
         
         if context.user_data.get('is_editing'):
             old_pref = context.user_data.get('old_doctor_pref')

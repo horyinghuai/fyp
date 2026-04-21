@@ -9,6 +9,7 @@ from agent import extract_appointment_details, generate_vaccine_schedule_ai
 from datetime import datetime, timedelta
 import random
 import re
+from fastapi import APIRouter, Depends, HTTPException
 
 app = FastAPI(title="Clinic Smart Assistant Backend")
 

@@ -119,12 +119,17 @@ export default function AdminDashboard() {
           if (appt.service === "Vaccine") detailsText = `${appt.items[0]} (${appt.dose})`;
           if (appt.service === "Blood Test") detailsText = appt.items.join(", ");
 
+          let titleText = appt.title || "Unknown Patient";
+          if (appt.status === "canceled") {
+              titleText = `${titleText} (Cancelled: ${appt.cancel_reason || 'No reason'})`;
+          }
+
           return { 
             ...appt, 
             service_details: detailsText,
             start: new Date(appt.start), 
             end: new Date(appt.end), 
-            title: appt.title || "Unknown Patient",
+            title: titleText,
             cancel_reason: appt.cancel_reason
           };
         });
@@ -540,7 +545,7 @@ export default function AdminDashboard() {
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Time</label>
                         <select value={editTime} onChange={e => setEditTime(e.target.value)} className="w-full p-2 border rounded-lg outline-none bg-white">
                             {generateTimeOptions().map(t => {
-                                // FIXED TYPE ERROR: explicitly cast evaluation to boolean
+                                // Explicit boolean cast to satisfy TypeScript when doctor_ic is ""
                                 const isBusy = Boolean(editForm.doctor_ic && events.some(e => e.doctor_ic === editForm.doctor_ic && e.status !== "canceled" && moment(e.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${t}`));
                                 return <option key={t} value={t} disabled={isBusy}>{t}</option>
                             })}
@@ -690,7 +695,7 @@ export default function AdminDashboard() {
                               {selectedEvent?.status}
                           </span>
                           {selectedEvent?.status === 'canceled' && selectedEvent?.cancel_reason && (
-                              <p className="text-xs text-slate-500"><span className="font-bold text-slate-600">Reason:</span> {selectedEvent.cancel_reason}</p>
+                              <p className="text-xs text-slate-500 mt-1"><span className="font-bold text-slate-600">Reason:</span> {selectedEvent.cancel_reason}</p>
                           )}
                       </div>
                     </div>
