@@ -572,49 +572,32 @@ def get_doctors(clinic_id: str, db: Session = Depends(get_db)):
 
 @app.get("/vaccines/{clinic_id}")
 def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
-    results = db.query(
-        models.Vaccine.id, models.Vaccine.name, models.Vaccine.type, 
-        models.Vaccine.total_doses, models.Vaccine.has_booster, getattr(models.Vaccine, 'target_gender', None),
-        models.VaccineClinic.price, models.VaccineClinic.stock_quantity, models.VaccineClinic.low_stock_threshold
-    ).join(
-        models.VaccineClinic, models.Vaccine.id == models.VaccineClinic.vaccine_id
-    ).filter(models.VaccineClinic.clinic_id == clinic_id).all()
-    
-    vaccines = []
-    for r in results:
-        schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=r.id).all()
-        sched_list = [{"dose_number": s.dose_number, "interval_description": s.interval_description} for s in schedules]
-        target_gen = r[5] if r[5] else 'ANY' 
-        vaccines.append({
-            "id": r.id, "name": r.name, "type": r.type, "total_doses": r.total_doses, "has_booster": r.has_booster, 
-            "target_gender": target_gen,
-            "price": float(r.price), "stock_quantity": r.stock_quantity, "low_stock_threshold": r.low_stock_threshold,
-            "schedules": sched_list
-        })
-    return vaccines
+    vacs = db.query(models.VaccineClinic).filter_by(clinic_id=clinic_id).all()
+    res = []
+    for vc in vacs:
+        v = db.query(models.Vaccine).filter_by(id=vc.vaccine_id).first()
+        if v:
+            res.append({
+                "id": v.id, "name": v.name, "type": v.type, "price": float(vc.price),
+                "total_doses": v.total_doses, "has_booster": v.has_booster, "target_gender": v.target_gender
+            })
+    return res
 
-@app.get("/blood-tests/{clinic_id}/{test_type}")
-def get_blood_tests(clinic_id: str, test_type: str, db: Session = Depends(get_db)):
-    tests = db.query(models.BloodTest).filter(models.BloodTest.clinic_id == clinic_id, models.BloodTest.test_type == test_type).all()
-    results = []
+@app.get("/blood-tests/{clinic_id}/{t_type}")
+def get_blood_tests_by_type(clinic_id: str, t_type: str, db: Session = Depends(get_db)):
+    tests = db.query(models.BloodTest).filter(models.BloodTest.clinic_id == clinic_id, models.BloodTest.test_type == t_type).all()
+    res = []
     for t in tests:
-        t_dict = {
-            "id": t.id, "name": t.name, "price": float(t.price), "description": t.description, 
-            "test_type": t.test_type, "target_gender": getattr(t, 'target_gender', 'ANY')
-        }
-        if test_type == "package":
+        test_dict = {"id": t.id, "name": t.name, "price": float(t.price), "target_gender": t.target_gender}
+        if t_type == "package":
             components = db.query(models.BloodTestComponent).filter(models.BloodTestComponent.package_id == t.id).all()
             included_names = []
-            component_ids = []
             for comp in components:
-                child = db.query(models.BloodTest).filter(models.BloodTest.id == comp.test_id).first()
-                if child: 
-                    included_names.append(child.name)
-                    component_ids.append(comp.test_id)
-            t_dict["included_tests"] = included_names
-            t_dict["component_ids"] = component_ids
-        results.append(t_dict)
-    return results
+                s_test = db.query(models.BloodTest).filter(models.BloodTest.id == comp.test_id).first()
+                if s_test: included_names.append(s_test.name)
+            test_dict["included_tests"] = included_names
+        res.append(test_dict)
+    return res
 
 @app.get("/patient/{clinic_id}/id/{ic_passport}")
 def get_patient_by_id(clinic_id: str, ic_passport: str, db: Session = Depends(get_db)):
