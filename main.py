@@ -256,11 +256,17 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
         print(f"DASHBOARD CRASH PREVENTED: {e}")
         return []
 
+class CancelReq(BaseModel):
+    cancel_reason: str
+
 @app.put("/admin/appointment-stages/{stage_id}")
 def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db)):
     stage = db.query(models.ApptStage).filter_by(id=stage_id).first()
     if not stage: raise HTTPException(status_code=404)
-    if 'status' in data: stage.status = data['status']
+    if 'status' in data: 
+        stage.status = data['status']
+        if data['status'] == 'canceled' and 'cancel_reason' in data:
+            stage.cancel_reason = data['cancel_reason']
     if 'scheduled_time' in data:
         dt_str = data['scheduled_time'].replace("T", " ")
         if len(dt_str) == 16: dt_str += ":00"
@@ -965,8 +971,8 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/cancel-appointment/{appt_id}")
-def cancel_appointment(appt_id: str, db: Session = Depends(get_db)):
-    db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled"})
+def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_db)):
+    db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled", "cancel_reason": req.cancel_reason})
     db.commit()
     return {"status": "success"}
 

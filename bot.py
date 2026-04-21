@@ -4,7 +4,6 @@ import re
 import asyncio
 import tempfile
 import easyocr
-import json
 import datetime as dt
 import logging
 import difflib
@@ -54,60 +53,6 @@ COUNTRIES_LIST = [
     "VATICAN CITY", "VENEZUELA", "VIETNAM", "YEMEN", "ZAMBIA", "ZIMBABWE"
 ]
 
-COUNTRY_PHONE_CODES = {
-  "MALAYSIA": "+60", "AFGHANISTAN": "+93", "ALBANIA": "+355", "ALGERIA": "+213", "ANDORRA": "+376",
-  "ANGOLA": "+244", "ARGENTINA": "+54", "ARMENIA": "+374", "AUSTRALIA": "+61", "AUSTRIA": "+43",
-  "AZERBAIJAN": "+994", "BAHAMAS": "+1", "BAHRAIN": "+973", "BANGLADESH": "+880", "BARBADOS": "+1",
-  "BELARUS": "+375", "BELGIUM": "+32", "BELIZE": "+501", "BENIN": "+229", "BHUTAN": "+975",
-  "BOLIVIA": "+591", "BOSNIA AND HERZEGOVINA": "+387", "BOTSWANA": "+267", "BRAZIL": "+55",
-  "BRUNEI": "+673", "BULGARIA": "+359", "BURKINA FASO": "+226", "BURUNDI": "+257",
-  "CAMBODIA": "+855", "CAMEROON": "+237", "CANADA": "+1", "CENTRAL AFRICAN REPUBLIC": "+236",
-  "CHAD": "+235", "CHILE": "+56", "CHINA": "+86", "COLOMBIA": "+57", "COMOROS": "+269",
-  "COSTA RICA": "+506", "CROATIA": "+385", "CUBA": "+53", "CYPRUS": "+357",
-  "CZECH REPUBLIC": "+420", "DENMARK": "+45", "DJIBOUTI": "+253",
-  "DOMINICAN REPUBLIC": "+1", "EAST TIMOR": "+670", "ECUADOR": "+593", "EGYPT": "+20",
-  "EL SALVADOR": "+503", "EQUATORIAL GUINEA": "+240", "ERITREA": "+291", "ESTONIA": "+372",
-  "ETHIOPIA": "+251", "FIJI": "+679", "FINLAND": "+358", "FRANCE": "+33",
-  "GABON": "+241", "GAMBIA": "+220", "GEORGIA": "+995", "GERMANY": "+49",
-  "GHANA": "+233", "GREECE": "+30", "GRENADA": "+1", "GUATEMALA": "+502",
-  "GUINEA": "+224", "GUYANA": "+592", "HAITI": "+509", "HONDURAS": "+504",
-  "HUNGARY": "+36", "ICELAND": "+354", "INDIA": "+91", "INDONESIA": "+62",
-  "IRAN": "+98", "IRAQ": "+964", "IRELAND": "+353", "ISRAEL": "+972", "ITALY": "+39",
-  "JAMAICA": "+1", "JAPAN": "+81", "JORDAN": "+962", "KAZAKHSTAN": "+7",
-  "KENYA": "+254", "KIRIBATI": "+686", "KUWAIT": "+965", "KYRGYZSTAN": "+996",
-  "LAOS": "+856", "LATVIA": "+371", "LEBANON": "+961", "LESOTHO": "+266",
-  "LIBERIA": "+231", "LIBYA": "+218", "LIECHTENSTEIN": "+423", "LITHUANIA": "+370",
-  "LUXEMBOURG": "+352", "MACEDONIA": "+389", "MADAGASCAR": "+261", "MALAWI": "+265",
-  "MALDIVES": "+960", "MALI": "+223", "MALTA": "+356", "MAURITANIA": "+222",
-  "MAURITIUS": "+230", "MEXICO": "+52", "MICRONESIA": "+691", "MOLDOVA": "+373",
-  "MONACO": "+377", "MONGOLIA": "+976", "MONTENEGRO": "+382", "MOROCCO": "+212",
-  "MOZAMBIQUE": "+258", "MYANMAR": "+95", "NAMIBIA": "+264", "NAURU": "+674",
-  "NEPAL": "+977", "NETHERLANDS": "+31", "NEW ZEALAND": "+64", "NICARAGUA": "+505",
-  "NIGER": "+227", "NIGERIA": "+234", "NORWAY": "+47", "OMAN": "+968",
-  "PAKISTAN": "+92", "PALAU": "+680", "PALESTINE": "+970", "PANAMA": "+507",
-  "PAPUA NEW GUINEA": "+675", "PARAGUAY": "+595", "PERU": "+51",
-  "PHILIPPINES": "+63", "POLAND": "+48", "PORTUGAL": "+351", "QATAR": "+974",
-  "ROMANIA": "+40", "RUSSIA": "+7", "RWANDA": "+250",
-  "SAINT KITTS AND NEVIS": "+1", "SAINT LUCIA": "+1", "SAINT VINCENT": "+1",
-  "SAMOA": "+685", "SAN MARINO": "+378", "SAO TOME": "+239",
-  "SAUDI ARABIA": "+966", "SENEGAL": "+221", "SERBIA": "+381",
-  "SEYCHELLES": "+248", "SIERRA LEONE": "+232", "SINGAPORE": "+65",
-  "SLOVAKIA": "+421", "SLOVENIA": "+386", "SOLOMON ISLANDS": "+677",
-  "SOMALIA": "+252", "SOUTH AFRICA": "+27", "SOUTH KOREA": "+82",
-  "SPAIN": "+34", "SRI LANKA": "+94", "SUDAN": "+249",
-  "SURINAME": "+597", "SWAZILAND": "+268", "SWEDEN": "+46",
-  "SWITZERLAND": "+41", "SYRIA": "+963", "TAIWAN": "+886",
-  "TAJIKISTAN": "+992", "TANZANIA": "+255", "THAILAND": "+66",
-  "TOGO": "+228", "TONGA": "+676", "TRINIDAD AND TOBAGO": "+1",
-  "TUNISIA": "+216", "TURKEY": "+90", "TURKMENISTAN": "+993",
-  "TUVALU": "+688", "UGANDA": "+256", "UKRAINE": "+380",
-  "UNITED ARAB EMIRATES": "+971", "UNITED KINGDOM": "+44",
-  "UNITED STATES": "+1", "USA": "+1", "URUGUAY": "+598",
-  "UZBEKISTAN": "+998", "VANUATU": "+678", "VATICAN CITY": "+379",
-  "VENEZUELA": "+58", "VIETNAM": "+84", "YEMEN": "+967",
-  "ZAMBIA": "+260", "ZIMBABWE": "+263"
-}
-
 ocr_reader = None
 def get_ocr_reader():
     global ocr_reader
@@ -116,7 +61,7 @@ def get_ocr_reader():
         ocr_reader = easyocr.Reader(['en', 'ms'])
     return ocr_reader
 
-NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP = range(24)
+NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON = range(26)
 
 async def generate_date_picker(service, doctor_pref, is_editing=False):
     duration = 15 if service == 'Vaccine' else 30
@@ -219,6 +164,93 @@ def clean_bot_username(text: str) -> str:
     cleaned = re.sub(r'^(via\s+)?@[A-Za-z0-9_]+\s*', '', text, flags=re.IGNORECASE)
     return cleaned.strip().upper()
 
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "Please enter your IC or Passport Number to find your appointments:"
+    if update.message: await update.message.reply_text(msg)
+    else: await update.callback_query.message.reply_text(msg)
+    return CANCEL_SELECT
+
+async def cancel_select_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ic = clean_bot_username(update.message.text)
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/appointments/{ic}", timeout=5.0)
+            if res.status_code != 200:
+                await update.message.reply_text("Could not find any upcoming appointments for this ID. Type /cancel to try again or /start to book.")
+                return ConversationHandler.END
+            appts = res.json()
+        except Exception as e:
+            logger.error(f"Error fetching appointments: {e}")
+            await update.message.reply_text("Server error. Please try again later.")
+            return ConversationHandler.END
+
+    if not appts:
+        await update.message.reply_text("You have no upcoming appointments to cancel.")
+        return ConversationHandler.END
+
+    btns = []
+    for a in appts:
+        service_title = a.get("service", "Consultation")
+        details = a.get("details", {})
+        item_text = details.get("items", [])[0] if details.get("items") else service_title
+        btn_text = f"{a['date']} {a['time'][:5]} - {item_text}"
+        btns.append([InlineKeyboardButton(btn_text, callback_data=f"can_{a['appt_id']}")])
+
+    btns.append([InlineKeyboardButton("❌ Nevermind, go back", callback_data="can_abort")])
+    await update.message.reply_text("Select the appointment you wish to cancel:", reply_markup=InlineKeyboardMarkup(btns))
+    return CANCEL_REASON
+
+async def cancel_reason_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    if query:
+        await query.answer()
+        data = query.data
+        
+        if data == "can_abort":
+            await query.edit_message_text("Cancellation aborted.")
+            return ConversationHandler.END
+            
+        if data.startswith("can_"):
+            context.user_data['cancel_target_id'] = data.replace("can_", "")
+            btns = [
+                [InlineKeyboardButton("Change of schedule", callback_data="creason_Change of schedule")],
+                [InlineKeyboardButton("Feeling better", callback_data="creason_Feeling better")],
+                [InlineKeyboardButton("Booked wrong service", callback_data="creason_Booked wrong service")],
+                [InlineKeyboardButton("Personal reasons", callback_data="creason_Personal reasons")]
+            ]
+            await query.edit_message_text("Why are you cancelling this appointment?\nSelect a reason below or type your own reason in the chat.", reply_markup=InlineKeyboardMarkup(btns))
+            return CANCEL_REASON
+            
+        if data.startswith("creason_"):
+            reason = data.replace("creason_", "")
+            return await execute_cancellation(query.message, context, reason)
+
+    elif update.message and update.message.text:
+        reason = clean_bot_username(update.message.text)
+        return await execute_cancellation(update.message, context, reason)
+
+async def execute_cancellation(message, context, reason):
+    appt_id = context.user_data.get('cancel_target_id')
+    if not appt_id: return ConversationHandler.END
+
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(f"{API_BASE}/cancel-appointment/{appt_id}", json={"cancel_reason": reason}, timeout=5.0)
+            text = "✅ Appointment successfully cancelled."
+            if hasattr(message, 'edit_text'): await message.edit_text(text)
+            else: await message.reply_text(text)
+        except Exception as e:
+            logger.error(f"Cancel error: {e}")
+            text = "⚠️ Failed to cancel appointment. Please try again."
+            if hasattr(message, 'edit_text'): await message.edit_text(text)
+            else: await message.reply_text(text)
+
+    btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+    await message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+    return FINAL_HELP
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
     context.user_data['is_editing'] = False 
@@ -276,6 +308,23 @@ async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
         return MAN_ID_CHECK
 
+async def handle_existing_patient_bypass(message, context, patient):
+    context.user_data['name'] = patient['name'].upper()
+    context.user_data['phone'] = patient['phone']
+    context.user_data['address'] = patient.get('address', 'UNKNOWN').upper()
+    context.user_data['gender'] = patient.get('gender', 'UNKNOWN').upper()
+    context.user_data['nationality'] = patient.get('nationality', 'UNKNOWN').upper()
+    
+    msg = (f"Welcome back, {patient['name']}!\n\n📋 *Stored Details:*\nIC/Passport: {context.user_data['ic']}\n"
+           f"Gender: {context.user_data['gender']}\nPhone: {context.user_data['phone']}\n"
+           f"\nAre these details correct?")
+           
+    btns = [[InlineKeyboardButton("Yes", callback_data="prof_yes")],
+            [InlineKeyboardButton("No, I need to edit", callback_data="prof_edit")]]
+            
+    await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+    return CONFIRM_PROFILE
+
 async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()
     fd, path = tempfile.mkstemp(suffix=".jpg")
@@ -299,24 +348,23 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         return MY_METHOD_CHOICE
         
-    context.user_data['name'] = name.upper()
     context.user_data['ic'] = ic
-    context.user_data['address'] = address.upper()
-    context.user_data['gender'] = gender.upper()
-    context.user_data['nationality'] = nationality.upper()
     
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{ic}", timeout=5.0)
             if res.status_code == 200:
                 patient = res.json()
-                context.user_data['phone'] = patient['phone']
-                return await show_profile_summary(update.message, context)
+                return await handle_existing_patient_bypass(update.message, context, patient)
         except Exception as e:
             logger.error(f"Backend patient check failed: {e}")
 
-    code = COUNTRY_PHONE_CODES.get("MALAYSIA", "+60")
-    await update.message.reply_text(f"✅ MyKad Scanned successfully!\n\nYour country code is **{code}**.\nPlease enter the rest of your Phone Number to confirm your profile:", parse_mode="Markdown")
+    context.user_data['name'] = name.upper()
+    context.user_data['address'] = address.upper()
+    context.user_data['gender'] = gender.upper()
+    context.user_data['nationality'] = nationality.upper()
+
+    await update.message.reply_text(f"✅ MyKad Scanned successfully!\nPlease enter your phone number:")
     return MAN_PHONE
 
 async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -342,13 +390,7 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{context.user_data['ic']}", timeout=5.0)
             if res.status_code == 200:
                 patient = res.json()
-                context.user_data['name'] = patient['name'].upper()
-                context.user_data['phone'] = patient['phone']
-                context.user_data['address'] = patient.get('address', 'UNKNOWN').upper()
-                context.user_data['gender'] = patient.get('gender', 'UNKNOWN').upper()
-                context.user_data['nationality'] = patient.get('nationality', 'UNKNOWN').upper()
-                await update.message.reply_text(f"Welcome back, {patient['name']}!")
-                return await show_profile_summary(update.message, context)
+                return await handle_existing_patient_bypass(update.message, context, patient)
         except Exception as e:
             logger.error(f"Backend patient check failed: {e}")
 
@@ -360,8 +402,7 @@ async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
     
     if context.user_data.get('is_malaysian'):
-        code = COUNTRY_PHONE_CODES.get("MALAYSIA", "+60")
-        await update.message.reply_text(f"Your country code is **{code}**.\nPlease enter the rest of your Phone Number:", parse_mode="Markdown")
+        await update.message.reply_text(f"Please enter your phone number:")
         return MAN_PHONE
     else:
         await update.message.reply_text("Please enter your Gender (Male / Female):")
@@ -394,8 +435,7 @@ async def man_nat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['nationality'] = raw_nat
         if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
         
-        code = COUNTRY_PHONE_CODES.get(raw_nat, "+")
-        await update.message.reply_text(f"Nationality saved as {raw_nat}.\n\nYour country phone code is **{code}**.\nPlease enter the rest of your Phone Number:", parse_mode="Markdown")
+        await update.message.reply_text(f"Nationality saved as {raw_nat}.\n\nPlease enter your phone number (including country code, e.g. +1...):", parse_mode="Markdown")
         return MAN_PHONE
         
     matches = difflib.get_close_matches(raw_nat, COUNTRIES_LIST, n=1, cutoff=0.4)
@@ -418,8 +458,7 @@ async def man_nat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('edit_mode'): 
             return await show_profile_summary(query.message, context)
             
-        code = COUNTRY_PHONE_CODES.get(nat, "+")
-        await query.edit_message_text(f"Nationality saved as {nat}.\n\nYour country phone code is **{code}**.\nPlease enter the rest of your Phone Number:", parse_mode="Markdown")
+        await query.edit_message_text(f"Nationality saved as {nat}.\n\nPlease enter your phone number (including country code, e.g. +1...):", parse_mode="Markdown")
         return MAN_PHONE
     else:
         await query.edit_message_text("Please enter your Country of Nationality again:")
@@ -427,20 +466,21 @@ async def man_nat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone_input = clean_bot_username(update.message.text)
-    country = context.user_data.get('nationality', 'MALAYSIA').upper()
-    code = COUNTRY_PHONE_CODES.get(country, "+")
     
-    clean_input = re.sub(r'\D', '', phone_input)
-    if country == 'MALAYSIA' and clean_input.startswith('60'): clean_input = clean_input[2:]
-    if country == 'MALAYSIA' and clean_input.startswith('0'): clean_input = clean_input[1:]
-    
-    if not clean_input:
-        await update.message.reply_text("❌ Invalid format. Please enter your phone numbers digits:")
-        return MAN_PHONE
-        
-    formatted = f"{code}{clean_input}"
-    context.user_data['phone'] = formatted
-    
+    if context.user_data.get('is_malaysian'):
+        pattern = r'^0\d{1,2}-?\d{7,8}$'
+        if not re.match(pattern, phone_input):
+            await update.message.reply_text("Invalid phone number format. Please re-enter.")
+            return MAN_PHONE
+        clean_num = phone_input.replace('-', '')
+        if clean_num.startswith('011') or clean_num.startswith('015'):
+            formatted = f"+60{clean_num[1:3]}-{clean_num[3:]}"
+        else:
+            formatted = f"+60{clean_num[1:2]}-{clean_num[2:]}"
+        context.user_data['phone'] = formatted
+    else:
+        context.user_data['phone'] = phone_input
+
     if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
     
     await update.message.reply_text("Please enter your Home Address:")
@@ -456,7 +496,7 @@ async def show_profile_summary(message, context):
            f"IC Number: {context.user_data['ic']}\nGender: {context.user_data['gender']}\n"
            f"Nationality: {context.user_data['nationality']}\nAddress: {context.user_data['address']}\n"
            f"Phone: {context.user_data['phone']}\n\nAre you sure this details are correct?")
-    btns = [[InlineKeyboardButton("Yes, this is correct", callback_data="prof_yes")],
+    btns = [[InlineKeyboardButton("Yes", callback_data="prof_yes")],
             [InlineKeyboardButton("No, edit details", callback_data="prof_edit")]]
     
     if hasattr(message, 'edit_text'): await message.edit_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
@@ -516,9 +556,7 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     
     current_val = str(context.user_data.get(state_keys[field], ''))
     if field == "phone":
-        country = context.user_data.get('nationality', 'MALAYSIA').upper()
-        code = COUNTRY_PHONE_CODES.get(country, "+")
-        current_val = current_val.replace(code, "")
+        current_val = current_val.replace("+60", "0")
         
     btns = [
         [InlineKeyboardButton("✏️ Tap here to Edit", switch_inline_query_current_chat=current_val)],
@@ -623,7 +661,6 @@ async def render_v_dose_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if context.user_data.get('is_editing'):
         btns.append([InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="back_edit_menu")])
     else:
-        # Pass the type info down so backing routes correctly if needed
         btns.append([InlineKeyboardButton("🔙 Back to Vaccine Categories", callback_data="back_v_type")])
     
     msg = "Which dose are you taking?"
@@ -632,7 +669,6 @@ async def render_v_dose_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
     return V_DOSE
 
 async def route_back_v_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Properly re-render V_TYPE without causing svc_ navigation issues.
     query = update.callback_query
     await query.answer()
     context.user_data['service'] = 'Vaccine'
@@ -758,11 +794,10 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return BT_FLOW
             
         await query.answer()
-        # Remove old single tests if a package is selected to avoid duplication
         cache_pkg = context.user_data.get('bt_cache_package', [])
         is_pkg = any(p['name'] == bt_name for p in cache_pkg)
         if is_pkg:
-            context.user_data['selected_items'] = [bt_name] # Enforce single package logic + cleans out
+            context.user_data['selected_items'] = [bt_name]
         else:
             context.user_data['selected_items'].append(bt_name)
         
@@ -946,7 +981,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             return BOOK_DATE_TIME
 
         if ext.get('intent') == 'reschedule':
-            await update.message.reply_text("I see you want to reschedule. Currently, this bot focuses on new bookings. Let's make a new booking!")
+            await update.message.reply_text("I see you want to reschedule. Let's make a new booking, then you can type /cancel to cancel your old one.")
         
         date_pref = ext.get('date_preference')
         time_pref = ext.get('time_preference')
@@ -1051,7 +1086,7 @@ async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("Change Vaccine/Test Details", callback_data="editbook_details")],
         [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
         [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
-        [InlineKeyboardButton("❌ Cancel Booking Completely", callback_data="editbook_cancel")]
+        [InlineKeyboardButton("❌ Cancel Draft Booking", callback_data="editbook_cancel")]
     ]
     await query.edit_message_text("What would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
     return EDIT_BOOKING_MENU
@@ -1130,7 +1165,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['is_editing'] = True
     
     if choice == "cancel":
-        await query.edit_message_text("Booking cancelled.")
+        await query.edit_message_text("Draft Booking abandoned.")
         btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
         await query.message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
         return FINAL_HELP
@@ -1184,7 +1219,7 @@ if __name__ == '__main__':
     app.add_error_handler(error_handler)
     
     conv = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[CommandHandler('start', start), CommandHandler('cancel', cancel_command)],
         states={
             NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],
             MY_METHOD_CHOICE: [CallbackQueryHandler(my_method_logic, pattern="^meth_")],
@@ -1263,8 +1298,15 @@ if __name__ == '__main__':
             CONFIRM_BOOK: [CallbackQueryHandler(confirm_booking_logic, pattern="^conf_")],
             EDIT_BOOKING_MENU: [CallbackQueryHandler(handle_booking_edit, pattern="^editbook_")],
             FINAL_HELP: [CallbackQueryHandler(final_help_logic, pattern="^help_")],
+            CANCEL_SELECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_select_logic)
+            ],
+            CANCEL_REASON: [
+                CallbackQueryHandler(cancel_reason_logic),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_reason_logic)
+            ]
         },
-        fallbacks=[CommandHandler('start', start)],
+        fallbacks=[CommandHandler('start', start), CommandHandler('cancel', cancel_command)],
         allow_reentry=True
     )
     

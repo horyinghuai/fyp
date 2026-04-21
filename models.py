@@ -60,6 +60,7 @@ class ApptStage(Base):
     stage_name = Column(String(100))
     scheduled_time = Column(DateTime)
     status = Column(String(20), default="scheduled")
+    cancel_reason = Column(String(255), nullable=True)
     depends_on_stage_id = Column(UUID(as_uuid=True), ForeignKey("appointment_stages.id"), nullable=True)
     appointment = relationship("Appointment", back_populates="stages")
 

@@ -30,10 +30,17 @@ export default function AdminDashboard() {
   const [pendingReviewEvent, setPendingReviewEvent] = useState<any>(null);
   const [filters, setFilters] = useState({ scheduled: true, completed: true, canceled: false, noShow: true });
 
+  const [editDate, setEditDate] = useState("");
+  const [editTime, setEditTime] = useState("");
+
   const [editForm, setEditForm] = useState({
-    status: 'scheduled', scheduled_time: '', doctor_ic: '', patient_ic: '',
+    status: 'scheduled', doctor_ic: '', patient_ic: '',
     service: 'Consultation', items: [] as string[], dose: 'Single Dose', reason: ''
   });
+
+  const [cancelModalVisible, setCancelModalVisible] = useState(false);
+  const [cancelReason, setCancelReason] = useState("Change of schedule");
+  const [customCancelReason, setCustomCancelReason] = useState("");
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<View>('week'); 
@@ -117,7 +124,8 @@ export default function AdminDashboard() {
             service_details: detailsText,
             start: new Date(appt.start), 
             end: new Date(appt.end), 
-            title: appt.title || "Unknown Patient"
+            title: appt.title || "Unknown Patient",
+            cancel_reason: appt.cancel_reason
           };
         });
         
@@ -144,7 +152,12 @@ export default function AdminDashboard() {
 
   const handleUpdateOrAddEvent = async () => {
     try {
-        // Enforce Gender Validation Rule
+        if (!editDate || !editTime || !editForm.doctor_ic) {
+            return alert("Please select Date, Time, and Doctor.");
+        }
+
+        const scheduled_time = `${editDate} ${editTime}:00`;
+
         let currentPatientGender = "ANY";
         if (isCreatingNewPatient) {
             currentPatientGender = newPatientForm.gender.toUpperCase();
@@ -209,7 +222,7 @@ export default function AdminDashboard() {
                 details: {
                     items: editForm.items, dose: editForm.dose, reason: editForm.reason, assigned_doctor_id: editForm.doctor_ic
                 },
-                scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss")
+                scheduled_time: scheduled_time
             };
             await fetch(`http://127.0.0.1:8000/book-appointment`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
@@ -220,7 +233,7 @@ export default function AdminDashboard() {
                 details: {
                     items: editForm.items, dose: editForm.dose, total_doses: 1, assigned_doctor_id: editForm.doctor_ic, reason: editForm.reason
                 },
-                scheduled_time: moment(editForm.scheduled_time).format("YYYY-MM-DD HH:mm:ss"), status: editForm.status
+                scheduled_time: scheduled_time, status: editForm.status
             };
             await fetch(`http://127.0.0.1:8000/update-appointment`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
@@ -232,11 +245,14 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleCancelBooking = async () => {
-    if(!confirm("Are you sure you want to cancel this booking?")) return;
+  const executeCancellation = async () => {
+    const reason = cancelReason === "Other" ? customCancelReason : cancelReason;
+    if (!reason.trim()) return alert("Please provide a cancellation reason.");
+
     try {
         await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'canceled' })
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ status: 'canceled', cancel_reason: reason })
         });
         window.location.reload();
     } catch (err) {
@@ -246,10 +262,11 @@ export default function AdminDashboard() {
 
   const openEventModal = (event: any) => {
     setSelectedEvent(event);
+    setEditDate(moment(event.start).format("YYYY-MM-DD"));
+    setEditTime(moment(event.start).format("HH:mm"));
     setEditForm({
       status: event.status || 'scheduled',
-      scheduled_time: moment(event.start).format("YYYY-MM-DDTHH:mm"),
-      doctor_ic: event.doctor_ic || '',
+      doctor_ic: event.doctor_ic || (doctors.length > 0 ? doctors[0].ic_passport_number : ''),
       patient_ic: event.patient_ic || '',
       service: event.service || 'Consultation',
       items: event.items || [],
@@ -261,16 +278,27 @@ export default function AdminDashboard() {
   };
 
   const openNewBookingModal = () => {
+    setEditDate(moment().format("YYYY-MM-DD"));
+    setEditTime("09:00");
     setEditForm({
       status: 'scheduled',
-      scheduled_time: moment().format("YYYY-MM-DDTHH:mm"),
-      doctor_ic: '', patient_ic: '', service: 'Consultation', items: [], dose: 'Single Dose', reason: ''
+      doctor_ic: doctors.length > 0 ? doctors[0].ic_passport_number : '', 
+      patient_ic: '', service: 'Consultation', items: [], dose: 'Single Dose', reason: ''
     });
     setNewPatientForm({ name: '', ic_passport_number: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
     setSelectedEvent(null);
     setIsEditingEvent(true);
     setIsNewBooking(true);
     setIsCreatingNewPatient(false);
+  };
+
+  const generateTimeOptions = () => {
+    const opts = [];
+    for(let i=9; i<=17; i++) {
+        opts.push(`${i.toString().padStart(2, '0')}:00`);
+        opts.push(`${i.toString().padStart(2, '0')}:30`);
+    }
+    return opts;
   };
 
   const groupedVaccines = vaccinesList.reduce((acc: any, v: any) => {
@@ -431,6 +459,29 @@ export default function AdminDashboard() {
         </div>
       )}
 
+      {cancelModalVisible && (
+          <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-[70] backdrop-blur-sm">
+              <div className="bg-white p-6 rounded-2xl shadow-2xl w-[400px]">
+                  <h3 className="font-bold text-lg text-slate-800 mb-4">Cancel Booking</h3>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Reason for Cancellation</label>
+                  <select value={cancelReason} onChange={e => setCancelReason(e.target.value)} className="w-full p-2 border rounded-lg bg-white mb-4 outline-none">
+                      <option value="Change of schedule">Change of schedule</option>
+                      <option value="Feeling better">Feeling better</option>
+                      <option value="Booked wrong service">Booked wrong service</option>
+                      <option value="Personal reasons">Personal reasons</option>
+                      <option value="Other">Other (Custom)</option>
+                  </select>
+                  {cancelReason === "Other" && (
+                      <input type="text" placeholder="Specify reason..." value={customCancelReason} onChange={e => setCustomCancelReason(e.target.value)} className="w-full p-2 border rounded-lg mb-4 outline-none" />
+                  )}
+                  <div className="flex justify-end gap-3">
+                      <button onClick={() => setCancelModalVisible(false)} className="px-4 py-2 bg-slate-100 rounded-lg text-slate-700 font-medium">Back</button>
+                      <button onClick={executeCancellation} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium">Confirm Cancel</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {(selectedEvent || isNewBooking) && !pendingReviewEvent && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-[500px] overflow-hidden max-h-[90vh] overflow-y-auto">
@@ -480,16 +531,28 @@ export default function AdminDashboard() {
 
               {isEditingEvent ? (
                 <div className="space-y-4 border-t pt-4">
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-3 gap-4">
                       <div>
-                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Schedule Date & Time</label>
-                        <input type="datetime-local" value={editForm.scheduled_time} onChange={(e) => setEditForm({...editForm, scheduled_time: e.target.value})} className="w-full p-2 border rounded-lg outline-none" />
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Date</label>
+                        <input type="date" min={moment().format("YYYY-MM-DD")} value={editDate} onChange={(e) => setEditDate(e.target.value)} className="w-full p-2 border rounded-lg outline-none" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Time</label>
+                        <select value={editTime} onChange={e => setEditTime(e.target.value)} className="w-full p-2 border rounded-lg outline-none bg-white">
+                            {generateTimeOptions().map(t => {
+                                // FIXED TYPE ERROR: explicitly cast evaluation to boolean
+                                const isBusy = Boolean(editForm.doctor_ic && events.some(e => e.doctor_ic === editForm.doctor_ic && e.status !== "canceled" && moment(e.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${t}`));
+                                return <option key={t} value={t} disabled={isBusy}>{t}</option>
+                            })}
+                        </select>
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assign Doctor</label>
                         <select value={editForm.doctor_ic} onChange={(e) => setEditForm({...editForm, doctor_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          <option value="">Any / Unassigned</option>
-                          {doctors.map((d: any) => <option key={d.ic_passport_number} value={d.ic_passport_number}>{d.name}</option>)}
+                          {doctors.map((d: any) => {
+                              const isBusy = events.some(e => e.doctor_ic === d.ic_passport_number && e.status !== "canceled" && moment(e.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${editTime}`);
+                              return <option key={d.ic_passport_number} value={d.ic_passport_number} disabled={isBusy}>{d.name}</option>
+                          })}
                         </select>
                       </div>
                   </div>
@@ -501,7 +564,6 @@ export default function AdminDashboard() {
                             <select value={editForm.status} onChange={(e) => setEditForm({...editForm, status: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
                                 <option value="scheduled">Scheduled</option>
                                 <option value="completed">Completed</option>
-                                <option value="canceled">Canceled</option>
                                 <option value="no-show">No-Show</option>
                             </select>
                         </div>
@@ -555,7 +617,6 @@ export default function AdminDashboard() {
                                     <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={disabled} checked={isChecked} 
                                         onChange={e => {
                                             if(disabled) return;
-                                            // Ensure package selection overwrites all other selections
                                             const newItems = e.target.checked ? [bt.name] : [];
                                             setEditForm({...editForm, items: newItems});
                                         }}
@@ -620,13 +681,18 @@ export default function AdminDashboard() {
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Status</label>
-                      <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold capitalize 
-                        ${selectedEvent?.status === 'completed' ? 'bg-emerald-100 text-emerald-700' 
-                        : selectedEvent?.status === 'canceled' ? 'bg-slate-200 text-slate-600' 
-                        : selectedEvent?.status === 'no-show' ? 'bg-red-100 text-red-700'
-                        : 'bg-blue-100 text-blue-700'}`}>
-                          {selectedEvent?.status}
-                      </span>
+                      <div>
+                          <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold capitalize mb-1
+                            ${selectedEvent?.status === 'completed' ? 'bg-emerald-100 text-emerald-700' 
+                            : selectedEvent?.status === 'canceled' ? 'bg-slate-200 text-slate-600' 
+                            : selectedEvent?.status === 'no-show' ? 'bg-red-100 text-red-700'
+                            : 'bg-blue-100 text-blue-700'}`}>
+                              {selectedEvent?.status}
+                          </span>
+                          {selectedEvent?.status === 'canceled' && selectedEvent?.cancel_reason && (
+                              <p className="text-xs text-slate-500"><span className="font-bold text-slate-600">Reason:</span> {selectedEvent.cancel_reason}</p>
+                          )}
+                      </div>
                     </div>
                   </div>
                 </>
@@ -640,7 +706,7 @@ export default function AdminDashboard() {
                     else setIsEditingEvent(false);
                  }} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel Edit</button>
               ) : (
-                 <button onClick={handleCancelBooking} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Cancel Booking</button>
+                 <button onClick={() => setCancelModalVisible(true)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Cancel Booking</button>
               )}
               
               {isEditingEvent ? (
