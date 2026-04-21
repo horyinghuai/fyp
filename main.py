@@ -658,7 +658,6 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
         if data_dict.get('gender'): data_dict['gender'] = data_dict['gender'].upper()
         if data_dict.get('nationality'): data_dict['nationality'] = data_dict['nationality'].upper()
         
-        # ACT AS UPSERT - DO NOT ABORT IF IT ALREADY EXISTS
         existing = db.query(models.Patient).filter(
             models.Patient.clinic_id == data.clinic_id, 
             models.Patient.ic_passport_number == data_dict['ic_passport_number']

@@ -312,7 +312,7 @@ async def my_method_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
         return MAN_ID_CHECK
 
-async def handle_existing_patient_basic_confirm(message, context, patient):
+async def handle_existing_patient_basic_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, patient):
     context.user_data['name'] = patient['name'].upper()
     context.user_data['phone'] = patient['phone']
     context.user_data['address'] = patient.get('address', 'UNKNOWN').upper()
@@ -329,7 +329,10 @@ async def handle_existing_patient_basic_confirm(message, context, patient):
     btns = [[InlineKeyboardButton("✅ Yes, it's me", callback_data="basic_yes")],
             [InlineKeyboardButton("❌ No, it's not me", callback_data="basic_no")]]
             
-    await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    if update.callback_query:
+        await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    else:
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return BASIC_CONFIRM
 
 async def basic_confirm_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -341,7 +344,7 @@ async def basic_confirm_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
         return MAN_ID_CHECK
 
     elif query.data == "basic_yes":
-        msg = (f"📋 Please confirm your details:\n"
+        msg = (f"Please confirm your details:\n"
                f"Name: {context.user_data['name']}\n"
                f"IC Number: {context.user_data['ic']}\n"
                f"Gender: {context.user_data['gender']}\n"
@@ -386,9 +389,9 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{ic}", timeout=5.0)
             if res.status_code == 200:
                 patient = res.json()
-                return await handle_existing_patient_basic_confirm(update.message, context, patient)
+                return await handle_existing_patient_basic_confirm(update, context, patient)
         except Exception as e:
-            pass # 404 indicates new user
+            pass 
 
     context.user_data['name'] = name.upper()
     context.user_data['address'] = address.upper()
@@ -414,23 +417,23 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data['ic'] = text
         
-    if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
+    if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
 
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{context.user_data['ic']}", timeout=5.0)
             if res.status_code == 200:
                 patient = res.json()
-                return await handle_existing_patient_basic_confirm(update.message, context, patient)
+                return await handle_existing_patient_basic_confirm(update, context, patient)
         except Exception as e:
-            pass # 404 indicates new user
+            pass
 
     await update.message.reply_text("Please enter your Full Name:")
     return MAN_NAME
 
 async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['name'] = clean_bot_username(update.message.text).upper()
-    if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
+    if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
     
     if context.user_data.get('is_malaysian'):
         await update.message.reply_text(f"Please enter your phone number:")
@@ -454,7 +457,7 @@ async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid gender. Please enter 'Male' or 'Female':")
             return MAN_GENDER
         
-    if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
+    if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
     
     await update.message.reply_text("Please enter your Country of Nationality:")
     return MAN_NAT
@@ -464,7 +467,7 @@ async def man_nat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if raw_nat in COUNTRIES_LIST:
         context.user_data['nationality'] = raw_nat
-        if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
+        if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
         
         await update.message.reply_text(f"Nationality saved as {raw_nat}.\n\nPlease enter your phone number (including country code, e.g. +1...):", parse_mode="Markdown")
         return MAN_PHONE
@@ -487,7 +490,7 @@ async def man_nat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nat = context.user_data.get('temp_nat')
         context.user_data['nationality'] = nat
         if context.user_data.get('edit_mode'): 
-            return await show_profile_summary(query.message, context)
+            return await show_profile_summary(update, context)
             
         await query.edit_message_text(f"Nationality saved as {nat}.\n\nPlease enter your phone number (including country code, e.g. +1...):", parse_mode="Markdown")
         return MAN_PHONE
@@ -512,31 +515,33 @@ async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data['phone'] = phone_input
 
-    if context.user_data.get('edit_mode'): return await show_profile_summary(update.message, context)
+    if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
     
     await update.message.reply_text("Please enter your Home Address:")
     return MAN_ADDRESS
 
 async def man_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['address'] = clean_bot_username(update.message.text).upper()
-    return await show_profile_summary(update.message, context)
+    return await show_profile_summary(update, context)
 
-async def show_profile_summary(message, context):
+async def show_profile_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['edit_mode'] = False
     msg = (f"Please confirm your details:\n"
-           f"Name: {context.user_data['name']}\n"
-           f"IC Number: {context.user_data['ic']}\n"
-           f"Gender: {context.user_data['gender']}\n"
-           f"Nationality: {context.user_data['nationality']}\n"
-           f"Address: {context.user_data['address']}\n"
-           f"Phone: {context.user_data['phone']}\n\n"
+           f"Name: {context.user_data.get('name')}\n"
+           f"IC Number: {context.user_data.get('ic')}\n"
+           f"Gender: {context.user_data.get('gender')}\n"
+           f"Nationality: {context.user_data.get('nationality')}\n"
+           f"Address: {context.user_data.get('address')}\n"
+           f"Phone: {context.user_data.get('phone')}\n\n"
            f"Are you sure this details are correct?")
            
     btns = [[InlineKeyboardButton("Yes", callback_data="prof_yes")],
             [InlineKeyboardButton("No, edit details", callback_data="prof_edit")]]
     
-    if hasattr(message, 'edit_text'): await message.edit_text(msg, reply_markup=InlineKeyboardMarkup(btns))
-    else: await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    if update.callback_query:
+        await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    else: 
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return CONFIRM_PROFILE
 
 async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -573,7 +578,7 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     field = query.data.replace("edit_", "")
     
     if field == "cancel":
-        return await show_profile_summary(query.message, context)
+        return await show_profile_summary(update, context)
         
     context.user_data['edit_mode'] = True
     
@@ -737,7 +742,7 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['dose'] = query.data.replace("dose_", "")
     
     if context.user_data.get('is_editing'):
-        return await show_booking_summary(query.message, context)
+        return await show_booking_summary(update, context)
     return await show_doctor_preference(update, context)
 
 async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t_type):
@@ -849,7 +854,7 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if len(available_singles) == 0:
                         await query.edit_message_text(f"Added: {bt_name}. \n(Note: All available single tests are already included in this package).")
                         if context.user_data.get('is_editing'):
-                            return await show_booking_summary(query.message, context)
+                            return await show_booking_summary(update, context)
                         return await show_doctor_preference(update, context)
                 except Exception as e:
                     logger.error(f"Error checking single tests: {e}")
@@ -865,7 +870,7 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "add_done":
         await query.answer()
         if context.user_data.get('is_editing'):
-            return await show_booking_summary(query.message, context)
+            return await show_booking_summary(update, context)
         return await show_doctor_preference(update, context)
 
 async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -921,7 +926,7 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return BOOK_DATE_TIME
             else:
                 await query.message.reply_text("✅ Doctor preference unchanged.")
-                return await show_booking_summary(query.message, context)
+                return await show_booking_summary(update, context)
                 
         await trigger_datetime_prompt(update, context)
         return BOOK_DATE_TIME
@@ -941,7 +946,7 @@ async def handle_doc_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return BOOK_DATE_TIME
         else:
             await query.message.reply_text("✅ Doctor preference unchanged.")
-            return await show_booking_summary(query.message, context)
+            return await show_booking_summary(update, context)
         
     await trigger_datetime_prompt(update, context)
     return BOOK_DATE_TIME
@@ -1041,7 +1046,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             is_editing = context.user_data.get('is_editing', False)
             if is_editing and ext.get('general_notes') and context.user_data.get('book_time'):
                 await update.message.reply_text(f"✅ Notes noted: {ext.get('general_notes')}")
-                return await show_booking_summary(update.message, context)
+                return await show_booking_summary(update, context)
             
             markup = await generate_date_picker(service, context.user_data.get('doctor_pref'), is_editing)
             msg = "I couldn't fully extract the date and time.\nPlease select a Date below, \nOR type your request naturally:"
@@ -1090,9 +1095,9 @@ async def process_availability(update, context, full_time_str):
         context.user_data['assigned_doctor_name'] = data['doctor_name']
         context.user_data['assigned_doctor_id'] = data['doctor_id']
 
-    return await show_booking_summary(update.callback_query.message if update.callback_query else update.message, context)
+    return await show_booking_summary(update, context)
 
-async def show_booking_summary(message, context):
+async def show_booking_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = context.user_data['service']
     name = context.user_data['name']
     ic = context.user_data['ic']
@@ -1112,8 +1117,10 @@ async def show_booking_summary(message, context):
     btns = [[InlineKeyboardButton("Yes, Confirm", callback_data="conf_yes")],
             [InlineKeyboardButton("No, Rebook / Edit", callback_data="conf_edit")]]
     
-    if hasattr(message, 'edit_text'): await message.edit_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
-    else: await message.reply_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+    if update.callback_query:
+        await update.callback_query.edit_message_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+    else:
+        await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
     return CONFIRM_BOOK
 
 async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT_TYPE):
