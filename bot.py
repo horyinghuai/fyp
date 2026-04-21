@@ -61,7 +61,6 @@ def get_ocr_reader():
         ocr_reader = easyocr.Reader(['en', 'ms'])
     return ocr_reader
 
-# FIXED: Added BASIC_CONFIRM to the end and increased range to 27
 NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON, BASIC_CONFIRM = range(27)
 
 async def generate_date_picker(service, doctor_pref, is_editing=False):
@@ -389,7 +388,7 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 patient = res.json()
                 return await handle_existing_patient_basic_confirm(update.message, context, patient)
         except Exception as e:
-            logger.error(f"Backend patient check failed: {e}")
+            pass # 404 indicates new user
 
     context.user_data['name'] = name.upper()
     context.user_data['address'] = address.upper()
@@ -424,7 +423,7 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 patient = res.json()
                 return await handle_existing_patient_basic_confirm(update.message, context, patient)
         except Exception as e:
-            logger.error(f"Backend patient check failed: {e}")
+            pass # 404 indicates new user
 
     await update.message.reply_text("Please enter your Full Name:")
     return MAN_NAME
@@ -524,17 +523,17 @@ async def man_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_profile_summary(message, context):
     context.user_data['edit_mode'] = False
-    msg = (f"📋 Please confirm your details:\n"
+    msg = (f"Please confirm your details:\n"
            f"Name: {context.user_data['name']}\n"
            f"IC Number: {context.user_data['ic']}\n"
            f"Gender: {context.user_data['gender']}\n"
            f"Nationality: {context.user_data['nationality']}\n"
            f"Address: {context.user_data['address']}\n"
            f"Phone: {context.user_data['phone']}\n\n"
-           f"Is there any information you want to update?")
+           f"Are you sure this details are correct?")
            
-    btns = [[InlineKeyboardButton("✏️ Yes, I want to edit", callback_data="prof_edit")],
-            [InlineKeyboardButton("✅ No, all information are correct", callback_data="prof_yes")]]
+    btns = [[InlineKeyboardButton("Yes", callback_data="prof_yes")],
+            [InlineKeyboardButton("No, edit details", callback_data="prof_edit")]]
     
     if hasattr(message, 'edit_text'): await message.edit_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     else: await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
@@ -872,6 +871,7 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_TYPE):
     btns = [
         [InlineKeyboardButton("Any Doctor", callback_data="doc_ANY")],
+        [InlineKeyboardButton("Female Doctor", callback_data="doc_FEMALE"), InlineKeyboardButton("Male Doctor", callback_data="doc_MALE")],
         [InlineKeyboardButton("Specific Doctor", callback_data="doc_SPECIFIC")]
     ]
     
@@ -908,8 +908,11 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DOC_SELECT
     else:
         context.user_data['doctor_pref'] = pref
-        await query.edit_message_text(f"You selected: Any Doctor")
-        
+        if pref == "ANY":
+            await query.edit_message_text("You selected: Any Doctor")
+        else:
+            await query.edit_message_text(f"You selected: {pref.title()} Doctor")
+            
         if context.user_data.get('is_editing'):
             old_pref = context.user_data.get('old_doctor_pref')
             if pref != old_pref:

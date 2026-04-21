@@ -652,15 +652,27 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
 def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
     try:
         data_dict = data.dict(exclude_unset=True)
-        existing = db.query(models.Patient).filter(models.Patient.clinic_id == data.clinic_id, models.Patient.ic_passport_number == data.ic_passport_number).first()
-        if existing:
-            return {"status": "error", "reason": "Patient IC already exists. Registration aborted."}
-        
         data_dict['name'] = data_dict['name'].upper() 
         data_dict['ic_passport_number'] = data_dict['ic_passport_number'].upper()
         if data_dict.get('address'): data_dict['address'] = data_dict['address'].upper()
         if data_dict.get('gender'): data_dict['gender'] = data_dict['gender'].upper()
         if data_dict.get('nationality'): data_dict['nationality'] = data_dict['nationality'].upper()
+        
+        # ACT AS UPSERT - DO NOT ABORT IF IT ALREADY EXISTS
+        existing = db.query(models.Patient).filter(
+            models.Patient.clinic_id == data.clinic_id, 
+            models.Patient.ic_passport_number == data_dict['ic_passport_number']
+        ).first()
+        
+        if existing:
+            existing.name = data_dict['name']
+            existing.phone = data_dict['phone']
+            if 'address' in data_dict: existing.address = data_dict['address']
+            if 'gender' in data_dict: existing.gender = data_dict['gender']
+            if 'nationality' in data_dict: existing.nationality = data_dict['nationality']
+            if data_dict.get('telegram_id'): existing.telegram_id = data_dict['telegram_id']
+            db.commit()
+            return {"status": "success", "message": "Patient updated"}
         
         new_patient = models.Patient(**data_dict)
         db.add(new_patient)
