@@ -59,7 +59,6 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, [events, pendingReviewEvent]);
 
-  // Fix 2: Added try...catch and response.ok checks to prevent unhandled promise rejections
   const loadDoctors = async () => {
       try {
           const res = await fetch(`http://127.0.0.1:8000/doctors/${CLINIC_ID}`);
@@ -145,6 +144,33 @@ export default function AdminDashboard() {
 
   const handleUpdateOrAddEvent = async () => {
     try {
+        // Enforce Gender Validation Rule
+        let currentPatientGender = "ANY";
+        if (isCreatingNewPatient) {
+            currentPatientGender = newPatientForm.gender.toUpperCase();
+        } else if (editForm.patient_ic) {
+            const sp = patients.find(p => p.ic_passport_number === editForm.patient_ic);
+            if (sp) currentPatientGender = sp.gender.toUpperCase();
+        }
+
+        if (editForm.service === "Vaccine" && editForm.items.length > 0) {
+            const vInfo = vaccinesList.find(v => v.name === editForm.items[0]);
+            if (vInfo && vInfo.target_gender && vInfo.target_gender.toUpperCase() !== "ANY" && vInfo.target_gender.toUpperCase() !== currentPatientGender) {
+                return alert("Selected vaccine is not applicable for this gender. Please recheck.");
+            }
+        }
+
+        if (editForm.service === "Blood Test") {
+            for (const item of editForm.items) {
+                const bInfo = bloodTestsList.find(b => b.name === item);
+                if (bInfo && bInfo.target_gender && bInfo.target_gender.toUpperCase() !== "ANY" && bInfo.target_gender.toUpperCase() !== currentPatientGender) {
+                    return alert("Selected test is not applicable for this gender. Please recheck.");
+                }
+            }
+        }
+
+        if(!window.confirm("Are you sure this details are correct?")) return;
+
         if(isNewBooking) {
             let finalIc = editForm.patient_ic;
             
@@ -153,12 +179,7 @@ export default function AdminDashboard() {
                 if (isMY) {
                     const phoneRegex = /^(\+?60|0)[1-9][0-9]{7,9}$/;
                     if (!phoneRegex.test(newPatientForm.phone.replace(/[\s-]/g, ''))) {
-                        return alert("Invalid Malaysian phone number format. Valid examples: 0123456789 or +60123456789.");
-                    }
-                } else {
-                    const intlPhoneRegex = /^\+?[0-9\s\-\(\)]{7,20}$/;
-                    if(!intlPhoneRegex.test(newPatientForm.phone)) {
-                        return alert("Invalid phone number format. Please provide a valid international phone number.");
+                        return alert("Invalid Malaysian phone number format.");
                     }
                 }
 
@@ -168,11 +189,16 @@ export default function AdminDashboard() {
                 
                 const pRes = await fetch(`http://127.0.0.1:8000/register-patient`, {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ clinic_id: CLINIC_ID, telegram_id: 0, ...newPatientForm })
+                    body: JSON.stringify({ 
+                        clinic_id: CLINIC_ID, telegram_id: 0, 
+                        ...newPatientForm,
+                        name: newPatientForm.name.toUpperCase(),
+                        ic_passport_number: newPatientForm.ic_passport_number.toUpperCase()
+                    })
                 });
                 const pData = await pRes.json();
                 if (pData.status === 'error') return alert(pData.reason);
-                finalIc = newPatientForm.ic_passport_number;
+                finalIc = newPatientForm.ic_passport_number.toUpperCase();
             } else if (!finalIc) {
                 return alert("Please select a patient.");
             }
@@ -302,11 +328,6 @@ export default function AdminDashboard() {
   if (isLoading) return (
     <div className="max-w-7xl mx-auto relative">
       <div className="mb-6 flex justify-between items-center"><h1 className="text-3xl font-bold text-slate-800">Dashboard Overview</h1></div>
-      {error && (
-         <div className="mb-6 p-4 bg-red-100 text-red-700 rounded-xl font-medium flex items-center gap-3">
-             <AlertTriangle size={20} /> Failed to connect to the backend server. Please ensure your Python FastAPI server is running on port 8000.
-         </div>
-      )}
       <div className="animate-pulse h-[60vh] bg-slate-200 rounded-2xl"></div>
     </div>
   );
@@ -335,7 +356,6 @@ export default function AdminDashboard() {
                         }}
                         className="bg-transparent text-white font-bold text-lg outline-none cursor-pointer"
                     >
-                        {/* Options rendered with solid background to prevent transparency overlap issues on native browser UI */}
                         <option value="2025" className="bg-black text-white">2025</option>
                         <option value="2026" className="bg-black text-white">2026</option>
                         <option value="2027" className="bg-black text-white">2027</option>
@@ -354,7 +374,7 @@ export default function AdminDashboard() {
 
       {error && (
          <div className="mb-6 p-4 bg-red-100 text-red-700 rounded-xl font-medium flex items-center gap-3">
-             <AlertTriangle size={20} /> Failed to connect to the backend server. Please ensure your Python FastAPI server is running.
+             <AlertTriangle size={20} /> Failed to connect to the backend server.
          </div>
       )}
 
@@ -433,9 +453,9 @@ export default function AdminDashboard() {
                 {isNewBooking ? (
                     isCreatingNewPatient ? (
                         <div className="space-y-3 bg-blue-50 p-4 rounded-lg border border-blue-100">
-                            <div><input type="text" placeholder="Full Name" value={newPatientForm.name} onChange={e => setNewPatientForm({...newPatientForm, name: e.target.value})} className="w-full p-2 border rounded outline-none" /></div>
+                            <div><input type="text" placeholder="Full Name" value={newPatientForm.name} onChange={e => setNewPatientForm({...newPatientForm, name: e.target.value})} className="w-full p-2 border rounded outline-none uppercase" /></div>
                             <div className="grid grid-cols-2 gap-2">
-                                <input type="text" placeholder="IC/Passport" value={newPatientForm.ic_passport_number} onChange={e => setNewPatientForm({...newPatientForm, ic_passport_number: e.target.value})} className="w-full p-2 border rounded outline-none" />
+                                <input type="text" placeholder="IC/Passport" value={newPatientForm.ic_passport_number} onChange={e => setNewPatientForm({...newPatientForm, ic_passport_number: e.target.value})} className="w-full p-2 border rounded outline-none uppercase" />
                                 <input type="text" placeholder="Phone Number" value={newPatientForm.phone} onChange={e => setNewPatientForm({...newPatientForm, phone: e.target.value})} className="w-full p-2 border rounded outline-none" />
                             </div>
                             <div className="grid grid-cols-2 gap-2">
@@ -535,7 +555,8 @@ export default function AdminDashboard() {
                                     <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={disabled} checked={isChecked} 
                                         onChange={e => {
                                             if(disabled) return;
-                                            const newItems = e.target.checked ? [...editForm.items, bt.name] : editForm.items.filter(i => i !== bt.name);
+                                            // Ensure package selection overwrites all other selections
+                                            const newItems = e.target.checked ? [bt.name] : [];
                                             setEditForm({...editForm, items: newItems});
                                         }}
                                     /> {bt.name}

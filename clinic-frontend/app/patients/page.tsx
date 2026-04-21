@@ -30,16 +30,57 @@ const COUNTRIES = [
 ];
 
 const COUNTRY_PHONE_CODES: Record<string, string> = {
-  "MALAYSIA": "+60",
-  "UNITED STATES": "+1",
-  "SINGAPORE": "+65",
-  "CHINA": "+86",
-  "PALESTINE": "+970",
-  "UNITED KINGDOM": "+44",
-  "AUSTRALIA": "+61",
-  "INDONESIA": "+62",
-  "INDIA": "+91",
-  "JAPAN": "+81"
+  "MALAYSIA": "+60", "AFGHANISTAN": "+93", "ALBANIA": "+355", "ALGERIA": "+213", "ANDORRA": "+376",
+  "ANGOLA": "+244", "ARGENTINA": "+54", "ARMENIA": "+374", "AUSTRALIA": "+61", "AUSTRIA": "+43",
+  "AZERBAIJAN": "+994", "BAHAMAS": "+1", "BAHRAIN": "+973", "BANGLADESH": "+880", "BARBADOS": "+1",
+  "BELARUS": "+375", "BELGIUM": "+32", "BELIZE": "+501", "BENIN": "+229", "BHUTAN": "+975",
+  "BOLIVIA": "+591", "BOSNIA AND HERZEGOVINA": "+387", "BOTSWANA": "+267", "BRAZIL": "+55",
+  "BRUNEI": "+673", "BULGARIA": "+359", "BURKINA FASO": "+226", "BURUNDI": "+257",
+  "CAMBODIA": "+855", "CAMEROON": "+237", "CANADA": "+1", "CENTRAL AFRICAN REPUBLIC": "+236",
+  "CHAD": "+235", "CHILE": "+56", "CHINA": "+86", "COLOMBIA": "+57", "COMOROS": "+269",
+  "COSTA RICA": "+506", "CROATIA": "+385", "CUBA": "+53", "CYPRUS": "+357",
+  "CZECH REPUBLIC": "+420", "DENMARK": "+45", "DJIBOUTI": "+253",
+  "DOMINICAN REPUBLIC": "+1", "EAST TIMOR": "+670", "ECUADOR": "+593", "EGYPT": "+20",
+  "EL SALVADOR": "+503", "EQUATORIAL GUINEA": "+240", "ERITREA": "+291", "ESTONIA": "+372",
+  "ETHIOPIA": "+251", "FIJI": "+679", "FINLAND": "+358", "FRANCE": "+33",
+  "GABON": "+241", "GAMBIA": "+220", "GEORGIA": "+995", "GERMANY": "+49",
+  "GHANA": "+233", "GREECE": "+30", "GRENADA": "+1", "GUATEMALA": "+502",
+  "GUINEA": "+224", "GUYANA": "+592", "HAITI": "+509", "HONDURAS": "+504",
+  "HUNGARY": "+36", "ICELAND": "+354", "INDIA": "+91", "INDONESIA": "+62",
+  "IRAN": "+98", "IRAQ": "+964", "IRELAND": "+353", "ISRAEL": "+972", "ITALY": "+39",
+  "JAMAICA": "+1", "JAPAN": "+81", "JORDAN": "+962", "KAZAKHSTAN": "+7",
+  "KENYA": "+254", "KIRIBATI": "+686", "KUWAIT": "+965", "KYRGYZSTAN": "+996",
+  "LAOS": "+856", "LATVIA": "+371", "LEBANON": "+961", "LESOTHO": "+266",
+  "LIBERIA": "+231", "LIBYA": "+218", "LIECHTENSTEIN": "+423", "LITHUANIA": "+370",
+  "LUXEMBOURG": "+352", "MACEDONIA": "+389", "MADAGASCAR": "+261", "MALAWI": "+265",
+  "MALDIVES": "+960", "MALI": "+223", "MALTA": "+356", "MAURITANIA": "+222",
+  "MAURITIUS": "+230", "MEXICO": "+52", "MICRONESIA": "+691", "MOLDOVA": "+373",
+  "MONACO": "+377", "MONGOLIA": "+976", "MONTENEGRO": "+382", "MOROCCO": "+212",
+  "MOZAMBIQUE": "+258", "MYANMAR": "+95", "NAMIBIA": "+264", "NAURU": "+674",
+  "NEPAL": "+977", "NETHERLANDS": "+31", "NEW ZEALAND": "+64", "NICARAGUA": "+505",
+  "NIGER": "+227", "NIGERIA": "+234", "NORWAY": "+47", "OMAN": "+968",
+  "PAKISTAN": "+92", "PALAU": "+680", "PALESTINE": "+970", "PANAMA": "+507",
+  "PAPUA NEW GUINEA": "+675", "PARAGUAY": "+595", "PERU": "+51",
+  "PHILIPPINES": "+63", "POLAND": "+48", "PORTUGAL": "+351", "QATAR": "+974",
+  "ROMANIA": "+40", "RUSSIA": "+7", "RWANDA": "+250",
+  "SAINT KITTS AND NEVIS": "+1", "SAINT LUCIA": "+1", "SAINT VINCENT": "+1",
+  "SAMOA": "+685", "SAN MARINO": "+378", "SAO TOME": "+239",
+  "SAUDI ARABIA": "+966", "SENEGAL": "+221", "SERBIA": "+381",
+  "SEYCHELLES": "+248", "SIERRA LEONE": "+232", "SINGAPORE": "+65",
+  "SLOVAKIA": "+421", "SLOVENIA": "+386", "SOLOMON ISLANDS": "+677",
+  "SOMALIA": "+252", "SOUTH AFRICA": "+27", "SOUTH KOREA": "+82",
+  "SPAIN": "+34", "SRI LANKA": "+94", "SUDAN": "+249",
+  "SURINAME": "+597", "SWAZILAND": "+268", "SWEDEN": "+46",
+  "SWITZERLAND": "+41", "SYRIA": "+963", "TAIWAN": "+886",
+  "TAJIKISTAN": "+992", "TANZANIA": "+255", "THAILAND": "+66",
+  "TOGO": "+228", "TONGA": "+676", "TRINIDAD AND TOBAGO": "+1",
+  "TUNISIA": "+216", "TURKEY": "+90", "TURKMENISTAN": "+993",
+  "TUVALU": "+688", "UGANDA": "+256", "UKRAINE": "+380",
+  "UNITED ARAB EMIRATES": "+971", "UNITED KINGDOM": "+44",
+  "UNITED STATES": "+1", "URUGUAY": "+598",
+  "UZBEKISTAN": "+998", "VANUATU": "+678", "VATICAN CITY": "+379",
+  "VENEZUELA": "+58", "VIETNAM": "+84", "YEMEN": "+967",
+  "ZAMBIA": "+260", "ZIMBABWE": "+263"
 };
 
 export default function PatientsPage() {
@@ -84,22 +125,7 @@ export default function PatientsPage() {
 
   const handleNationalityChange = (country: string) => {
       const upperCountry = country.toUpperCase();
-      const code = COUNTRY_PHONE_CODES[upperCountry] || "+";
-      setFormData({...formData, nationality: upperCountry, phone: code});
-  };
-
-  const formatPhoneNumberBeforeSave = (phone: string, isMy: boolean) => {
-      let cleanPhone = phone.replace(/[\s-]/g, '');
-      if (isMy) {
-          if (cleanPhone.startsWith('01')) {
-              cleanPhone = '+60' + cleanPhone.substring(1);
-          } else if (cleanPhone.startsWith('60')) {
-              cleanPhone = '+' + cleanPhone;
-          } else if (cleanPhone.startsWith('1') && cleanPhone.length >= 8) {
-              cleanPhone = '+60' + cleanPhone;
-          }
-      }
-      return cleanPhone;
+      setFormData({...formData, nationality: upperCountry});
   };
 
   const handleSave = async () => {
@@ -107,23 +133,31 @@ export default function PatientsPage() {
         alert("⚠️ IC/Passport, Name, and Phone are required fields."); return;
     }
 
-    let finalPhone = formatPhoneNumberBeforeSave(formData.phone, isMalaysian);
+    const currentPhoneCode = COUNTRY_PHONE_CODES[formData.nationality.toUpperCase()] || "+";
+    let formattedLocalPhone = formData.phone.replace(/[\s-]/g, '');
+    
+    // Prevent user from manually putting country code inside the local part
+    if (isMalaysian && formattedLocalPhone.startsWith('0')) {
+        formattedLocalPhone = formattedLocalPhone.substring(1);
+    }
+    
+    const finalPhone = currentPhoneCode + formattedLocalPhone;
 
     if (isMalaysian) {
         const cleanIC = formData.ic.replace(/[^0-9]/g, '');
         if (cleanIC.length !== 12) {
             alert("⚠️ Malaysian IC must be exactly 12 digits or in XXXXXX-XX-XXXX format."); return;
         }
-        const phoneRegex = /^\+60[1-9][0-9]{7,9}$/;
-        if (!phoneRegex.test(finalPhone)) {
-            alert("⚠️ Invalid Malaysian phone number format. It should contain a valid mobile prefix."); return;
+        if (!/^\+60[1-9][0-9]{7,9}$/.test(finalPhone)) {
+            alert("⚠️ Invalid Malaysian phone number format."); return;
         }
     } else {
-        const intlPhoneRegex = /^\+?[0-9]{7,15}$/;
-        if(!intlPhoneRegex.test(finalPhone.replace(/[\s\-\(\)]/g, ''))) {
-            alert("⚠️ Invalid phone number format. Please provide a valid international phone number."); return;
+        if(!/^\+?[0-9]{7,15}$/.test(finalPhone.replace(/[\s\-\(\)]/g, ''))) {
+            alert("⚠️ Invalid phone number format."); return;
         }
     }
+
+    if (!window.confirm("Are you sure this details are correct?")) return;
 
     try {
         const isEditing = !!editingPatient;
@@ -169,10 +203,18 @@ export default function PatientsPage() {
     if(patient) {
         const isMy = patient.nationality.toUpperCase() === 'MALAYSIA';
         setIsMalaysian(isMy);
+        
+        // Strip country code for the editable part
+        const cCode = COUNTRY_PHONE_CODES[patient.nationality.toUpperCase()] || "+";
+        let localPhonePart = patient.phone;
+        if (localPhonePart.startsWith(cCode)) {
+            localPhonePart = localPhonePart.slice(cCode.length);
+        }
+
         setFormData({ 
             ic: patient.ic_passport_number, 
             name: patient.name, 
-            phone: patient.phone, 
+            phone: localPhonePart, 
             gender: patient.gender, 
             nationality: patient.nationality, 
             address: patient.address || '' 
@@ -275,14 +317,19 @@ export default function PatientsPage() {
               
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Phone Number</label>
-                <input 
-                  type="text" 
-                  placeholder={isMalaysian ? "+6012-3456789" : "Select nationality first..."} 
-                  value={formData.phone} 
-                  onChange={e => setFormData({...formData, phone: e.target.value})} 
-                  disabled={!isMalaysian && !formData.nationality}
-                  className={`w-full p-3 border rounded-lg outline-none font-mono ${(!isMalaysian && !formData.nationality) ? 'bg-slate-100 cursor-not-allowed text-slate-400' : ''}`} 
-                />
+                <div className="flex">
+                    <div className="p-3 border-y border-l rounded-l-lg bg-slate-100 text-slate-500 font-mono font-bold flex items-center justify-center min-w-[3rem]">
+                        {COUNTRY_PHONE_CODES[formData.nationality.toUpperCase()] || "+"}
+                    </div>
+                    <input 
+                      type="text" 
+                      placeholder="123456789" 
+                      value={formData.phone} 
+                      onChange={e => setFormData({...formData, phone: e.target.value})} 
+                      disabled={!isMalaysian && !formData.nationality}
+                      className={`w-full p-3 border rounded-r-lg outline-none font-mono ${(!isMalaysian && !formData.nationality) ? 'bg-slate-100 cursor-not-allowed text-slate-400' : ''}`} 
+                    />
+                </div>
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
