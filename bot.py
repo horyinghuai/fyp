@@ -1047,7 +1047,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         elif date_pref:
             context.user_data['book_date'] = date_pref
             markup = await generate_time_picker(service, date_pref, context.user_data.get('doctor_pref'))
-            msg = f"I successfully understood your preferred date: {date_pref}.\nHowever, the time is missing.\nPlease select a valid time below or type it."
+            msg = f"I successfully understood your preferred date: {date_pref}.\nHowever, time selection is still required.\n\nPlease select an available time below, or type your preferred time. (You can also pick a new date below if you changed your mind)."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
         elif time_pref:
@@ -1088,15 +1088,33 @@ async def process_availability(update, context, full_time_str):
     
     if not data.get('is_valid'):
         sugs = data.get('suggestions', [])
-        btns = [[InlineKeyboardButton(s, callback_data=f"sug_{s}")] for s in sugs]
-        
+        btns = []
+        if sugs:
+            for s in sugs:
+                btns.append([InlineKeyboardButton(s, callback_data=f"sug_{s}")])
+        else:
+            date_obj = full_time_str.split(" ")[0]
+            try:
+                t_res = await client.post(f"{API_BASE}/available-times", json={"clinic_id": CLINIC_ID, "date": date_obj, "duration": duration, "doctor_pref": doctor_pref}, timeout=10.0)
+                t_data = t_res.json() if t_res.status_code == 200 else {}
+                valid_times = t_data.get("times", [])
+                row = []
+                for t_str in valid_times:
+                    row.append(InlineKeyboardButton(t_str[:5], callback_data=f"time_{t_str}"))
+                    if len(row) == 3:
+                        btns.append(row)
+                        row = []
+                if row: btns.append(row)
+            except: pass
+
         if "Multiple doctors match" in data.get('reason', '') or "No doctor matching" in data.get('reason', ''):
              btns.append([InlineKeyboardButton("👩‍⚕️ Reselect Doctor Preference", callback_data="back_doc_pref")])
         else:
-             btns.append([InlineKeyboardButton("📅 Choose Another Time", callback_data="back_date")])
+             btns.append([InlineKeyboardButton("📅 Fully Reselect Date & Time", callback_data="back_date")])
         
         msg = f"❌ {data.get('reason', 'Slot unavailable')}"
-        if sugs: msg += "\nHere are alternative slots:"
+        if sugs: msg += "\nHere are the 3 nearest alternative slots:"
+        elif not sugs and len(btns) > 1: msg += "\nHere are the remaining available times for your chosen date:"
         
         if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         else: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))

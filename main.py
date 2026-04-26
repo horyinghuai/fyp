@@ -100,7 +100,9 @@ class ChatMessageModel(BaseModel):
     message: str
 
 class AdminReplyReq(BaseModel):
-    msg_id: int
+    msg_id: Optional[int] = None
+    telegram_id: Optional[int] = None
+    clinic_id: str
     reply_text: str
 
 class TextExtractRequest(BaseModel):
@@ -519,20 +521,28 @@ def get_pending_chat_count(clinic_id: str, db: Session = Depends(get_db)):
 
 @app.post("/admin/chat-reply")
 async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
-    msg = db.query(models.ChatMessage).filter_by(id=req.msg_id).first()
-    if not msg: raise HTTPException(status_code=404)
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    target_telegram_id = None
     
-    msg.reply = req.reply_text
-    msg.status = 'replied'
+    if req.msg_id:
+        msg = db.query(models.ChatMessage).filter_by(id=req.msg_id).first()
+        if not msg: raise HTTPException(status_code=404)
+        msg.reply = req.reply_text
+        msg.status = 'replied'
+        target_telegram_id = msg.telegram_id
+    elif req.telegram_id:
+        new_msg = models.ChatMessage(clinic_id=req.clinic_id, telegram_id=req.telegram_id, message="[Admin Initiated Chat]", reply=req.reply_text, status='replied')
+        db.add(new_msg)
+        target_telegram_id = req.telegram_id
+        
     db.commit()
 
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if token:
+    if token and target_telegram_id:
         async with httpx.AsyncClient() as client:
             try:
                 await client.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": msg.telegram_id, "text": f"👨‍⚕️ *Clinic Admin:*\n{req.reply_text}", "parse_mode": "Markdown"}
+                    json={"chat_id": target_telegram_id, "text": f"👨‍⚕️ *Clinic Admin:*\n{req.reply_text}", "parse_mode": "Markdown"}
                 )
             except Exception as e:
                 print(f"Failed to send telegram message: {e}")
@@ -1078,4 +1088,17 @@ def del_doc_availability(ic: str, clinic_id: str, day: str, start_time: str, db:
 @app.get("/admin/chat-history/{clinic_id}")
 def get_chat_history(clinic_id: str, db: Session = Depends(get_db)):
     msgs = db.query(models.ChatMessage).filter_by(clinic_id=clinic_id).order_by(models.ChatMessage.created_at.asc()).all()
-    return [{"id": m.id, "telegram_id": m.telegram_id, "message": m.message, "reply": m.reply, "created_at": m.created_at, "status": m.status} for m in msgs]
+    res = []
+    for m in msgs:
+        patient = db.query(models.Patient).filter_by(telegram_id=m.telegram_id).first()
+        phone = patient.phone if patient and patient.phone else f"Unknown ({m.telegram_id})"
+        res.append({
+            "id": m.id, 
+            "telegram_id": m.telegram_id, 
+            "phone": phone,
+            "message": m.message, 
+            "reply": m.reply, 
+            "created_at": m.created_at, 
+            "status": m.status
+        })
+    return res
