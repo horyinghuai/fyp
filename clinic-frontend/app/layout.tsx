@@ -6,7 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
-const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; // Assuming active clinic ID
+const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -14,9 +14,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const [showNotifications, setShowNotifications] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [clinicName, setClinicName] = useState("Loading...");
+  const [pendingChatCount, setPendingChatCount] = useState(0);
 
   useEffect(() => {
-    // Exclude login page from fetching layout data or showing layout UI
     if (pathname !== '/login') {
       fetch(`http://127.0.0.1:8000/clinic/${CLINIC_ID}`)
         .then(res => res.json())
@@ -25,6 +25,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           else setClinicName("Smart Admin Portal");
         })
         .catch(() => setClinicName("Smart Admin Portal"));
+
+      const fetchPendingChats = () => {
+        fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${CLINIC_ID}`)
+          .then(res => res.json())
+          .then(data => {
+              if(data && data.count !== undefined) setPendingChatCount(data.count);
+          })
+          .catch(err => console.error(err));
+      };
+
+      fetchPendingChats();
+      const interval = setInterval(fetchPendingChats, 10000); 
+      return () => clearInterval(interval);
     }
   }, [pathname]);
 
@@ -42,7 +55,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   ];
 
   const handleLogout = () => {
-    // Clear any auth tokens here if implemented
     router.push('/login');
   };
 
@@ -58,8 +70,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {navItems.map((item) => {
               const isActive = pathname === item.path;
               return (
-                <Link key={item.path} href={item.path} prefetch={false} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${isActive ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+                <Link key={item.path} href={item.path} prefetch={false} className={`relative flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${isActive ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
                   {item.icon} <span className="font-medium">{item.name}</span>
+                  {item.name === 'Bot Replies' && pendingChatCount > 0 && (
+                      <span className="absolute right-4 bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse shadow">
+                          {pendingChatCount}
+                      </span>
+                  )}
                 </Link>
               );
             })}
@@ -71,9 +88,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <div className="flex items-center gap-6 relative">
               <div className="relative cursor-pointer" onClick={() => setShowNotifications(!showNotifications)}>
                 <Bell size={22} className="text-slate-600 hover:text-blue-600 transition" />
+                {pendingChatCount > 0 && (
+                     <span className="absolute -top-1 -right-1 bg-red-500 w-2.5 h-2.5 rounded-full shadow-sm ring-2 ring-white"></span>
+                )}
               </div>
               
-              {/* User Menu */}
               <div className="relative">
                 <div className="flex items-center gap-2 cursor-pointer" onClick={() => setShowUserMenu(!showUserMenu)}>
                   <UserCircle size={30} className="text-slate-400 hover:text-blue-600 transition" />

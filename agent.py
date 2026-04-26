@@ -121,12 +121,13 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
     CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output markdown tags.
     JSON SCHEMA:
     {{
-        "intent": "booking",
+        "intent": "booking" | "question" | "reschedule" | "cancel",
         "raw_date_text": "string (exact date phrase) or null",
         "raw_time_text": "string (exact time phrase) or null",
         "doctor_preference": "string ('ANY', 'MALE', 'FEMALE', or exact name) or null",
         "general_notes": "string (symptoms, reason for visit, e.g., 'fever', 'cough') or null"
     }}
+    Note: If the user is asking a general question not related to booking an appointment (e.g. "Where is the clinic?", "What are your hours?", "Can I bring my child?"), set intent to "question".
     """
     try:
         raw_text = await run_llm_race(prompt)

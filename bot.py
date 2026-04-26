@@ -1024,7 +1024,14 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
 
-        if ext.get('intent') == 'reschedule':
+        intent = ext.get('intent', 'booking')
+        if intent == 'question':
+            async with httpx.AsyncClient() as client:
+                await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": CLINIC_ID, "telegram_id": update.effective_user.id, "message": text})
+            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
+            return BOOK_DATE_TIME
+
+        if intent == 'reschedule':
             await update.message.reply_text("I see you want to reschedule. Let's make a new booking, then you can type /cancel to cancel your old one.")
         
         date_pref = ext.get('date_preference')
@@ -1040,7 +1047,13 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         elif date_pref:
             context.user_data['book_date'] = date_pref
             markup = await generate_time_picker(service, date_pref, context.user_data.get('doctor_pref'))
-            await update.message.reply_text(f"I understood you want {date_pref}. What time?", reply_markup=markup)
+            msg = f"I successfully understood your preferred date: {date_pref}.\nHowever, the time is missing.\nPlease select a valid time below or type it."
+            await update.message.reply_text(msg, reply_markup=markup)
+            return BOOK_DATE_TIME
+        elif time_pref:
+            markup = await generate_date_picker(service, context.user_data.get('doctor_pref'), context.user_data.get('is_editing', False))
+            msg = f"I successfully understood your preferred time: {time_pref}.\nHowever, the date is missing.\nPlease select a valid date below or type it."
+            await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
         else:
             is_editing = context.user_data.get('is_editing', False)
@@ -1049,7 +1062,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
                 return await show_booking_summary(update, context)
             
             markup = await generate_date_picker(service, context.user_data.get('doctor_pref'), is_editing)
-            msg = "I couldn't fully extract the date and time.\nPlease select a Date below, \nOR type your request naturally:"
+            msg = "I understood you want to book an appointment, but the date and time format was invalid or missing.\nPlease select a Date below or provide the exact date and time."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
 

@@ -1,3 +1,5 @@
+import os
+import httpx
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -9,7 +11,6 @@ from agent import extract_appointment_details, generate_vaccine_schedule_ai
 from datetime import datetime, timedelta
 import random
 import re
-from fastapi import APIRouter, Depends, HTTPException
 
 app = FastAPI(title="Clinic Smart Assistant Backend")
 
@@ -97,6 +98,10 @@ class ChatMessageModel(BaseModel):
     clinic_id: str
     telegram_id: int
     message: str
+
+class AdminReplyReq(BaseModel):
+    msg_id: int
+    reply_text: str
 
 class TextExtractRequest(BaseModel):
     text: str
@@ -502,9 +507,36 @@ def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db))
 
 @app.post("/ask-admin")
 def ask_admin(msg: ChatMessageModel, db: Session = Depends(get_db)):
-    new_msg = models.ChatMessage(clinic_id=msg.clinic_id, telegram_id=msg.telegram_id, message=msg.message)
+    new_msg = models.ChatMessage(clinic_id=msg.clinic_id, telegram_id=msg.telegram_id, message=msg.message, status="unread")
     db.add(new_msg)
     db.commit()
+    return {"status": "success"}
+
+@app.get("/admin/chat-pending-count/{clinic_id}")
+def get_pending_chat_count(clinic_id: str, db: Session = Depends(get_db)):
+    count = db.query(models.ChatMessage).filter_by(clinic_id=clinic_id, status='unread').count()
+    return {"count": count}
+
+@app.post("/admin/chat-reply")
+async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
+    msg = db.query(models.ChatMessage).filter_by(id=req.msg_id).first()
+    if not msg: raise HTTPException(status_code=404)
+    
+    msg.reply = req.reply_text
+    msg.status = 'replied'
+    db.commit()
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if token:
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": msg.telegram_id, "text": f"👨‍⚕️ *Clinic Admin:*\n{req.reply_text}", "parse_mode": "Markdown"}
+                )
+            except Exception as e:
+                print(f"Failed to send telegram message: {e}")
+                
     return {"status": "success"}
 
 @app.post("/ai-extract")
@@ -747,8 +779,8 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
     if req_dt < now: return {"is_valid": False, "reason": "You cannot book an appointment in the past.", "suggestions": find_nearest_3_slots(now.date())}
     
     doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, date_obj, req.duration, req.doctor_pref)
-    available_docs_for_this_slot = []
     
+    available_docs_for_this_slot = []
     for ds in doc_slots:
         if req_dt in ds['slots']: available_docs_for_this_slot.append(ds)
         
@@ -758,7 +790,12 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
         chosen = random.choice(best_docs)
         return {"is_valid": True, "reason": "Slot available.", "doctor_id": str(chosen['doc'].ic_passport_number), "doctor_name": chosen['doc'].name, "suggestions": []}
     else:
-        return {"is_valid": False, "reason": "That exact time is unavailable for the selected preference.", "suggestions": find_nearest_3_slots(date_obj)}
+        date_has_slots = any(len(ds['slots']) > 0 for ds in doc_slots)
+        if date_has_slots:
+            reason = f"Date {date_obj.strftime('%Y-%m-%d')} is available, but the selected time {req_dt.strftime('%H:%M')} is unavailable."
+        else:
+            reason = f"The specific date and time selected ({req_dt.strftime('%Y-%m-%d %H:%M')}) is unavailable."
+        return {"is_valid": False, "reason": reason, "suggestions": find_nearest_3_slots(date_obj)}
 
 @app.post("/book-appointment")
 def book_appointment(booking: Booking, db: Session = Depends(get_db)):
@@ -1040,5 +1077,5 @@ def del_doc_availability(ic: str, clinic_id: str, day: str, start_time: str, db:
 
 @app.get("/admin/chat-history/{clinic_id}")
 def get_chat_history(clinic_id: str, db: Session = Depends(get_db)):
-    msgs = db.query(models.ChatMessage).filter_by(clinic_id=clinic_id).order_by(models.ChatMessage.created_at.desc()).all()
-    return [{"telegram_id": m.telegram_id, "message": m.message, "reply": m.reply, "created_at": m.created_at} for m in msgs]
+    msgs = db.query(models.ChatMessage).filter_by(clinic_id=clinic_id).order_by(models.ChatMessage.created_at.asc()).all()
+    return [{"id": m.id, "telegram_id": m.telegram_id, "message": m.message, "reply": m.reply, "created_at": m.created_at, "status": m.status} for m in msgs]
