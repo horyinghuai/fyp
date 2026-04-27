@@ -61,7 +61,7 @@ def get_ocr_reader():
         ocr_reader = easyocr.Reader(['en', 'ms'])
     return ocr_reader
 
-NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON, BASIC_CONFIRM = range(27)
+NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON, BASIC_CONFIRM, MAN_GENDER_CONFIRM, OTHERS_REASON = range(29)
 
 async def generate_date_picker(service, doctor_pref, is_editing=False):
     duration = 15 if service == 'Vaccine' else 30
@@ -152,11 +152,14 @@ def extract_ic_info(image_path: str):
     name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
 
     address_lines = []
-    for i in range(address_start_idx, len(cleaned_results)):
+    # Enhanced OCR address extraction to scan until postcode is found
+    for i in range(address_start_idx, min(address_start_idx + 6, len(cleaned_results))):
         text = cleaned_results[i][1]
-        if any(sw in text for sw in stop_words) or len(text) < 3: continue
+        if any(sw in text for sw in stop_words): continue
         address_lines.append(text)
-        
+        if re.search(r'\d{5}', text): # Found a 5-digit postcode, which marks end of typical address block
+            break
+            
     address = ", ".join(address_lines) if address_lines else "UNKNOWN"
     return name, ic_num, address, gender, nationality
 
@@ -165,7 +168,8 @@ def clean_bot_username(text: str) -> str:
     return cleaned.strip().upper()
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "Please enter your IC or Passport Number to find your appointments:"
+    id_label = "IC/Passport Number"
+    msg = f"Please enter your {id_label} to find your appointments:"
     if update.message: await update.message.reply_text(msg)
     else: await update.callback_query.message.reply_text(msg)
     return CANCEL_SELECT
@@ -320,10 +324,12 @@ async def handle_existing_patient_basic_confirm(update: Update, context: Context
     context.user_data['nationality'] = patient.get('nationality', 'UNKNOWN').upper()
     context.user_data['ic'] = patient['ic_passport_number']
     
+    id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
+    
     msg = (f"Welcome {patient['name'].upper()}\n\n"
            f"📋 Please confirm your details:\n"
            f"Name: {patient['name'].upper()}\n"
-           f"IC Number: {patient['ic_passport_number']}\n"
+           f"{id_label}: {patient['ic_passport_number']}\n"
            f"Phone: {patient['phone']}\n")
            
     btns = [[InlineKeyboardButton("✅ Yes, it's me", callback_data="basic_yes")],
@@ -340,13 +346,15 @@ async def basic_confirm_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
 
     if query.data == "basic_no":
-        await query.edit_message_text("Please re-enter your IC/Passport number.")
+        id_label = "IC" if context.user_data.get('is_malaysian') else "Passport"
+        await query.edit_message_text(f"Please re-enter your {id_label} number.")
         return MAN_ID_CHECK
 
     elif query.data == "basic_yes":
+        id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
         msg = (f"Please confirm your details:\n"
                f"Name: {context.user_data['name']}\n"
-               f"IC Number: {context.user_data['ic']}\n"
+               f"{id_label}: {context.user_data['ic']}\n"
                f"Gender: {context.user_data['gender']}\n"
                f"Nationality: {context.user_data['nationality']}\n"
                f"Address: {context.user_data['address']}\n"
@@ -439,10 +447,18 @@ async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Please enter your phone number:")
         return MAN_PHONE
     else:
-        await update.message.reply_text("Please enter your Gender (Male / Female):")
+        btns = [[InlineKeyboardButton("Male", callback_data="gend_MALE"), InlineKeyboardButton("Female", callback_data="gend_FEMALE")]]
+        await update.message.reply_text("Please select or enter your Gender:", reply_markup=InlineKeyboardMarkup(btns))
         return MAN_GENDER
 
 async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+        context.user_data['gender'] = update.callback_query.data.replace("gend_", "")
+        if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
+        await update.callback_query.edit_message_text(f"Gender set to: {context.user_data['gender']}\nPlease enter your Country of Nationality:")
+        return MAN_NAT
+
     raw_gender = clean_bot_username(update.message.text).upper()
     
     if "FEMA" in raw_gender:
@@ -452,15 +468,33 @@ async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         matches = difflib.get_close_matches(raw_gender, ["MALE", "FEMALE"], n=1, cutoff=0.4)
         if matches:
-            context.user_data['gender'] = matches[0]
+            context.user_data['temp_gender'] = matches[0]
+            btns = [[InlineKeyboardButton("Yes", callback_data="gend_conf_yes"), InlineKeyboardButton("No", callback_data="gend_conf_no")]]
+            await update.message.reply_text(f"Did you mean {matches[0]}?", reply_markup=InlineKeyboardMarkup(btns))
+            return MAN_GENDER_CONFIRM
         else:
-            await update.message.reply_text("❌ Invalid gender. Please enter 'Male' or 'Female':")
+            btns = [[InlineKeyboardButton("Male", callback_data="gend_MALE"), InlineKeyboardButton("Female", callback_data="gend_FEMALE")]]
+            await update.message.reply_text("❌ Invalid gender. Please select or type 'Male' or 'Female':", reply_markup=InlineKeyboardMarkup(btns))
             return MAN_GENDER
         
     if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
     
-    await update.message.reply_text("Please enter your Country of Nationality:")
+    await update.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality:")
     return MAN_NAT
+
+async def man_gender_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "gend_conf_yes":
+        context.user_data['gender'] = context.user_data.get('temp_gender')
+        if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
+        await query.edit_message_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality:")
+        return MAN_NAT
+    else:
+        btns = [[InlineKeyboardButton("Male", callback_data="gend_MALE"), InlineKeyboardButton("Female", callback_data="gend_FEMALE")]]
+        await query.edit_message_text("Please select or enter your Gender:", reply_markup=InlineKeyboardMarkup(btns))
+        return MAN_GENDER
 
 async def man_nat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_nat = clean_bot_username(update.message.text).upper()
@@ -469,7 +503,7 @@ async def man_nat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['nationality'] = raw_nat
         if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
         
-        await update.message.reply_text(f"Nationality saved as {raw_nat}.\n\nPlease enter your phone number (including country code, e.g. +1...):", parse_mode="Markdown")
+        await update.message.reply_text(f"Nationality saved as {raw_nat}.\n\nPlease enter your phone number (starting with '+' and country code):", parse_mode="Markdown")
         return MAN_PHONE
         
     matches = difflib.get_close_matches(raw_nat, COUNTRIES_LIST, n=1, cutoff=0.4)
@@ -492,7 +526,7 @@ async def man_nat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('edit_mode'): 
             return await show_profile_summary(update, context)
             
-        await query.edit_message_text(f"Nationality saved as {nat}.\n\nPlease enter your phone number (including country code, e.g. +1...):", parse_mode="Markdown")
+        await query.edit_message_text(f"Nationality saved as {nat}.\n\nPlease enter your phone number (starting with '+' and country code):", parse_mode="Markdown")
         return MAN_PHONE
     else:
         await query.edit_message_text("Please enter your Country of Nationality again:")
@@ -513,6 +547,9 @@ async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
             formatted = f"+60{clean_num[1:2]}-{clean_num[2:]}"
         context.user_data['phone'] = formatted
     else:
+        if not phone_input.startswith('+'):
+            await update.message.reply_text("⚠️ For Non-Malaysian patients, please enter your phone number starting with a '+' sign and the respective country code.")
+            return MAN_PHONE
         context.user_data['phone'] = phone_input
 
     if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
@@ -526,9 +563,10 @@ async def man_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_profile_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['edit_mode'] = False
+    id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
     msg = (f"Please confirm your details:\n"
            f"Name: {context.user_data.get('name')}\n"
-           f"IC Number: {context.user_data.get('ic')}\n"
+           f"{id_label}: {context.user_data.get('ic')}\n"
            f"Gender: {context.user_data.get('gender')}\n"
            f"Nationality: {context.user_data.get('nationality')}\n"
            f"Address: {context.user_data.get('address')}\n"
@@ -549,8 +587,9 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     if query.data == "prof_edit":
+        id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
         btns = [
-            [InlineKeyboardButton("Name", callback_data="edit_name"), InlineKeyboardButton("IC Number", callback_data="edit_ic")],
+            [InlineKeyboardButton("Name", callback_data="edit_name"), InlineKeyboardButton(id_label, callback_data="edit_ic")],
             [InlineKeyboardButton("Gender", callback_data="edit_gender"), InlineKeyboardButton("Nationality", callback_data="edit_nat")],
             [InlineKeyboardButton("Address", callback_data="edit_address"), InlineKeyboardButton("Phone", callback_data="edit_phone")],
             [InlineKeyboardButton("❌ Cancel Editing", callback_data="edit_cancel")]
@@ -582,17 +621,23 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
         
     context.user_data['edit_mode'] = True
     
+    if field == "gender":
+        btns = [[InlineKeyboardButton("Male", callback_data="gend_MALE"), InlineKeyboardButton("Female", callback_data="gend_FEMALE")],
+                [InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="prof_edit")]]
+        await query.edit_message_text("Please select your Gender:", reply_markup=InlineKeyboardMarkup(btns))
+        return MAN_GENDER
+    
+    id_label = "IC/Passport Number" if context.user_data.get('is_malaysian') else "Passport Number"
     prompts = {
         "name": "Full Name",
-        "ic": "IC/Passport Number",
-        "gender": "Gender (Male/Female)",
+        "ic": id_label,
         "nat": "Nationality",
         "address": "Home Address",
         "phone": "Phone Number"
     }
     
     state_keys = {
-        "name": "name", "ic": "ic", "gender": "gender", "nat": "nationality", "address": "address", "phone": "phone"
+        "name": "name", "ic": "ic", "nat": "nationality", "address": "address", "phone": "phone"
     }
     
     current_val = str(context.user_data.get(state_keys[field], ''))
@@ -609,7 +654,6 @@ async def handle_profile_edit_selection(update: Update, context: ContextTypes.DE
     
     if field == "name": return MAN_NAME
     if field == "ic": return MAN_ID_CHECK
-    if field == "gender": return MAN_GENDER
     if field == "nat": return MAN_NAT
     if field == "address": return MAN_ADDRESS
     if field == "phone": return MAN_PHONE
@@ -635,8 +679,8 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service = context.user_data.get('service')
     
     if service == 'Others':
-        await query.edit_message_text("You selected: Others")
-        return await show_doctor_preference(update, context)
+        await query.edit_message_text("You selected: Others.\nPlease type your reason for the visit (e.g., 'Fever and cough'):")
+        return OTHERS_REASON
 
     async with httpx.AsyncClient() as client:
         try:
@@ -661,6 +705,16 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error fetching service details: {e}")
             await query.message.reply_text("Server is currently unreachable. Please try again later.")
             return SERVICE
+
+async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reason = clean_bot_username(update.message.text)
+    if reason:
+        reason = reason[0].upper() + reason[1:].lower()
+    context.user_data['general_notes'] = reason
+    
+    if context.user_data.get('is_editing'):
+        return await show_booking_summary(update, context)
+    return await show_doctor_preference(update, context)
 
 async def vaccine_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -746,59 +800,71 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await show_doctor_preference(update, context)
 
 async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t_type):
+    tests = []
     async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(f"{API_BASE}/blood-tests/{CLINIC_ID}/{t_type}", timeout=5.0)
-            tests = res.json()
-        except Exception as e:
-            logger.error(f"Error fetching blood tests: {e}")
-            tests = []
-            
-        user_gender = context.user_data.get('gender', 'ANY').upper()
-        tests = [t for t in tests if not t.get('target_gender') or t.get('target_gender').upper() in ['ANY', user_gender]]
-        context.user_data[f'bt_cache_{t_type}'] = tests
+        # Multi-case fetch to solve DB vs API parsing issues for "PACKAGE" vs "package"
+        for t_case in [t_type, t_type.upper(), t_type.title()]:
+            try:
+                res = await client.get(f"{API_BASE}/blood-tests/{CLINIC_ID}/{t_case}", timeout=5.0)
+                if res.status_code == 200:
+                    tests.extend(res.json())
+            except Exception as e:
+                logger.error(f"Error fetching blood tests: {e}")
+                
+    # Ensure uniqueness based on test ID
+    seen_ids = set()
+    unique_tests = []
+    for t in tests:
+        if t['id'] not in seen_ids:
+            seen_ids.add(t['id'])
+            unique_tests.append(t)
+    tests = unique_tests
         
-        selected_names = context.user_data.get('selected_items', [])
-        excluded_singles = set(selected_names)
+    user_gender = context.user_data.get('gender', 'ANY').upper()
+    tests = [t for t in tests if not t.get('target_gender') or t.get('target_gender').upper() in ['ANY', user_gender]]
+    context.user_data[f'bt_cache_{t_type}'] = tests
+    
+    selected_names = context.user_data.get('selected_items', [])
+    excluded_singles = set(selected_names)
 
-        if t_type == 'single':
-            pkg_cache = context.user_data.get('bt_cache_package', [])
-            for pkg in pkg_cache:
-                if pkg['name'] in selected_names:
-                    included = pkg.get('included_tests', [])
-                    if isinstance(included, list):
-                        excluded_singles.update(included)
+    if t_type == 'single':
+        pkg_cache = context.user_data.get('bt_cache_package', [])
+        for pkg in pkg_cache:
+            if pkg['name'] in selected_names:
+                included = pkg.get('included_tests', [])
+                if isinstance(included, list):
+                    excluded_singles.update(included)
+    
+    btns = []
+    msg_details = ""
+    
+    for t in tests:
+        if t['name'] not in excluded_singles:
+            btns.append([InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"selbt_{t['id']}")])
+            if t_type == "package" and t.get('included_tests'):
+                included_str = ", ".join(t['included_tests'])
+                msg_details += f"📦 *{t['name']}*\nIncludes: {included_str}\n\n"
+    
+    if t_type == 'single' and len(btns) == 0:
+        return await show_doctor_preference(update, context)
+    
+    if t_type == "package": 
+        btns.append([InlineKeyboardButton("OR Browse Single Tests", callback_data="bt_others")])
+        if context.user_data.get('is_editing'): btns.append([InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="back_edit_menu")])
+        else: btns.append([InlineKeyboardButton("🔙 Back to Services", callback_data="back_start")])
         
-        btns = []
-        msg_details = ""
+        msg = f"🩸 *Choose a Blood Test Package:*\n\n{msg_details}Select a package below:"
+    else:
+        btns.append([InlineKeyboardButton("🔙 Back to Packages", callback_data="back_bt_pkg")])
+        msg = "🩸 *Choose an add-on Single Test:*"
         
-        for t in tests:
-            if t['name'] not in excluded_singles:
-                btns.append([InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"selbt_{t['id']}")])
-                if t_type == "package" and t.get('included_tests'):
-                    included_str = ", ".join(t['included_tests'])
-                    msg_details += f"📦 *{t['name']}*\nIncludes: {included_str}\n\n"
-        
-        if t_type == 'single' and len(btns) == 0:
-            return await show_doctor_preference(update, context)
-        
-        if t_type == "package": 
-            btns.append([InlineKeyboardButton("OR Browse Single Tests", callback_data="bt_others")])
-            if context.user_data.get('is_editing'): btns.append([InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="back_edit_menu")])
-            else: btns.append([InlineKeyboardButton("🔙 Back to Services", callback_data="back_start")])
-            
-            msg = f"🩸 *Choose a Blood Test Package:*\n\n{msg_details}Select a package below:"
-        else:
-            btns.append([InlineKeyboardButton("🔙 Back to Packages", callback_data="back_bt_pkg")])
-            msg = "🩸 *Choose an add-on Single Test:*"
-            
-        markup = InlineKeyboardMarkup(btns)
-        
-        if update.callback_query:
-            await update.callback_query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
-        else: 
-            await update.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
-        return BT_FLOW
+    markup = InlineKeyboardMarkup(btns)
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
+    else: 
+        await update.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
+    return BT_FLOW
 
 async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1140,8 +1206,10 @@ async def show_booking_summary(update: Update, context: ContextTypes.DEFAULT_TYP
         
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))}"
     full_time_str = context.user_data['book_time']
+    
+    id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
 
-    summary = (f"📋 *Booking Summary*\nName: {name}\nIC Number: {ic}\nPhone: {phone}\n"
+    summary = (f"📋 *Booking Summary*\nName: {name}\n{id_label}: {ic}\nPhone: {phone}\n"
                f"Date: {context.user_data['book_date']}\nTime: {full_time_str.split(' ')[1]}\n"
                f"Service: {service}\nDetails: {details}{doc_text}\n\nAre you sure this details are correct?")
     
@@ -1210,9 +1278,10 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
     else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
         
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}"
+    id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
 
     confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
-                         f"Name: {context.user_data['name']}\nIC Number: {context.user_data['ic']}\n"
+                         f"Name: {context.user_data['name']}\n{id_label}: {context.user_data['ic']}\n"
                          f"Phone: {context.user_data['phone']}\nDate: {date_part}\nTime: {time_part}\n"
                          f"Service: {service}\nDetails: {details}{doc_text}\n")
     
@@ -1258,7 +1327,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
             return await show_blood_tests(update, context, "package")
         else:
             await query.edit_message_text("Please type your reason for the visit (e.g., 'Fever and cough'):")
-            return DOC_PREF 
+            return OTHERS_REASON 
     elif choice == "doctor":
         context.user_data['old_doctor_pref'] = context.user_data.get('doctor_pref', 'ANY')
         return await show_doctor_preference(update, context)
@@ -1329,8 +1398,12 @@ if __name__ == '__main__':
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
             ],
             MAN_GENDER: [
+                CallbackQueryHandler(man_gender, pattern="^gend_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, man_gender),
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
+            ],
+            MAN_GENDER_CONFIRM: [
+                CallbackQueryHandler(man_gender_confirm, pattern="^gend_conf_")
             ],
             MAN_NAT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, man_nat),
@@ -1354,6 +1427,7 @@ if __name__ == '__main__':
             EDIT_PROFILE_MENU: [CallbackQueryHandler(handle_profile_edit_selection, pattern="^edit_")],
             
             SERVICE: [CallbackQueryHandler(service_choice, pattern="^svc_")],
+            OTHERS_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, others_reason)],
             V_TYPE: [
                 CallbackQueryHandler(vaccine_type_selected, pattern="^vtype_"),
                 CallbackQueryHandler(restart_service, pattern="^back_start$")
