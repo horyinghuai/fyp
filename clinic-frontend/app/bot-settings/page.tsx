@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from 'react';
-import { MessageSquare, Send, User, Search, PlusCircle, X } from 'lucide-react';
+import { MessageSquare, Send, User, Search, PlusCircle, X, Smartphone } from 'lucide-react';
 
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 
@@ -10,7 +10,9 @@ export default function BotRepliesPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [groupedChats, setGroupedChats] = useState<Record<string, any[]>>({});
   const [selectedUserPhone, setSelectedUserPhone] = useState<string | null>(null);
-  const [replyText, setReplyText] = useState("");
+  
+  // General thread reply
+  const [threadReplyText, setThreadReplyText] = useState("");
   const [sending, setSending] = useState(false);
 
   // Search State
@@ -44,20 +46,20 @@ export default function BotRepliesPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const handleSendReply = async (msgId: number) => {
-    if (!replyText.trim()) return;
+  const handleSendToThread = async () => {
+    if (!threadReplyText.trim() || !selectedUserPhone) return;
     setSending(true);
     try {
         const res = await fetch(`http://127.0.0.1:8000/admin/chat-reply`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ msg_id: msgId, clinic_id: CLINIC_ID, reply_text: replyText })
+            body: JSON.stringify({ phone: selectedUserPhone, clinic_id: CLINIC_ID, reply_text: threadReplyText })
         });
         if(res.ok) {
-            setReplyText("");
+            setThreadReplyText("");
             fetchHistory();
         } else {
-            alert("Failed to send message. Please ensure Telegram Bot Token is valid in the backend.");
+            alert("Failed to send message. Please check backend connection.");
         }
     } catch (e) {
         alert("Server error.");
@@ -70,23 +72,13 @@ export default function BotRepliesPage() {
         alert("Phone number and message are required.");
         return;
     }
-    
-    // Attempt to locate a matching patient in history to find their Telegram ID
-    // If they aren't in history, the backend will attempt to look them up by phone.
-    const existingChat = history.find(m => m.phone === newChatPhone);
-    const targetTelegramId = existingChat ? existingChat.telegram_id : null;
-
-    if (!targetTelegramId) {
-        alert("Could not resolve Telegram ID for this phone number. Ensure the patient has initiated a chat with the bot before.");
-        return;
-    }
 
     setSending(true);
     try {
         const res = await fetch(`http://127.0.0.1:8000/admin/chat-reply`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ telegram_id: targetTelegramId, clinic_id: CLINIC_ID, reply_text: newChatMessage })
+            body: JSON.stringify({ phone: newChatPhone, clinic_id: CLINIC_ID, reply_text: newChatMessage })
         });
         if(res.ok) {
             setNewChatPhone("");
@@ -103,18 +95,19 @@ export default function BotRepliesPage() {
     setSending(false);
   };
 
-  // Memoized Search Filter
   const filteredUsers = useMemo(() => {
       const lowerSearch = searchTerm.toLowerCase();
       return Object.keys(groupedChats).filter(phone => {
           if (phone.toLowerCase().includes(lowerSearch)) return true;
-          return groupedChats[phone].some(msg => 
+          // Safely check messages
+          return (groupedChats[phone] || []).some(msg => 
               (msg.message && msg.message.toLowerCase().includes(lowerSearch)) || 
               (msg.reply && msg.reply.toLowerCase().includes(lowerSearch))
           );
       }).sort((a, b) => {
-          const aHasUnread = groupedChats[a].some(m => m.status === 'unread');
-          const bHasUnread = groupedChats[b].some(m => m.status === 'unread');
+          // Safely check unread status
+          const aHasUnread = (groupedChats[a] || []).some(m => m.status === 'unread');
+          const bHasUnread = (groupedChats[b] || []).some(m => m.status === 'unread');
           if (aHasUnread && !bHasUnread) return -1;
           if (!aHasUnread && bHasUnread) return 1;
           return 0;
@@ -127,8 +120,8 @@ export default function BotRepliesPage() {
     <div className="max-w-7xl mx-auto h-[85vh] flex flex-col">
       <div className="mb-6 flex items-center justify-between">
         <div>
-            <h1 className="text-3xl font-bold text-slate-800">🤖 Bot Replies & Chat</h1>
-            <p className="text-slate-500 mt-1">Review inquiries, monitor AI responses, and reply directly to patients.</p>
+            <h1 className="text-3xl font-bold text-slate-800">🤖 Unified Chat & Bot Replies</h1>
+            <p className="text-slate-500 mt-1">Review Telegram and SMS inquiries, monitor AI responses, and reply directly.</p>
         </div>
         <button onClick={() => setShowNewChatModal(true)} className="bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-md hover:bg-emerald-700 flex items-center gap-2">
             <PlusCircle size={18} /> New Chat
@@ -156,14 +149,16 @@ export default function BotRepliesPage() {
                      <div className="p-6 text-center text-slate-400 text-sm">No conversations found matching search.</div>
                  ) : (
                      filteredUsers.map(phone => {
-                         const msgs = groupedChats[phone];
+                         const msgs = groupedChats[phone] || [];
                          const hasUnread = msgs.some(m => m.status === 'unread');
                          const isSelected = selectedUserPhone === phone;
+                         const latestMsg = msgs.length > 0 ? msgs[msgs.length - 1] : {};
+                         const isSms = latestMsg.channel === 'sms';
                          
                          return (
                              <button key={phone} onClick={() => setSelectedUserPhone(phone)} className={`w-full text-left p-4 border-b transition-colors flex items-start gap-3 ${isSelected ? 'bg-blue-50 border-l-4 border-l-blue-600' : 'hover:bg-slate-50 border-l-4 border-l-transparent'}`}>
                                  <div className={`p-2 rounded-full mt-1 ${hasUnread ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}>
-                                     <User size={18} />
+                                     {isSms ? <Smartphone size={18} /> : <MessageSquare size={18} />}
                                  </div>
                                  <div className="flex-1 min-w-0">
                                      <div className="flex justify-between items-center mb-1">
@@ -171,7 +166,7 @@ export default function BotRepliesPage() {
                                          {hasUnread && <span className="bg-red-500 w-2 h-2 rounded-full shadow-sm"></span>}
                                      </div>
                                      <span className="text-xs text-slate-500 truncate block">
-                                         {msgs[msgs.length - 1].message || msgs[msgs.length - 1].reply || "No text"}
+                                         {latestMsg.message || latestMsg.reply || "No text"}
                                      </span>
                                  </div>
                              </button>
@@ -185,33 +180,27 @@ export default function BotRepliesPage() {
          <div className="flex-1 bg-white rounded-2xl shadow-sm border border-slate-100 flex flex-col overflow-hidden relative">
              {selectedUserPhone ? (
                  <>
-                     <div className="p-4 border-b bg-slate-50 font-bold text-slate-600 shadow-sm z-10">
-                         Chat History with {selectedUserPhone}
+                     <div className="p-4 border-b bg-slate-50 font-bold text-slate-600 shadow-sm z-10 flex justify-between items-center">
+                         <span>Chat History with {selectedUserPhone}</span>
                      </div>
-                     <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50">
-                         {groupedChats[selectedUserPhone].map(msg => (
+                     <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50 flex flex-col">
+                         {/* Safely map the array with || [] to prevent crashes on missing properties */}
+                         {(groupedChats[selectedUserPhone] || []).map(msg => {
+                             const isSms = msg.channel === 'sms';
+                             return (
                              <div key={msg.id} className="space-y-4">
                                  {/* User Message Bubble */}
                                  {msg.message && msg.message !== "[Admin Initiated Chat]" && (
                                     <div className="flex justify-start">
                                         <div className="bg-white border border-slate-200 p-4 rounded-2xl rounded-tl-sm max-w-[80%] shadow-sm">
-                                            <span className="block text-[10px] font-bold text-slate-400 mb-2 uppercase">{new Date(msg.created_at).toLocaleString()}</span>
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="text-[10px] font-bold text-slate-400 uppercase">{new Date(msg.created_at).toLocaleString()}</span>
+                                                <span className="flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
+                                                    {isSms ? <Smartphone size={10} /> : <MessageSquare size={10} />}
+                                                    {isSms ? 'SMS' : 'TELEGRAM'}
+                                                </span>
+                                            </div>
                                             <span className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{msg.message}</span>
-                                            {msg.status === 'unread' && (
-                                                <div className="mt-4 pt-4 border-t border-slate-100 flex gap-2">
-                                                    <input 
-                                                        type="text" 
-                                                        placeholder="Type reply to patient..." 
-                                                        value={replyText} 
-                                                        onChange={e => setReplyText(e.target.value)} 
-                                                        className="flex-1 bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-sm outline-none focus:border-blue-400"
-                                                        onKeyDown={(e) => { if(e.key === 'Enter') handleSendReply(msg.id) }}
-                                                    />
-                                                    <button onClick={() => handleSendReply(msg.id)} disabled={sending || !replyText.trim()} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-blue-700 disabled:opacity-50">
-                                                        <Send size={14} /> Send
-                                                    </button>
-                                                </div>
-                                            )}
                                         </div>
                                     </div>
                                  )}
@@ -220,13 +209,35 @@ export default function BotRepliesPage() {
                                  {msg.reply && (
                                     <div className="flex justify-end">
                                         <div className="bg-blue-50 border border-blue-100 p-4 rounded-2xl rounded-tr-sm max-w-[80%] shadow-sm">
-                                            <span className="block text-[10px] font-bold text-blue-400 mb-2 uppercase text-right">Bot / Admin Reply</span>
+                                            <div className="flex justify-end items-center gap-2 mb-2">
+                                                <span className="flex items-center gap-1 text-[10px] font-bold text-blue-400 bg-white px-2 py-0.5 rounded-md shadow-sm border border-blue-50">
+                                                    {isSms ? <Smartphone size={10} /> : <MessageSquare size={10} />}
+                                                    {isSms ? 'SENT VIA SMS' : 'SENT VIA TELEGRAM'}
+                                                </span>
+                                                <span className="text-[10px] font-bold text-blue-400 uppercase text-right">Bot / Admin Reply</span>
+                                            </div>
                                             <span className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">{msg.reply}</span>
                                         </div>
                                     </div>
                                  )}
                              </div>
-                         ))}
+                         )})}
+                     </div>
+                     {/* Bottom Input Area */}
+                     <div className="p-4 border-t bg-white">
+                         <div className="flex gap-2">
+                             <input 
+                                 type="text" 
+                                 placeholder={`Message ${selectedUserPhone}...`}
+                                 value={threadReplyText}
+                                 onChange={e => setThreadReplyText(e.target.value)}
+                                 onKeyDown={(e) => { if (e.key === 'Enter') handleSendToThread() }}
+                                 className="flex-1 bg-slate-50 border border-slate-200 px-4 py-3 rounded-xl text-sm outline-none focus:border-blue-400"
+                             />
+                             <button onClick={handleSendToThread} disabled={sending || !threadReplyText.trim()} className="bg-blue-600 text-white px-6 py-3 rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                                 <Send size={16} /> Send
+                             </button>
+                         </div>
                      </div>
                  </>
              ) : (
@@ -243,7 +254,7 @@ export default function BotRepliesPage() {
           <div className="bg-white p-6 rounded-2xl shadow-2xl w-[450px]">
             <div className="flex justify-between items-center mb-4 border-b pb-2">
                 <h3 className="font-bold text-lg text-slate-800">Initiate New Chat</h3>
-                <button onClick={() => setShowNewChatModal(false)} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
+                <button onClick={() => setShowNewChatModal(false)} className="text-slate-400 hover:text-red-500 transition-colors"><X size={20}/></button>
             </div>
             
             <div className="space-y-4">
@@ -256,7 +267,6 @@ export default function BotRepliesPage() {
                         onChange={e => setNewChatPhone(e.target.value)} 
                         className="w-full p-3 border rounded-lg outline-none font-mono text-sm" 
                     />
-                    <p className="text-xs text-slate-500 mt-1">Must exactly match a previously registered Telegram User's phone.</p>
                 </div>
                 <div>
                     <label className="block text-sm font-bold text-slate-700 mb-1">Message</label>

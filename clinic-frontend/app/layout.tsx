@@ -18,24 +18,42 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     if (pathname !== '/login') {
-      fetch(`http://127.0.0.1:8000/clinic/${CLINIC_ID}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data && data.name) setClinicName(data.name);
-          else setClinicName("Smart Admin Portal");
-        })
-        .catch(() => setClinicName("Smart Admin Portal"));
-
-      const fetchPendingChats = () => {
-        fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${CLINIC_ID}`)
-          .then(res => res.json())
-          .then(data => {
-              if(data && data.count !== undefined) setPendingChatCount(data.count);
-          })
-          .catch(err => console.error(err));
+      
+      // 1. Safe async fetch for clinic details
+      const initializeData = async () => {
+        try {
+          const res = await fetch(`http://127.0.0.1:8000/clinic/${CLINIC_ID}`);
+          if (res.ok) {
+            const data = await res.json();
+            setClinicName(data.name || "Smart Admin Portal");
+          } else {
+            setClinicName("Smart Admin Portal");
+          }
+        } catch (error) {
+          // Backend is offline - gracefully default without crashing
+          setClinicName("Smart Admin Portal");
+        }
       };
 
+      // 2. Safe async fetch for pending chats
+      const fetchPendingChats = async () => {
+        try {
+          const res = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${CLINIC_ID}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.count !== undefined) {
+              setPendingChatCount(data.count);
+            }
+          }
+        } catch (error) {
+          // Silently handle "Failed to fetch" to prevent Next.js Turbopack from crashing the screen
+          // Do nothing if backend is unreachable
+        }
+      };
+
+      initializeData();
       fetchPendingChats();
+      
       const interval = setInterval(fetchPendingChats, 10000); 
       return () => clearInterval(interval);
     }

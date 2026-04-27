@@ -102,6 +102,7 @@ class ChatMessageModel(BaseModel):
 class AdminReplyReq(BaseModel):
     msg_id: Optional[int] = None
     telegram_id: Optional[int] = None
+    phone: Optional[str] = None
     clinic_id: str
     reply_text: str
 
@@ -509,7 +510,16 @@ def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db))
 
 @app.post("/ask-admin")
 def ask_admin(msg: ChatMessageModel, db: Session = Depends(get_db)):
-    new_msg = models.ChatMessage(clinic_id=msg.clinic_id, telegram_id=msg.telegram_id, message=msg.message, status="unread")
+    patient = db.query(models.Patient).filter_by(telegram_id=msg.telegram_id).first()
+    phone = patient.phone if patient else None
+    new_msg = models.ChatMessage(
+        clinic_id=msg.clinic_id, 
+        telegram_id=msg.telegram_id, 
+        phone=phone,
+        channel='telegram',
+        message=msg.message, 
+        status="unread"
+    )
     db.add(new_msg)
     db.commit()
     return {"status": "success"}
@@ -522,7 +532,11 @@ def get_pending_chat_count(clinic_id: str, db: Session = Depends(get_db)):
 @app.post("/admin/chat-reply")
 async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
-    target_telegram_id = None
+    bot_username = os.getenv("TELEGRAM_BOT_USERNAME", "AICAS_Clinic_Bot")
+    
+    target_telegram_id = req.telegram_id
+    target_phone = req.phone
+    channel = 'telegram'
     
     if req.msg_id:
         msg = db.query(models.ChatMessage).filter_by(id=req.msg_id).first()
@@ -530,14 +544,34 @@ async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
         msg.reply = req.reply_text
         msg.status = 'replied'
         target_telegram_id = msg.telegram_id
-    elif req.telegram_id:
-        new_msg = models.ChatMessage(clinic_id=req.clinic_id, telegram_id=req.telegram_id, message="[Admin Initiated Chat]", reply=req.reply_text, status='replied')
+        target_phone = msg.phone
+        channel = msg.channel or 'telegram'
+    elif req.phone:
+        patient = db.query(models.Patient).filter_by(phone=req.phone).first()
+        if patient and patient.telegram_id:
+            target_telegram_id = patient.telegram_id
+            target_phone = patient.phone
+            channel = 'telegram'
+        else:
+            channel = 'sms'
+            target_phone = req.phone
+            
+        new_msg = models.ChatMessage(
+            clinic_id=req.clinic_id, 
+            telegram_id=target_telegram_id, 
+            phone=target_phone,
+            channel=channel,
+            message="[Admin Initiated Chat]", 
+            reply=req.reply_text, 
+            status='replied'
+        )
         db.add(new_msg)
-        target_telegram_id = req.telegram_id
         
+        db.query(models.ChatMessage).filter_by(phone=target_phone, status='unread').update({"status": "replied"})
+
     db.commit()
 
-    if token and target_telegram_id:
+    if channel == 'telegram' and token and target_telegram_id:
         async with httpx.AsyncClient() as client:
             try:
                 await client.post(
@@ -546,8 +580,17 @@ async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
                 )
             except Exception as e:
                 print(f"Failed to send telegram message: {e}")
+    elif channel == 'sms' and target_phone:
+        sms_content = (
+            f"Clinic Admin: {req.reply_text}\n\n"
+            f"Reply via SMS or use our Telegram Bot for a better experience: https://t.me/{bot_username}"
+        )
+        print("========== SMS DELIVERY ==========")
+        print(f"TO: {target_phone}")
+        print(f"MESSAGE:\n{sms_content}")
+        print("==================================")
                 
-    return {"status": "success"}
+    return {"status": "success", "channel": channel}
 
 @app.post("/ai-extract")
 async def ai_extract(req: TextExtractRequest):
@@ -1090,12 +1133,15 @@ def get_chat_history(clinic_id: str, db: Session = Depends(get_db)):
     msgs = db.query(models.ChatMessage).filter_by(clinic_id=clinic_id).order_by(models.ChatMessage.created_at.asc()).all()
     res = []
     for m in msgs:
-        patient = db.query(models.Patient).filter_by(telegram_id=m.telegram_id).first()
-        phone = patient.phone if patient and patient.phone else f"Unknown ({m.telegram_id})"
+        phone = m.phone
+        if not phone and m.telegram_id:
+            patient = db.query(models.Patient).filter_by(telegram_id=m.telegram_id).first()
+            phone = patient.phone if patient and patient.phone else f"Unknown ({m.telegram_id})"
         res.append({
             "id": m.id, 
             "telegram_id": m.telegram_id, 
             "phone": phone,
+            "channel": m.channel or 'telegram',
             "message": m.message, 
             "reply": m.reply, 
             "created_at": m.created_at, 

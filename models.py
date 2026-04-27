@@ -60,6 +60,7 @@ class ApptStage(Base):
     stage_name = Column(String(100))
     scheduled_time = Column(DateTime)
     status = Column(String(20), default="scheduled")
+    cancel_reason = Column(String(255), nullable=True)
     depends_on_stage_id = Column(UUID(as_uuid=True), ForeignKey("appointment_stages.id"), nullable=True)
     appointment = relationship("Appointment", back_populates="stages")
 
@@ -85,7 +86,9 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
     id = Column(Integer, primary_key=True, autoincrement=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
-    telegram_id = Column(BigInteger)
+    telegram_id = Column(BigInteger, nullable=True)
+    phone = Column(String(20), nullable=True)
+    channel = Column(String(20), default='telegram')
     message = Column(String)
     reply = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
