@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Calendar, momentLocalizer, View } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
-import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle, FileText } from 'lucide-react';
+import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle, FileText, Search } from 'lucide-react';
 
 const localizer = momentLocalizer(moment);
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
@@ -27,6 +27,10 @@ export default function AdminDashboard() {
   const [isCreatingNewPatient, setIsCreatingNewPatient] = useState(false);
   const [newPatientForm, setNewPatientForm] = useState({ name: '', ic_passport_number: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
   
+  // Custom Search State for Patients Selection
+  const [patientSearchText, setPatientSearchText] = useState("");
+  const [showPatientDropdown, setShowPatientDropdown] = useState(false);
+  
   const [pendingReviewEvent, setPendingReviewEvent] = useState<any>(null);
   const [filters, setFilters] = useState({ scheduled: true, completed: true, canceled: false, noShow: true });
 
@@ -41,6 +45,9 @@ export default function AdminDashboard() {
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
   const [cancelReason, setCancelReason] = useState("Change of schedule");
   const [customCancelReason, setCustomCancelReason] = useState("");
+  
+  // Track Inline Cancel Modification
+  const [inlineCancelReason, setInlineCancelReason] = useState("");
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<View>('week'); 
@@ -68,8 +75,17 @@ export default function AdminDashboard() {
 
   const loadDoctors = async () => {
       try {
-          const res = await fetch(`http://127.0.0.1:8000/doctors/${CLINIC_ID}`);
-          if (res.ok) setDoctors(await res.json());
+          const res = await fetch(`http://127.0.0.1:8000/admin/doctors-all/${CLINIC_ID}`);
+          if (res.ok) {
+              const docs = await res.json();
+              // Load availability schedules dynamically for precise slot calculation
+              const docsWithSched = await Promise.all(docs.map(async (d: any) => {
+                  const schedRes = await fetch(`http://127.0.0.1:8000/admin/doctors/${d.ic_passport_number}/availability/${CLINIC_ID}`);
+                  const schedules = schedRes.ok ? await schedRes.json() : [];
+                  return { ...d, schedules };
+              }));
+              setDoctors(docsWithSched);
+          }
       } catch (err) {
           console.error("Backend offline (Doctors):", err);
       }
@@ -155,6 +171,53 @@ export default function AdminDashboard() {
     }
   };
 
+  const getAvailableSlots = () => {
+      if (!editDate) return { times: [], docsForTime: {} };
+      const dayOfWeek = moment(editDate).format("ddd").toLowerCase();
+      const duration = editForm.service === 'Vaccine' ? 15 : 30;
+      const now = moment();
+      const isToday = moment(editDate).isSame(now, 'day');
+
+      const timesSet = new Set<string>();
+      const docsForTime: Record<string, any[]> = {};
+
+      doctors.forEach(doc => {
+          if(!doc.schedules) return;
+          const todayScheds = doc.schedules.filter((s: any) => s.day_of_week === dayOfWeek);
+          todayScheds.forEach((sched: any) => {
+              let curr = moment(`${editDate} ${sched.start_time}`, "YYYY-MM-DD HH:mm");
+              const end = moment(`${editDate} ${sched.end_time}`, "YYYY-MM-DD HH:mm");
+              
+              while (curr.clone().add(duration, 'minutes').isSameOrBefore(end)) {
+                  const timeStr = curr.format("HH:mm");
+                  
+                  if (isToday && curr.isSameOrBefore(now)) {
+                      curr.add(duration, 'minutes');
+                      continue;
+                  }
+
+                  const isBusy = events.some(e => 
+                      e.doctor_ic === doc.ic_passport_number && 
+                      e.status !== 'canceled' && 
+                      moment(e.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${timeStr}`
+                  );
+                  
+                  if (!isBusy) {
+                      timesSet.add(timeStr);
+                      if (!docsForTime[timeStr]) docsForTime[timeStr] = [];
+                      docsForTime[timeStr].push(doc);
+                  }
+                  curr.add(duration, 'minutes');
+              }
+          });
+      });
+
+      return { 
+          times: Array.from(timesSet).sort(), 
+          docsForTime 
+      };
+  };
+
   const handleUpdateOrAddEvent = async () => {
     try {
         if (!editDate || !editTime || !editForm.doctor_ic) {
@@ -199,6 +262,10 @@ export default function AdminDashboard() {
                     if (!phoneRegex.test(newPatientForm.phone.replace(/[\s-]/g, ''))) {
                         return alert("Invalid Malaysian phone number format.");
                     }
+                } else {
+                    if (!newPatientForm.phone.trim().startsWith('+')) {
+                        return alert("For Non-Malaysian patients, please enter the phone number starting with a '+' sign and the respective country code.");
+                    }
                 }
 
                 if(!newPatientForm.name || !newPatientForm.ic_passport_number || !newPatientForm.phone) {
@@ -225,7 +292,7 @@ export default function AdminDashboard() {
                 clinic_id: CLINIC_ID, telegram_id: 0, ic_passport_number: finalIc,
                 service_type: editForm.service,
                 details: {
-                    items: editForm.items, dose: editForm.dose, reason: editForm.reason, assigned_doctor_id: editForm.doctor_ic
+                    items: editForm.items, dose: editForm.dose, general_notes: editForm.reason, assigned_doctor_id: editForm.doctor_ic
                 },
                 scheduled_time: scheduled_time
             };
@@ -233,13 +300,19 @@ export default function AdminDashboard() {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
             });
         } else {
-            const payload = {
+            const payload: any = {
                 appt_id: selectedEvent.appt_id, service_type: editForm.service,
                 details: {
-                    items: editForm.items, dose: editForm.dose, total_doses: 1, assigned_doctor_id: editForm.doctor_ic, reason: editForm.reason
+                    items: editForm.items, dose: editForm.dose, total_doses: 1, assigned_doctor_id: editForm.doctor_ic, general_notes: editForm.reason
                 },
                 scheduled_time: scheduled_time, status: editForm.status
             };
+            
+            if (editForm.status === 'canceled') {
+                if (!inlineCancelReason.trim()) return alert("Please enter a cancel reason.");
+                payload.cancel_reason = inlineCancelReason;
+            }
+
             await fetch(`http://127.0.0.1:8000/update-appointment`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
             });
@@ -278,32 +351,26 @@ export default function AdminDashboard() {
       dose: event.dose || 'Single Dose',
       reason: event.reason || ''
     });
+    setPatientSearchText(`${event.patient_name} (${event.patient_ic})`);
+    setInlineCancelReason(event.cancel_reason || "");
     setIsEditingEvent(false);
     setIsNewBooking(false);
   };
 
   const openNewBookingModal = () => {
     setEditDate(moment().format("YYYY-MM-DD"));
-    setEditTime("09:00");
+    setEditTime(""); 
     setEditForm({
       status: 'scheduled',
-      doctor_ic: doctors.length > 0 ? doctors[0].ic_passport_number : '', 
+      doctor_ic: '', 
       patient_ic: '', service: 'Consultation', items: [], dose: 'Single Dose', reason: ''
     });
     setNewPatientForm({ name: '', ic_passport_number: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
+    setPatientSearchText("");
     setSelectedEvent(null);
     setIsEditingEvent(true);
     setIsNewBooking(true);
     setIsCreatingNewPatient(false);
-  };
-
-  const generateTimeOptions = () => {
-    const opts = [];
-    for(let i=9; i<=17; i++) {
-        opts.push(`${i.toString().padStart(2, '0')}:00`);
-        opts.push(`${i.toString().padStart(2, '0')}:30`);
-    }
-    return opts;
   };
 
   const groupedVaccines = vaccinesList.reduce((acc: any, v: any) => {
@@ -357,6 +424,9 @@ export default function AdminDashboard() {
     }
     return { style };
   };
+
+  const { times: availableTimes, docsForTime } = getAvailableSlots();
+  const availableDocs = editTime ? (docsForTime[editTime] || []) : [];
 
   if (isLoading) return (
     <div className="max-w-7xl mx-auto relative">
@@ -524,10 +594,42 @@ export default function AdminDashboard() {
                             </div>
                         </div>
                     ) : (
-                        <select value={editForm.patient_ic} onChange={e => setEditForm({...editForm, patient_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                            <option value="">Select a Registered Patient</option>
-                            {patients.map((p: any) => <option key={p.ic_passport_number} value={p.ic_passport_number}>{p.name} ({p.ic_passport_number})</option>)}
-                        </select>
+                        <div className="relative">
+                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Search size={14} className="text-slate-400" /></div>
+                            <input 
+                                type="text" 
+                                placeholder="Search by Name or IC/Passport..." 
+                                value={patientSearchText}
+                                onChange={e => {
+                                    setPatientSearchText(e.target.value);
+                                    setShowPatientDropdown(true);
+                                    if (!e.target.value) setEditForm({...editForm, patient_ic: ''});
+                                }}
+                                onFocus={() => setShowPatientDropdown(true)}
+                                className="w-full p-2 pl-9 border rounded-lg bg-white outline-none focus:border-blue-500 transition-colors"
+                            />
+                            {showPatientDropdown && patientSearchText && (
+                                <div className="absolute z-10 w-full mt-1 bg-white border rounded-lg shadow-xl max-h-40 overflow-y-auto">
+                                    {patients.filter(p => p.name.toLowerCase().includes(patientSearchText.toLowerCase()) || p.ic_passport_number.includes(patientSearchText)).map(p => (
+                                        <div 
+                                            key={p.ic_passport_number} 
+                                            className="p-2 hover:bg-slate-50 cursor-pointer text-sm border-b last:border-0"
+                                            onClick={() => {
+                                                setEditForm({...editForm, patient_ic: p.ic_passport_number});
+                                                setPatientSearchText(`${p.name} (${p.ic_passport_number})`);
+                                                setShowPatientDropdown(false);
+                                            }}
+                                        >
+                                            <span className="font-bold block text-slate-800">{p.name}</span>
+                                            <span className="text-xs text-slate-500 font-mono">{p.ic_passport_number}</span>
+                                        </div>
+                                    ))}
+                                    {patients.filter(p => p.name.toLowerCase().includes(patientSearchText.toLowerCase()) || p.ic_passport_number.includes(patientSearchText)).length === 0 && (
+                                        <div className="p-3 text-center text-sm text-slate-500">No patient found.</div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     )
                 ) : (
                     <p className="font-semibold text-lg">{selectedEvent?.patient_name || 'Unknown Patient'}</p>
@@ -539,25 +641,30 @@ export default function AdminDashboard() {
                   <div className="grid grid-cols-3 gap-4">
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Date</label>
-                        <input type="date" min={moment().format("YYYY-MM-DD")} value={editDate} onChange={(e) => setEditDate(e.target.value)} className="w-full p-2 border rounded-lg outline-none" />
+                        <input type="date" min={moment().format("YYYY-MM-DD")} value={editDate} onChange={(e) => {
+                            setEditDate(e.target.value);
+                            setEditTime("");
+                        }} className="w-full p-2 border rounded-lg outline-none" />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Time</label>
-                        <select value={editTime} onChange={e => setEditTime(e.target.value)} className="w-full p-2 border rounded-lg outline-none bg-white">
-                            {generateTimeOptions().map(t => {
-                                // Explicit boolean cast to satisfy TypeScript when doctor_ic is ""
-                                const isBusy = Boolean(editForm.doctor_ic && events.some(e => e.doctor_ic === editForm.doctor_ic && e.status !== "canceled" && moment(e.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${t}`));
-                                return <option key={t} value={t} disabled={isBusy}>{t}</option>
-                            })}
+                        <select value={editTime} onChange={e => {
+                            setEditTime(e.target.value);
+                            const docs = docsForTime[e.target.value] || [];
+                            if (docs.length > 0 && !docs.find(d => d.ic_passport_number === editForm.doctor_ic)) {
+                                setEditForm(prev => ({...prev, doctor_ic: docs[0].ic_passport_number}));
+                            }
+                        }} className="w-full p-2 border rounded-lg outline-none bg-white">
+                            <option value="">Select Time</option>
+                            {availableTimes.length === 0 && editDate ? <option value="" disabled>No Slots</option> : 
+                             availableTimes.map(t => <option key={t} value={t}>{t}</option>)}
                         </select>
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assign Doctor</label>
                         <select value={editForm.doctor_ic} onChange={(e) => setEditForm({...editForm, doctor_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          {doctors.map((d: any) => {
-                              const isBusy = events.some(e => e.doctor_ic === d.ic_passport_number && e.status !== "canceled" && moment(e.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${editTime}`);
-                              return <option key={d.ic_passport_number} value={d.ic_passport_number} disabled={isBusy}>{d.name}</option>
-                          })}
+                          {availableDocs.length === 0 ? <option value="">No Free Doctors</option> :
+                           availableDocs.map((d: any) => <option key={d.ic_passport_number} value={d.ic_passport_number}>{d.name}</option>)}
                         </select>
                       </div>
                   </div>
@@ -570,16 +677,27 @@ export default function AdminDashboard() {
                                 <option value="scheduled">Scheduled</option>
                                 <option value="completed">Completed</option>
                                 <option value="no-show">No-Show</option>
+                                <option value="canceled">Canceled</option>
                             </select>
                         </div>
                       )}
                       <div className={isNewBooking ? "col-span-2" : ""}>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
-                        <select value={editForm.service} onChange={(e) => setEditForm({...editForm, service: e.target.value, items: []})} className="w-full p-2 border rounded-lg bg-white outline-none">
+                        <select value={editForm.service} onChange={(e) => {
+                            setEditForm({...editForm, service: e.target.value, items: []});
+                            setEditTime(""); 
+                        }} className="w-full p-2 border rounded-lg bg-white outline-none">
                           <option value="Consultation">Consultation</option><option value="Vaccine">Vaccine</option><option value="Blood Test">Blood Test</option>
                         </select>
                       </div>
                   </div>
+
+                  {editForm.status === 'canceled' && (
+                      <div className="col-span-2">
+                          <label className="block text-xs font-bold text-red-500 uppercase mb-1">Cancellation Reason <span className="text-red-500">*</span></label>
+                          <input type="text" value={inlineCancelReason} onChange={e => setInlineCancelReason(e.target.value)} className="w-full p-2 border rounded-lg bg-white outline-none border-red-300" placeholder="Please specify why this was canceled..." />
+                      </div>
+                  )}
 
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                       {editForm.service === 'Vaccine' && (

@@ -93,6 +93,7 @@ class UpdateBooking(BaseModel):
     details: Dict[str, Any]
     scheduled_time: str
     status: Optional[str] = "scheduled"
+    cancel_reason: Optional[str] = None
 
 class ChatMessageModel(BaseModel):
     clinic_id: str
@@ -258,7 +259,8 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
                 "total_doses": total_doses,
                 "reason": appt.general_notes or "",
                 "status": stage.status,
-                "color": color
+                "color": color,
+                "cancel_reason": stage.cancel_reason
             })
         return result
     except Exception as e:
@@ -694,7 +696,7 @@ def get_blood_tests_by_type(clinic_id: str, t_type: str, db: Session = Depends(g
     tests = db.query(models.BloodTest).filter(models.BloodTest.clinic_id == clinic_id, models.BloodTest.test_type == t_type).all()
     res = []
     for t in tests:
-        test_dict = {"id": t.id, "name": t.name, "price": float(t.price), "target_gender": t.target_gender}
+        test_dict = {"id": t.id, "name": t.name, "price": float(t.price), "target_gender": t.target_gender, "test_type": t.test_type}
         if t_type == "package":
             components = db.query(models.BloodTestComponent).filter(models.BloodTestComponent.package_id == t.id).all()
             included_names = []
@@ -1015,6 +1017,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         appt.total_stages = total_stages
         
         start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
+        status_val = booking.status
         
         if mapped_appt_type == 'multi-stage' and v_model:
             db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
@@ -1037,8 +1040,10 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                         current_calc_time = calculate_future_date(current_calc_time, interval)
                     
                 if current_calc_time:
-                    status_val = booking.status if i == start_dose_num else "scheduled"
-                    stage = models.ApptStage(appointment_id=appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=status_val)
+                    final_status = status_val if i == start_dose_num else "scheduled"
+                    stage = models.ApptStage(appointment_id=appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    if final_status == 'canceled':
+                        stage.cancel_reason = booking.cancel_reason
                     db.add(stage)
                     db.flush()
                     prev_stage_id = stage.id
@@ -1055,8 +1060,10 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                         current_calc_time = calculate_future_date(current_calc_time, interval)
                     
                 if current_calc_time:
-                    status_val = booking.status if start_dose_num == v_model.total_doses + 1 else "scheduled"
-                    stage = models.ApptStage(appointment_id=appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=status_val)
+                    final_status = status_val if start_dose_num == v_model.total_doses + 1 else "scheduled"
+                    stage = models.ApptStage(appointment_id=appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    if final_status == 'canceled':
+                        stage.cancel_reason = booking.cancel_reason
                     db.add(stage)
                     db.flush()
         else:
@@ -1067,7 +1074,9 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                     bt = db.query(models.BloodTest).filter_by(name=t_name).first()
                     if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
                     
-            new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time, status=booking.status)
+            new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time, status=status_val)
+            if status_val == 'canceled':
+                new_stage.cancel_reason = booking.cancel_reason
             db.add(new_stage)
             
         db.commit()

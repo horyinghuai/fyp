@@ -111,6 +111,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 )}
               </div>
               
+              {showNotifications && (
+                  <div className="absolute top-10 right-40 w-64 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden z-50">
+                     <div className="p-3">
+                       <h4 className="font-bold text-sm text-slate-800 mb-2 border-b pb-2">Notifications</h4>
+                       {pendingChatCount > 0 ? (
+                           <div onClick={() => { setShowNotifications(false); router.push('/bot-settings'); }} className="p-3 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 transition cursor-pointer shadow-sm border border-blue-100">
+                               You have <span className="font-black">{pendingChatCount}</span> unread message(s) from patients waiting in Bot Replies.
+                           </div>
+                       ) : (
+                           <p className="text-sm text-slate-500 text-center py-2">No new notifications.</p>
+                       )}
+                     </div>
+                  </div>
+              )}
+
               <div className="relative">
                 <div className="flex items-center gap-2 cursor-pointer" onClick={() => setShowUserMenu(!showUserMenu)}>
                   <UserCircle size={30} className="text-slate-400 hover:text-blue-600 transition" />
