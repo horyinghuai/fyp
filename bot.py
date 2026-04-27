@@ -1277,6 +1277,22 @@ async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"Thank you for using {clinic_name}. Have a great day!")
         return ConversationHandler.END
 
+async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = clean_bot_username(update.message.text)
+    if not text: return
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(f"{API_BASE}/ask-admin", json={
+                "clinic_id": CLINIC_ID, 
+                "telegram_id": update.effective_user.id, 
+                "message": text
+            }, timeout=5.0)
+            await update.message.reply_text("✅ Your message has been sent to the clinic admin. They will reply shortly.")
+        except Exception as e:
+            logger.error(f"Error sending general message: {e}")
+            await update.message.reply_text("⚠️ Could not send message to admin at this time.")
+
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pass
 
@@ -1392,6 +1408,8 @@ if __name__ == '__main__':
     
     app.add_handler(conv)
     app.add_handler(InlineQueryHandler(inline_query_handler))
+    # Catch any general replies when a user is not actively answering prompts
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_text))
     
     logger.info("Bot is starting...")
     app.run_polling()

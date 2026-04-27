@@ -585,10 +585,31 @@ async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
             f"Clinic Admin: {req.reply_text}\n\n"
             f"Reply via SMS or use our Telegram Bot for a better experience: https://t.me/{bot_username}"
         )
-        print("========== SMS DELIVERY ==========")
-        print(f"TO: {target_phone}")
-        print(f"MESSAGE:\n{sms_content}")
-        print("==================================")
+        mocean_api_key = os.getenv("MOCEAN_API_KEY")
+        mocean_api_secret = os.getenv("MOCEAN_API_SECRET")
+        
+        if mocean_api_key and mocean_api_secret:
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        "https://rest.moceanapi.com/rest/2/sms",
+                        data={
+                            "mocean-api-key": mocean_api_key,
+                            "mocean-api-secret": mocean_api_secret,
+                            "mocean-to": target_phone,
+                            "mocean-from": "Clinic", 
+                            "mocean-text": sms_content
+                        }
+                    )
+                print(f"Mocean SMS Sent to {target_phone}")
+            except Exception as e:
+                print(f"Failed to send Mocean SMS: {e}")
+        else:
+            print("========== SMS DELIVERY ==========")
+            print(f"TO: {target_phone}")
+            print(f"MESSAGE:\n{sms_content}")
+            print("==================================")
+            print("WARNING: Mocean API keys missing. Fallback to print.")
                 
     return {"status": "success", "channel": channel}
 

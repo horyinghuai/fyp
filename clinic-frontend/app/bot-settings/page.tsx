@@ -152,8 +152,12 @@ export default function BotRepliesPage() {
                          const msgs = groupedChats[phone] || [];
                          const hasUnread = msgs.some(m => m.status === 'unread');
                          const isSelected = selectedUserPhone === phone;
+                         
                          const latestMsg = msgs.length > 0 ? msgs[msgs.length - 1] : {};
                          const isSms = latestMsg.channel === 'sms';
+                         
+                         // Fix applied: Override [Admin Initiated Chat] so it displays the actual text, properly fallback to reply or message 
+                         const displayPreview = latestMsg.reply || latestMsg.message || "No text";
                          
                          return (
                              <button key={phone} onClick={() => setSelectedUserPhone(phone)} className={`w-full text-left p-4 border-b transition-colors flex items-start gap-3 ${isSelected ? 'bg-blue-50 border-l-4 border-l-blue-600' : 'hover:bg-slate-50 border-l-4 border-l-transparent'}`}>
@@ -166,7 +170,7 @@ export default function BotRepliesPage() {
                                          {hasUnread && <span className="bg-red-500 w-2 h-2 rounded-full shadow-sm"></span>}
                                      </div>
                                      <span className="text-xs text-slate-500 truncate block">
-                                         {latestMsg.message || latestMsg.reply || "No text"}
+                                         {displayPreview}
                                      </span>
                                  </div>
                              </button>
