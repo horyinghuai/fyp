@@ -12,7 +12,9 @@ export default function DoctorsPage() {
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   
   const [editingDoctor, setEditingDoctor] = useState<any>(null);
-  const [formData, setFormData] = useState({ ic: '', name: '', gender: 'MALE', specialization: '' });
+  
+  // Added isMalaysian flag for UI validation
+  const [formData, setFormData] = useState({ ic: '', name: '', gender: 'MALE', specialization: '', isMalaysian: true });
   
   const [schedules, setSchedules] = useState<any[]>([]);
   const [newSchedule, setNewSchedule] = useState({ day_of_week: 'mon', start_time: '09:00', end_time: '17:00' });
@@ -26,11 +28,12 @@ export default function DoctorsPage() {
       .catch(() => setIsLoading(false));
   };
 
-  // Helper to format IC to XXXXXX-XX-XXXX
-  const formatIC = (ic: string) => {
+  // Helper for displaying IC consistently on the card
+  const formatICForDisplay = (ic: string) => {
     if (!ic) return '';
     const digitsOnly = ic.replace(/\D/g, '');
-    if (digitsOnly.length === 12) {
+    // If it looks like a Malaysian IC, format it. Otherwise, return the uppercase passport format.
+    if (digitsOnly.length === 12 && (ic.includes('-') || ic.length === 12)) {
       return `${digitsOnly.substring(0, 6)}-${digitsOnly.substring(6, 8)}-${digitsOnly.substring(8)}`;
     }
     return ic.toUpperCase();
@@ -38,8 +41,20 @@ export default function DoctorsPage() {
 
   const handleSaveDoctor = async () => {
     if (!formData.ic || !formData.name) {
-      alert("IC and Name are required.");
+      alert("ID and Name are required.");
       return;
+    }
+
+    let finalIC = formData.ic.toUpperCase();
+
+    // Malaysian IC Validation & Formatting
+    if (formData.isMalaysian) {
+      const digitsOnly = formData.ic.replace(/\D/g, '');
+      if (digitsOnly.length !== 12) {
+        alert("Invalid IC number format for Malaysian doctor. It must contain exactly 12 digits.");
+        return;
+      }
+      finalIC = `${digitsOnly.substring(0, 6)}-${digitsOnly.substring(6, 8)}-${digitsOnly.substring(8)}`;
     }
 
     // Process the name to be uppercase and ensure "DR." prefix
@@ -50,7 +65,6 @@ export default function DoctorsPage() {
       processedName = "DR. " + processedName;
     }
 
-    const formattedIC = formatIC(formData.ic);
     const isEditing = !!editingDoctor;
 
     // Confirmation before saving
@@ -60,14 +74,21 @@ export default function DoctorsPage() {
 
     const url = isEditing ? `http://127.0.0.1:8000/admin/doctors/${editingDoctor.ic_passport_number}` : `http://127.0.0.1:8000/admin/doctors`;
     
+    // Send exact expected payload to avoid FastAPI validation errors
     await fetch(url, {
       method: isEditing ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData, name: processedName, ic: formattedIC })
+      body: JSON.stringify({ 
+        clinic_id: CLINIC_ID, 
+        ic: finalIC,
+        name: processedName,
+        gender: formData.gender,
+        specialization: formData.specialization
+      })
     });
 
     if (!isEditing) {
-      await fetch(`http://127.0.0.1:8000/admin/doctors/${formattedIC}/availability`, {
+      await fetch(`http://127.0.0.1:8000/admin/doctors/${finalIC}/availability`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clinic_id: CLINIC_ID, day_of_week: 'mon', start_time: '09:00', end_time: '17:00' })
@@ -96,9 +117,19 @@ export default function DoctorsPage() {
   const openModal = (doc: any = null) => {
     setEditingDoctor(doc);
     if(doc) {
-      setFormData({ ic: doc.ic_passport_number, name: doc.name, gender: doc.gender || 'MALE', specialization: doc.specialization || '' });
+      // Intelligently figure out if existing ID is Malaysian
+      const digitsOnly = doc.ic_passport_number.replace(/\D/g, '');
+      const isMy = digitsOnly.length === 12 && (doc.ic_passport_number.includes('-') || doc.ic_passport_number.length === 12);
+      
+      setFormData({ 
+        ic: doc.ic_passport_number, 
+        name: doc.name, 
+        gender: doc.gender || 'MALE', 
+        specialization: doc.specialization || '',
+        isMalaysian: isMy
+      });
     } else {
-      setFormData({ ic: '', name: '', gender: 'MALE', specialization: '' });
+      setFormData({ ic: '', name: '', gender: 'MALE', specialization: '', isMalaysian: true });
     }
     setShowModal(true);
   };
@@ -136,7 +167,7 @@ export default function DoctorsPage() {
   return (
     <div className="max-w-6xl mx-auto">
       <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-slate-800">🩺 Medical Staff</h1>
+        <h1 className="text-3xl font-bold text-slate-800">🩺 Doctors</h1>
         <button onClick={() => openModal()} className="px-5 py-2 bg-blue-600 text-white rounded-xl font-bold shadow-md hover:bg-blue-700 transition">
           + Add Doctor
         </button>
@@ -156,7 +187,7 @@ export default function DoctorsPage() {
                 </button>
               </div>
               <p className="text-sm text-slate-500 mb-1"><strong>Specialization:</strong> {doc.specialization || 'General Practitioner'}</p>
-              <p className="text-xs text-slate-400 font-mono">{formatIC(doc.ic_passport_number)}</p>
+              <p className="text-xs text-slate-400 font-mono">{formatICForDisplay(doc.ic_passport_number)}</p>
             </div>
             <div className="mt-6 flex gap-2">
               <button onClick={() => openModal(doc)} className="flex-1 py-2 bg-slate-100 text-slate-700 text-sm font-bold rounded-lg hover:bg-slate-200 transition">Edit Info</button>
@@ -171,18 +202,46 @@ export default function DoctorsPage() {
           <div className="bg-white p-6 rounded-2xl w-[400px] shadow-2xl">
             <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingDoctor ? 'Edit Doctor' : 'New Doctor'}</h3>
             <div className="space-y-4">
+              
+              {/* Nationality Selector */}
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">IC / Passport</label>
-                <input type="text" value={formData.ic} onChange={e => setFormData({...formData, ic: e.target.value})} disabled={!!editingDoctor} className="w-full p-3 border rounded-lg outline-none bg-slate-50" />
+                <label className="block text-sm font-bold text-slate-700 mb-1">Nationality</label>
+                <select 
+                  value={formData.isMalaysian ? "my" : "non_my"} 
+                  onChange={e => setFormData({...formData, isMalaysian: e.target.value === "my", ic: ''})} 
+                  disabled={!!editingDoctor} 
+                  className="w-full p-3 border rounded-lg outline-none bg-slate-50"
+                >
+                  <option value="my">Malaysian</option>
+                  <option value="non_my">Non-Malaysian</option>
+                </select>
               </div>
+
+              {/* Dynamic IC / Passport Input */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">
+                  {formData.isMalaysian ? "IC Number" : "Passport Number"}
+                </label>
+                <input 
+                  type="text" 
+                  value={formData.ic} 
+                  onChange={e => setFormData({...formData, ic: e.target.value})} 
+                  disabled={!!editingDoctor} 
+                  placeholder={formData.isMalaysian ? "e.g. 900101-14-5555" : "e.g. A1234567"}
+                  className="w-full p-3 border rounded-lg outline-none bg-slate-50" 
+                />
+              </div>
+
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Full Name</label>
                 <input type="text" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-3 border rounded-lg outline-none bg-slate-50" />
               </div>
+              
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Specialization</label>
                 <input type="text" value={formData.specialization} onChange={e => setFormData({...formData, specialization: e.target.value})} placeholder="e.g. Cardiologist" className="w-full p-3 border rounded-lg outline-none bg-slate-50" />
               </div>
+              
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">Gender</label>
                 <select value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})} className="w-full p-3 border rounded-lg outline-none bg-white">

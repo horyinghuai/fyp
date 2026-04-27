@@ -1109,10 +1109,12 @@ def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
 def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
     existing = db.query(models.Doctor).filter_by(ic_passport_number=data.ic).first()
     if not existing:
-        new_doc = models.Doctor(ic_passport_number=data.ic, name=data.name.title(), gender=data.gender, specialization=data.specialization)
+        # Changed data.name.title() to data.name.upper()
+        new_doc = models.Doctor(ic_passport_number=data.ic, name=data.name.upper(), gender=data.gender, specialization=data.specialization)
         db.add(new_doc)
     else:
-        existing.name = data.name.title()
+        # Changed data.name.title() to data.name.upper()
+        existing.name = data.name.upper()
         existing.gender = data.gender
         existing.specialization = data.specialization
     db.commit()
@@ -1122,7 +1124,13 @@ def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
 def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db)):
     doc = db.query(models.Doctor).filter_by(ic_passport_number=ic).first()
     if doc:
-        doc.name = data.name.title()
+        # Changed data.name.title() to data.name.upper()
+        doc.name = data.name.upper()
+        
+        # Added this block to allow saving the newly modified IC number
+        if data.ic and data.ic != ic:
+            doc.ic_passport_number = data.ic
+            
         doc.gender = data.gender
         doc.specialization = data.specialization
         db.commit()
