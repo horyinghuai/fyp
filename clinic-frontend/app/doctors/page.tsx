@@ -12,6 +12,7 @@ export default function DoctorsPage() {
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   
   const [editingDoctor, setEditingDoctor] = useState<any>(null);
+  // Matches Data Dictionary: ic_passport_number, name, gender, specialization
   const [formData, setFormData] = useState({ ic: '', name: '', gender: 'MALE', specialization: '' });
   
   const [schedules, setSchedules] = useState<any[]>([]);
@@ -27,6 +28,11 @@ export default function DoctorsPage() {
   };
 
   const handleSaveDoctor = async () => {
+    if (!formData.ic || !formData.name) {
+      alert("IC and Name are required.");
+      return;
+    }
+
     const isEditing = !!editingDoctor;
     const url = isEditing ? `http://127.0.0.1:8000/admin/doctors/${editingDoctor.ic_passport_number}` : `http://127.0.0.1:8000/admin/doctors`;
     
@@ -35,8 +41,33 @@ export default function DoctorsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clinic_id: CLINIC_ID, ...formData })
     });
+
+    if (!isEditing) {
+      // CRITICAL FIX: The backend uses an INNER JOIN on availability to list clinic doctors.
+      // We must automatically insert an initial schedule to link the new doctor to this clinic.
+      await fetch(`http://127.0.0.1:8000/admin/doctors/${formData.ic}/availability`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clinic_id: CLINIC_ID, day_of_week: 'mon', start_time: '09:00', end_time: '17:00' })
+      });
+    }
     
     setShowModal(false);
+    loadDoctors();
+  };
+
+  // NEW: Delete functional logic added (removes availability to unlink from clinic view)
+  const handleRemoveDoctor = async (doc: any) => {
+    if (!window.confirm(`Are you sure you want to remove ${doc.name} from this clinic?`)) return;
+    
+    const res = await fetch(`http://127.0.0.1:8000/admin/doctors/${doc.ic_passport_number}/availability/${CLINIC_ID}`);
+    const docSchedules = await res.json();
+    
+    for (const s of docSchedules) {
+      await fetch(`http://127.0.0.1:8000/admin/doctors/${doc.ic_passport_number}/availability/${CLINIC_ID}/${s.day_of_week}/${s.start_time}`, { 
+        method: 'DELETE' 
+      });
+    }
     loadDoctors();
   };
 
@@ -88,8 +119,14 @@ export default function DoctorsPage() {
           <div key={doc.ic_passport_number} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
             <div>
               <div className="flex justify-between items-start mb-4">
-                <h3 className="text-lg font-bold text-slate-800">{doc.name}</h3>
-                <span className="text-[10px] font-bold bg-slate-100 px-2 py-1 rounded text-slate-600">{doc.gender}</span>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">{doc.name}</h3>
+                  <span className="text-[10px] font-bold bg-slate-100 px-2 py-1 rounded text-slate-600 mt-1 inline-block">{doc.gender}</span>
+                </div>
+                {/* Delete button added */}
+                <button onClick={() => handleRemoveDoctor(doc)} className="text-red-400 hover:text-red-600 transition" title="Remove from Clinic">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                </button>
               </div>
               <p className="text-sm text-slate-500 mb-1"><strong>Specialization:</strong> {doc.specialization || 'General Practitioner'}</p>
               <p className="text-xs text-slate-400 font-mono">{doc.ic_passport_number}</p>
@@ -167,7 +204,8 @@ export default function DoctorsPage() {
             </div>
 
             <div className="mt-6 flex justify-end">
-              <button onClick={() => setShowScheduleModal(false)} className="px-6 py-2 bg-slate-800 text-white rounded-lg font-bold">Done</button>
+              {/* Ensure loadDoctors() is called on exit in case schedules were fully wiped out */}
+              <button onClick={() => { setShowScheduleModal(false); loadDoctors(); }} className="px-6 py-2 bg-slate-800 text-white rounded-lg font-bold">Done</button>
             </div>
           </div>
         </div>
