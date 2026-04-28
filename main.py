@@ -18,6 +18,10 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
+class LoginReq(BaseModel):
+    email: str
+    password: str
+
 class UserUpdate(BaseModel):
     email: Optional[str] = None
     role: Optional[str] = None
@@ -163,6 +167,18 @@ def normalize_vaccine_type(db: Session, given_type: str):
             if t_lower in given_lower or given_lower in t_lower:
                 return t.title()
     return given_type.title()
+
+@app.post("/admin/login")
+def admin_login(data: LoginReq, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == data.email).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    # Direct matching since Supabase is removed
+    if user.password_hash != data.password:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    return {"status": "success", "clinic_id": str(user.clinic_id), "role": user.role}
 
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
@@ -1118,11 +1134,9 @@ def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
 def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
     existing = db.query(models.Doctor).filter_by(ic_passport_number=data.ic).first()
     if not existing:
-        # Changed data.name.title() to data.name.upper()
         new_doc = models.Doctor(ic_passport_number=data.ic, name=data.name.upper(), gender=data.gender, specialization=data.specialization)
         db.add(new_doc)
     else:
-        # Changed data.name.title() to data.name.upper()
         existing.name = data.name.upper()
         existing.gender = data.gender
         existing.specialization = data.specialization
@@ -1133,10 +1147,8 @@ def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
 def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db)):
     doc = db.query(models.Doctor).filter_by(ic_passport_number=ic).first()
     if doc:
-        # Changed data.name.title() to data.name.upper()
         doc.name = data.name.upper()
         
-        # Added this block to allow saving the newly modified IC number
         if data.ic and data.ic != ic:
             doc.ic_passport_number = data.ic
             

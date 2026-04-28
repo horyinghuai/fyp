@@ -20,6 +20,7 @@ class User(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     auth_user_id = Column(UUID(as_uuid=True), unique=True, nullable=True) 
+    password_hash = Column(String(255), nullable=True) # Added for local PostgreSQL Auth
     role = Column(String(50), default='admin')
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 

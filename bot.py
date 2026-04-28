@@ -152,7 +152,7 @@ def extract_ic_info(image_path: str):
     name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
 
     address_lines = []
-    # Enhanced OCR address extraction to scan until postcode is found
+    # Enhanced OCR address extraction to scan accurately until postcode is found
     for i in range(address_start_idx, min(address_start_idx + 6, len(cleaned_results))):
         text = cleaned_results[i][1]
         if any(sw in text for sw in stop_words): continue
@@ -168,8 +168,7 @@ def clean_bot_username(text: str) -> str:
     return cleaned.strip().upper()
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    id_label = "IC/Passport Number"
-    msg = f"Please enter your {id_label} to find your appointments:"
+    msg = "Please enter your IC or Passport Number to find your appointments:"
     if update.message: await update.message.reply_text(msg)
     else: await update.callback_query.message.reply_text(msg)
     return CANCEL_SELECT
@@ -443,21 +442,22 @@ async def man_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['name'] = clean_bot_username(update.message.text).upper()
     if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
     
-    if context.user_data.get('is_malaysian'):
-        await update.message.reply_text(f"Please enter your phone number:")
-        return MAN_PHONE
-    else:
-        btns = [[InlineKeyboardButton("Male", callback_data="gend_MALE"), InlineKeyboardButton("Female", callback_data="gend_FEMALE")]]
-        await update.message.reply_text("Please select or enter your Gender:", reply_markup=InlineKeyboardMarkup(btns))
-        return MAN_GENDER
+    btns = [[InlineKeyboardButton("Male", callback_data="gend_MALE"), InlineKeyboardButton("Female", callback_data="gend_FEMALE")]]
+    await update.message.reply_text("Please select or enter your Gender:", reply_markup=InlineKeyboardMarkup(btns))
+    return MAN_GENDER
 
 async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
         context.user_data['gender'] = update.callback_query.data.replace("gend_", "")
         if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
-        await update.callback_query.edit_message_text(f"Gender set to: {context.user_data['gender']}\nPlease enter your Country of Nationality:")
-        return MAN_NAT
+        
+        if context.user_data.get('is_malaysian'):
+            await update.callback_query.edit_message_text(f"Gender set to: {context.user_data['gender']}\nPlease enter your phone number:")
+            return MAN_PHONE
+        else:
+            await update.callback_query.edit_message_text(f"Gender set to: {context.user_data['gender']}\nPlease enter your Country of Nationality:")
+            return MAN_NAT
 
     raw_gender = clean_bot_username(update.message.text).upper()
     
@@ -479,8 +479,12 @@ async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
     
-    await update.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality:")
-    return MAN_NAT
+    if context.user_data.get('is_malaysian'):
+        await update.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your phone number:")
+        return MAN_PHONE
+    else:
+        await update.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality:")
+        return MAN_NAT
 
 async def man_gender_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -489,8 +493,13 @@ async def man_gender_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if query.data == "gend_conf_yes":
         context.user_data['gender'] = context.user_data.get('temp_gender')
         if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
-        await query.edit_message_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality:")
-        return MAN_NAT
+        
+        if context.user_data.get('is_malaysian'):
+            await query.edit_message_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your phone number:")
+            return MAN_PHONE
+        else:
+            await query.edit_message_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality:")
+            return MAN_NAT
     else:
         btns = [[InlineKeyboardButton("Male", callback_data="gend_MALE"), InlineKeyboardButton("Female", callback_data="gend_FEMALE")]]
         await query.edit_message_text("Please select or enter your Gender:", reply_markup=InlineKeyboardMarkup(btns))
@@ -709,7 +718,7 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = clean_bot_username(update.message.text)
     if reason:
-        reason = reason[0].upper() + reason[1:].lower()
+        reason = reason[0].upper() + reason[1:]
     context.user_data['general_notes'] = reason
     
     if context.user_data.get('is_editing'):
@@ -801,25 +810,20 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t_type):
     tests = []
+    seen_ids = set()
     async with httpx.AsyncClient() as client:
         # Multi-case fetch to solve DB vs API parsing issues for "PACKAGE" vs "package"
         for t_case in [t_type, t_type.upper(), t_type.title()]:
             try:
                 res = await client.get(f"{API_BASE}/blood-tests/{CLINIC_ID}/{t_case}", timeout=5.0)
                 if res.status_code == 200:
-                    tests.extend(res.json())
+                    for t in res.json():
+                        if t['id'] not in seen_ids:
+                            seen_ids.add(t['id'])
+                            tests.append(t)
             except Exception as e:
                 logger.error(f"Error fetching blood tests: {e}")
                 
-    # Ensure uniqueness based on test ID
-    seen_ids = set()
-    unique_tests = []
-    for t in tests:
-        if t['id'] not in seen_ids:
-            seen_ids.add(t['id'])
-            unique_tests.append(t)
-    tests = unique_tests
-        
     user_gender = context.user_data.get('gender', 'ANY').upper()
     tests = [t for t in tests if not t.get('target_gender') or t.get('target_gender').upper() in ['ANY', user_gender]]
     context.user_data[f'bt_cache_{t_type}'] = tests
@@ -841,9 +845,12 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     for t in tests:
         if t['name'] not in excluded_singles:
             btns.append([InlineKeyboardButton(f"{t['name']} (RM{float(t['price']):.2f})", callback_data=f"selbt_{t['id']}")])
-            if t_type == "package" and t.get('included_tests'):
-                included_str = ", ".join(t['included_tests'])
-                msg_details += f"📦 *{t['name']}*\nIncludes: {included_str}\n\n"
+            if t_type == "package":
+                included_str = ", ".join(t.get('included_tests', []))
+                if included_str:
+                    msg_details += f"📦 *{t['name']}*\nIncludes: {included_str}\n\n"
+                else:
+                    msg_details += f"📦 *{t['name']}*\n\n"
     
     if t_type == 'single' and len(btns) == 0:
         return await show_doctor_preference(update, context)
