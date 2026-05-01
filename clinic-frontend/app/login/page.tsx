@@ -26,6 +26,9 @@ export default function LoginPage() {
       
       if (res.ok) {
         const data = await res.json();
+        // Save JWT Session state
+        localStorage.setItem('aicas_token', data.token);
+        localStorage.setItem('aicas_user', JSON.stringify(data.user));
         router.push('/');
       } else {
         const err = await res.json();

@@ -1,6 +1,6 @@
 import os
 import httpx
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from database import get_db
@@ -11,6 +11,46 @@ from agent import extract_appointment_details, generate_vaccine_schedule_ai
 from datetime import datetime, timedelta
 import random
 import re
+import jwt
+from passlib.context import CryptContext
+
+# --- JWT Config ---
+SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-aicas-key-change-me")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440 # 24 Hours
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def get_current_user(authorization: str = Header(None), db: Session = Depends(get_db)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    token = authorization.split(" ")[1]
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        ic = payload.get("sub")
+        if ic is None: raise HTTPException(status_code=401, detail="Invalid token payload")
+        user = db.query(models.User).filter(models.User.ic_passport_number == ic).first()
+        if user is None: raise HTTPException(status_code=401, detail="User not found")
+        if user.status != 'active': raise HTTPException(status_code=403, detail="Account is not active")
+        return user
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token expired or invalid")
 
 app = FastAPI(title="Clinic Smart Assistant Backend")
 
@@ -22,9 +62,26 @@ class LoginReq(BaseModel):
     email: str
     password: str
 
-class UserUpdate(BaseModel):
-    email: Optional[str] = None
-    role: Optional[str] = None
+class UserCreateReq(BaseModel):
+    clinic_id: str
+    ic_passport_number: str
+    name: str
+    email: str
+    password: str
+    role: str
+    permissions: str
+    
+class UserUpdateReq(BaseModel):
+    name: str
+    email: str
+    role: str
+    status: str
+    permissions: str
+    password: Optional[str] = None
+    
+class UserSelfUpdateReq(BaseModel):
+    name: str
+    email: str
     password: Optional[str] = None
 
 class DoctorCreateReq(BaseModel):
@@ -173,12 +230,111 @@ def admin_login(data: LoginReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+    if user.status != 'active':
+        raise HTTPException(status_code=403, detail="Account is disabled or suspended")
     
-    # Direct matching since Supabase is removed
-    if user.password_hash != data.password:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    # Safe fallback if passwords were inserted manually without hashing during testing
+    if user.password_hash == data.password or verify_password(data.password, user.password_hash):
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.ic_passport_number, "role": user.role, "clinic_id": str(user.clinic_id)}, 
+            expires_delta=access_token_expires
+        )
+        return {
+            "status": "success", 
+            "token": access_token,
+            "user": {
+                "ic": user.ic_passport_number,
+                "name": user.name,
+                "role": user.role,
+                "permissions": user.permissions
+            }
+        }
+        
+    raise HTTPException(status_code=401, detail="Invalid email or password")
     
-    return {"status": "success", "clinic_id": str(user.clinic_id), "role": user.role}
+@app.get("/admin/users")
+def get_all_users(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role not in ['primary_admin', 'temporary_admin']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    users = db.query(models.User).filter(models.User.clinic_id == current_user.clinic_id).all()
+    return [{
+        "ic": u.ic_passport_number,
+        "name": u.name,
+        "email": u.email,
+        "role": u.role,
+        "status": u.status,
+        "permissions": u.permissions,
+        "created_at": u.created_at
+    } for u in users]
+
+@app.post("/admin/users")
+def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role not in ['primary_admin', 'temporary_admin']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    if data.role == 'primary_admin':
+        raise HTTPException(status_code=403, detail="Cannot create another primary admin")
+        
+    if data.role == 'temporary_admin' and current_user.role == 'temporary_admin':
+        raise HTTPException(status_code=403, detail="Temporary admin cannot create another temporary admin")
+        
+    existing_ic = db.query(models.User).filter(models.User.ic_passport_number == data.ic_passport_number).first()
+    if existing_ic: raise HTTPException(status_code=400, detail="User with this IC already exists")
+    
+    existing_email = db.query(models.User).filter(models.User.email == data.email).first()
+    if existing_email: raise HTTPException(status_code=400, detail="Email already registered")
+
+    new_user = models.User(
+        ic_passport_number=data.ic_passport_number,
+        clinic_id=data.clinic_id,
+        name=data.name.upper(),
+        email=data.email,
+        password_hash=get_password_hash(data.password),
+        role=data.role,
+        assigned_by=current_user.ic_passport_number,
+        permissions=data.permissions if data.role == 'staff' else 'ALL'
+    )
+    db.add(new_user)
+    db.commit()
+    return {"status": "success"}
+
+@app.put("/admin/users/{ic}")
+def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role not in ['primary_admin', 'temporary_admin']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    user = db.query(models.User).filter(models.User.ic_passport_number == ic).first()
+    if not user: raise HTTPException(status_code=404, detail="User not found")
+    
+    if user.role == 'primary_admin' and current_user.role != 'primary_admin':
+        raise HTTPException(status_code=403, detail="Cannot modify primary admin")
+        
+    user.name = data.name.upper()
+    user.email = data.email
+    user.status = data.status
+    
+    if user.role != 'primary_admin':
+        user.role = data.role
+        user.permissions = data.permissions if data.role == 'staff' else 'ALL'
+        
+    if data.password:
+        user.password_hash = get_password_hash(data.password)
+        
+    db.commit()
+    return {"status": "success"}
+    
+@app.put("/admin/profile")
+def update_self_profile(data: UserSelfUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    user = db.query(models.User).filter(models.User.ic_passport_number == current_user.ic_passport_number).first()
+    user.name = data.name.upper()
+    user.email = data.email
+    if data.password:
+        user.password_hash = get_password_hash(data.password)
+    db.commit()
+    return {"status": "success", "name": user.name}
 
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
@@ -1107,22 +1263,6 @@ def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_d
     db.commit()
     return {"status": "success"}
 
-@app.get("/admin/users/{ic}")
-def get_user_details(ic: str, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter_by(ic_passport_number=ic).first()
-    if not user: raise HTTPException(status_code=404)
-    return {"email": user.email, "role": user.role}
-
-@app.put("/admin/users/{ic}")
-def update_user_details(ic: str, data: UserUpdate, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter_by(ic_passport_number=ic).first()
-    if not user: raise HTTPException(status_code=404)
-    if data.email: user.email = data.email
-    if data.role: user.role = data.role
-    if data.password: user.password_hash = data.password
-    db.commit()
-    return {"status": "success"}
-
 @app.get("/admin/doctors-all/{clinic_id}")
 def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
     doctors = db.query(models.Doctor).join(
@@ -1148,10 +1288,8 @@ def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db))
     doc = db.query(models.Doctor).filter_by(ic_passport_number=ic).first()
     if doc:
         doc.name = data.name.upper()
-        
         if data.ic and data.ic != ic:
             doc.ic_passport_number = data.ic
-            
         doc.gender = data.gender
         doc.specialization = data.specialization
         db.commit()

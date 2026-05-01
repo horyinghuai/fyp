@@ -3,7 +3,7 @@
 import './globals.css';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope } from 'lucide-react';
+import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope, ShieldCheck } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
@@ -15,11 +15,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [clinicName, setClinicName] = useState("Loading...");
   const [pendingChatCount, setPendingChatCount] = useState(0);
+  const [userSession, setUserSession] = useState<any>(null);
+  const [isSessionLoaded, setIsSessionLoaded] = useState(false);
 
   useEffect(() => {
     if (pathname !== '/login') {
+      const storedToken = localStorage.getItem('aicas_token');
+      const storedUser = localStorage.getItem('aicas_user');
       
-      // 1. Safe async fetch for clinic details
+      if (!storedToken || !storedUser) {
+          router.push('/login');
+          return;
+      }
+      
+      setUserSession(JSON.parse(storedUser));
+      setIsSessionLoaded(true);
+      
       const initializeData = async () => {
         try {
           const res = await fetch(`http://127.0.0.1:8000/clinic/${CLINIC_ID}`);
@@ -30,12 +41,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             setClinicName("Smart Admin Portal");
           }
         } catch (error) {
-          // Backend is offline - gracefully default without crashing
           setClinicName("Smart Admin Portal");
         }
       };
 
-      // 2. Safe async fetch for pending chats
       const fetchPendingChats = async () => {
         try {
           const res = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${CLINIC_ID}`);
@@ -46,8 +55,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             }
           }
         } catch (error) {
-          // Silently handle "Failed to fetch" to prevent Next.js Turbopack from crashing the screen
-          // Do nothing if backend is unreachable
         }
       };
 
@@ -56,25 +63,43 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       
       const interval = setInterval(fetchPendingChats, 10000); 
       return () => clearInterval(interval);
+    } else {
+        setIsSessionLoaded(true);
     }
-  }, [pathname]);
+  }, [pathname, router]);
 
-  if (pathname === '/login') {
-    return <html lang="en"><body>{children}</body></html>;
-  }
+  if (!isSessionLoaded) return <html lang="en"><body></body></html>;
+  if (pathname === '/login') return <html lang="en"><body>{children}</body></html>;
+
+  const hasPermission = (moduleName: string) => {
+      if (!userSession) return false;
+      if (userSession.role === 'primary_admin' || userSession.role === 'temporary_admin') return true;
+      if (!userSession.permissions) return false;
+      if (userSession.permissions.includes('ALL')) return true;
+      return userSession.permissions.includes(moduleName);
+  };
 
   const navItems = [
-    { name: 'Timetable', path: '/', icon: <Calendar size={20} /> },
-    { name: 'Vaccines', path: '/vaccines', icon: <Syringe size={20} /> },
-    { name: 'Blood Tests', path: '/blood_test', icon: <Droplet size={20} /> },
-    { name: 'Patients', path: '/patients', icon: <Users size={20} /> },
-    { name: 'Doctors', path: '/doctors', icon: <Stethoscope size={20} /> },
-    { name: 'Bot Replies', path: '/bot-settings', icon: <MessageSquare size={20} /> },
+    { name: 'Timetable', path: '/', icon: <Calendar size={20} />, module: 'APPOINTMENT_MANAGEMENT' },
+    { name: 'Vaccines', path: '/vaccines', icon: <Syringe size={20} />, module: 'INVENTORY_MANAGEMENT' },
+    { name: 'Blood Tests', path: '/blood_test', icon: <Droplet size={20} />, module: 'INVENTORY_MANAGEMENT' },
+    { name: 'Patients', path: '/patients', icon: <Users size={20} />, module: 'PATIENT_REGISTRATION' },
+    { name: 'Doctors', path: '/doctors', icon: <Stethoscope size={20} />, module: 'DOCTOR_MANAGEMENT' },
+    { name: 'Bot Replies', path: '/bot-settings', icon: <MessageSquare size={20} />, module: 'CHAT_SUPPORT' },
   ];
 
+  // Admins only
+  if (userSession?.role === 'primary_admin' || userSession?.role === 'temporary_admin') {
+      navItems.push({ name: 'Staff & Permissions', path: '/staff', icon: <ShieldCheck size={20} />, module: 'ALL' });
+  }
+
   const handleLogout = () => {
+    localStorage.removeItem('aicas_token');
+    localStorage.removeItem('aicas_user');
     router.push('/login');
   };
+
+  const displayRole = userSession?.role?.replace('_', ' ').replace(/\b\w/g, (l:string) => l.toUpperCase());
 
   return (
     <html lang="en">
@@ -85,7 +110,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <p className="text-xs text-slate-400 mt-1 font-medium tracking-wider uppercase truncate" title={clinicName}>{clinicName}</p>
           </div>
           <nav className="flex-1 p-4 space-y-2">
-            {navItems.map((item) => {
+            {navItems.filter(item => hasPermission(item.module)).map((item) => {
               const isActive = pathname === item.path;
               return (
                 <Link key={item.path} href={item.path} prefetch={false} className={`relative flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${isActive ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
@@ -104,12 +129,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="flex-1 flex flex-col h-screen overflow-hidden">
           <header className="h-16 bg-white shadow-sm flex items-center justify-end px-8 z-10">
             <div className="flex items-center gap-6 relative">
-              <div className="relative cursor-pointer" onClick={() => setShowNotifications(!showNotifications)}>
-                <Bell size={22} className="text-slate-600 hover:text-blue-600 transition" />
-                {pendingChatCount > 0 && (
-                     <span className="absolute -top-1 -right-1 bg-red-500 w-2.5 h-2.5 rounded-full shadow-sm ring-2 ring-white"></span>
-                )}
-              </div>
+              
+              {hasPermission('CHAT_SUPPORT') && (
+                  <div className="relative cursor-pointer" onClick={() => setShowNotifications(!showNotifications)}>
+                    <Bell size={22} className="text-slate-600 hover:text-blue-600 transition" />
+                    {pendingChatCount > 0 && (
+                         <span className="absolute -top-1 -right-1 bg-red-500 w-2.5 h-2.5 rounded-full shadow-sm ring-2 ring-white"></span>
+                    )}
+                  </div>
+              )}
               
               {showNotifications && (
                   <div className="absolute top-10 right-40 w-64 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden z-50">
@@ -127,16 +155,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               )}
 
               <div className="relative">
-                <div className="flex items-center gap-2 cursor-pointer" onClick={() => setShowUserMenu(!showUserMenu)}>
-                  <UserCircle size={30} className="text-slate-400 hover:text-blue-600 transition" />
-                  <span className="font-medium text-sm text-slate-700">Admin</span>
+                <div className="flex items-center gap-3 cursor-pointer" onClick={() => setShowUserMenu(!showUserMenu)}>
+                  <div className="text-right">
+                      <p className="font-bold text-sm text-slate-800 leading-tight">{userSession?.name}</p>
+                      <p className="text-xs text-blue-600 font-medium">{displayRole}</p>
+                  </div>
+                  <UserCircle size={32} className="text-slate-300 hover:text-blue-600 transition" />
                 </div>
 
                 {showUserMenu && (
-                  <div className="absolute top-10 right-0 w-48 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden z-50">
+                  <div className="absolute top-12 right-0 w-48 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden z-50">
                     <div className="p-2">
                       <button onClick={() => { setShowUserMenu(false); router.push('/settings'); }} className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 rounded-lg transition text-left">
-                        <Settings size={16} /> Settings
+                        <Settings size={16} /> My Profile
                       </button>
                       <div className="border-t border-slate-100 my-1"></div>
                       <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition text-left">
