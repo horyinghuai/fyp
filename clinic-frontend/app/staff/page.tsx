@@ -13,7 +13,7 @@ export default function StaffPage() {
   
   const [generatedPasswordModal, setGeneratedPasswordModal] = useState<any>(null);
   
-  const [formData, setFormData] = useState({ ic: '', name: '', email: '' });
+  const [formData, setFormData] = useState({ ic: '', name: '', email: '', is_my: true, status: 'active' });
   const [permissions, setPermissions] = useState<string[]>([]);
 
   const PERMISSION_OPTIONS = [
@@ -26,7 +26,6 @@ export default function StaffPage() {
 
   const fetchUsers = async () => {
       const token = localStorage.getItem('aicas_token');
-      
       try {
           const res = await fetch(`http://127.0.0.1:8000/admin/users`, {
               headers: { 'Authorization': `Bearer ${token}` }
@@ -38,17 +37,27 @@ export default function StaffPage() {
 
   useEffect(() => { fetchUsers(); }, []);
 
+  const formatIC = (ic: string) => {
+      if (!ic) return '';
+      const digitsOnly = ic.replace(/\D/g, '');
+      if (digitsOnly.length === 12) return `${digitsOnly.substring(0, 6)}-${digitsOnly.substring(6, 8)}-${digitsOnly.substring(8)}`;
+      return ic.toUpperCase();
+  };
+
+  const validateEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
   const openModal = (user: any = null) => {
       setEditingUser(user);
       if (user) {
-          setFormData({ ic: user.ic || '', name: user.name || '', email: user.email || '' });
+          const isMy = user.ic.replace(/\D/g, '').length === 12;
+          setFormData({ ic: user.ic || '', name: user.name || '', email: user.email || '', is_my: isMy, status: user.status || 'active' });
           if (user.permissions === 'ALL' || user.role.includes('admin')) {
               setPermissions(PERMISSION_OPTIONS.map(p => p.id));
           } else {
               setPermissions(user.permissions ? user.permissions.split(',').map((p:string) => p.trim()) : []);
           }
       } else {
-          setFormData({ ic: '', name: '', email: '' });
+          setFormData({ ic: '', name: '', email: '', is_my: true, status: 'active' });
           setPermissions([]);
       }
       setShowModal(true);
@@ -68,6 +77,14 @@ export default function StaffPage() {
           return alert("Please fill all required fields");
       }
 
+      if (!validateEmail(formData.email)) return alert("Invalid Email format.");
+
+      let finalIC = formData.ic.toUpperCase();
+      if (formData.is_my) {
+          if (finalIC.replace(/\D/g, '').length !== 12) return alert("Malaysian IC must be exactly 12 digits.");
+          finalIC = formatIC(finalIC);
+      }
+
       const token = localStorage.getItem('aicas_token');
       const isEditing = !!editingUser;
       const url = isEditing ? `http://127.0.0.1:8000/admin/users/${editingUser.ic}` : `http://127.0.0.1:8000/admin/users`;
@@ -80,7 +97,9 @@ export default function StaffPage() {
 
       if (!isEditing) {
           payload.clinic_id = CLINIC_ID;
-          payload.ic_passport_number = formData.ic;
+          payload.ic_passport_number = finalIC;
+      } else {
+          payload.status = formData.status;
       }
 
       try {
@@ -122,7 +141,7 @@ export default function StaffPage() {
         <table className="w-full text-left border-collapse">
             <thead>
                 <tr className="bg-slate-50 border-b text-xs uppercase text-slate-500 font-bold">
-                    <th className="p-4">Name & IC</th>
+                    <th className="p-4">Name & ID</th>
                     <th className="p-4">Email</th>
                     <th className="p-4">Role</th>
                     <th className="p-4">Status</th>
@@ -134,7 +153,7 @@ export default function StaffPage() {
                     <tr key={u.ic} className="border-b last:border-0 hover:bg-slate-50">
                         <td className="p-4">
                             <div className="font-bold text-slate-800">{u.name}</div>
-                            <div className="text-xs text-slate-500 font-mono">{u.ic}</div>
+                            <div className="text-xs text-slate-500 font-mono">{formatIC(u.ic)}</div>
                         </td>
                         <td className="p-4 text-sm text-slate-600">{u.email}</td>
                         <td className="p-4">
@@ -183,9 +202,17 @@ export default function StaffPage() {
                 <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingUser ? 'Edit Staff Details' : 'New Staff Account'}</h3>
                 
                 <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                    <div>
-                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">IC / Passport</label>
-                        <input type="text" value={formData.ic} disabled={!!editingUser} onChange={e => setFormData({...formData, ic: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-slate-50 uppercase" />
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Nationality</label>
+                            <select value={formData.is_my ? "my" : "non_my"} onChange={e => setFormData({...formData, is_my: e.target.value === "my", ic: ''})} disabled={!!editingUser} className="w-full p-2 border rounded-lg outline-none bg-slate-50">
+                                <option value="my">Malaysian</option><option value="non_my">Non-Malaysian</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">{formData.is_my ? "IC Number" : "Passport"}</label>
+                            <input type="text" value={formData.ic} disabled={!!editingUser} onChange={e => setFormData({...formData, ic: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-slate-50 uppercase" />
+                        </div>
                     </div>
 
                     <div>
@@ -193,9 +220,20 @@ export default function StaffPage() {
                         <input type="text" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-slate-50 uppercase" />
                     </div>
 
-                    <div>
-                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Email Address</label>
-                        <input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-slate-50" />
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Email Address</label>
+                            <input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-slate-50" />
+                        </div>
+                        {editingUser && (
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Status</label>
+                                <select value={formData.status} onChange={e => setFormData({...formData, status: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-white">
+                                    <option value="active">Active</option>
+                                    <option value="inactive">Inactive / Disabled</option>
+                                </select>
+                            </div>
+                        )}
                     </div>
 
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mt-2">

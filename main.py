@@ -14,20 +14,30 @@ from datetime import datetime, timedelta
 import random
 import re
 import jwt
-from passlib.context import CryptContext
+import bcrypt
+import uuid
 
 # --- JWT Config ---
 SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-aicas-key-change-me")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440 # 24 Hours
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    try:
+        # Check against raw bcrypt. Safe truncation to 72 bytes.
+        truncated_plain = plain_password.encode('utf-8')[:72]
+        hash_bytes = hashed_password.encode('utf-8')
+        return bcrypt.checkpw(truncated_plain, hash_bytes)
+    except Exception as e:
+        print(f"Bcrypt verify error: {e}")
+        return False
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
+def get_password_hash(password: str) -> str:
+    # Hash using raw bcrypt. Safe truncation to 72 bytes.
+    truncated_password = password.encode('utf-8')[:72]
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(truncated_password, salt)
+    return hashed.decode('utf-8')
 
 def generate_temp_password():
     alphabet = string.ascii_letters + string.digits
@@ -82,9 +92,11 @@ class ClinicRegistrationReq(BaseModel):
     admin_ic: str
     admin_name: str
     admin_email: str
+    admin_password: Optional[str] = None
     temp_admin_ic: Optional[str] = None
     temp_admin_name: Optional[str] = None
     temp_admin_email: Optional[str] = None
+    temp_admin_password: Optional[str] = None
 
 class UserCreateReq(BaseModel):
     clinic_id: str
@@ -96,6 +108,7 @@ class UserCreateReq(BaseModel):
 class UserUpdateReq(BaseModel):
     name: str
     email: str
+    status: str
     permissions: str
     
 class UserSelfUpdateReq(BaseModel):
@@ -303,6 +316,35 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
         }
     raise HTTPException(status_code=401, detail="Invalid temporary password")
 
+@app.get("/admin/clinics")
+def get_all_clinics(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != 'developer':
+        raise HTTPException(status_code=403, detail="Not authorized")
+    clinics = db.query(models.Clinic).all()
+    res = []
+    for c in clinics:
+        admins = db.query(models.User).filter(models.User.clinic_id == c.id).all()
+        primary = next((a for a in admins if a.role == 'primary_admin'), None)
+        temp = next((a for a in admins if a.role == 'temporary_admin'), None)
+        res.append({
+            "id": str(c.id),
+            "name": c.name,
+            "registration_number": c.registration_number,
+            "address": c.address,
+            "contact_number": c.contact_number,
+            "admin": {
+                "ic": primary.ic_passport_number if primary else "",
+                "name": primary.name if primary else "",
+                "email": primary.email if primary else ""
+            } if primary else None,
+            "temp_admin": {
+                "ic": temp.ic_passport_number if temp else "",
+                "name": temp.name if temp else "",
+                "email": temp.email if temp else ""
+            } if temp else None
+        })
+    return res
+
 @app.post("/admin/register-clinic")
 def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     if current_user.role != 'developer':
@@ -358,6 +400,68 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db), 
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/admin/clinics/{clinic_id}")
+def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != 'developer':
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    try:
+        clinic = db.query(models.Clinic).filter(models.Clinic.id == clinic_id).first()
+        if not clinic: raise HTTPException(status_code=404, detail="Clinic not found")
+        
+        clinic.name = data.clinic_name
+        clinic.registration_number = data.registration_number
+        clinic.address = data.address
+        clinic.contact_number = data.contact_number
+
+        # Update Primary Admin Details
+        p_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'primary_admin').first()
+        if p_admin:
+            if p_admin.ic_passport_number != data.admin_ic:
+                # To safely update PK if changed
+                db.execute(models.User.__table__.update().where(models.User.ic_passport_number == p_admin.ic_passport_number).values(ic_passport_number=data.admin_ic))
+            p_admin.name = data.admin_name.upper()
+            p_admin.email = data.admin_email
+
+        # Update or Create Temp Admin
+        t_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'temporary_admin').first()
+        if t_admin:
+            if not data.temp_admin_ic:
+                db.delete(t_admin)
+            else:
+                if t_admin.ic_passport_number != data.temp_admin_ic:
+                    db.execute(models.User.__table__.update().where(models.User.ic_passport_number == t_admin.ic_passport_number).values(ic_passport_number=data.temp_admin_ic))
+                t_admin.name = data.temp_admin_name.upper()
+                t_admin.email = data.temp_admin_email
+        elif data.temp_admin_ic and data.temp_admin_email:
+            temp_admin_pwd = generate_temp_password()
+            new_temp = models.User(
+                ic_passport_number=data.temp_admin_ic,
+                clinic_id=clinic_id,
+                name=data.temp_admin_name.upper(),
+                email=data.temp_admin_email,
+                password_hash=get_password_hash(temp_admin_pwd),
+                role='temporary_admin',
+                status='inactive',
+                assigned_by=data.admin_ic,
+                permissions='ALL'
+            )
+            db.add(new_temp)
+
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/admin/clinics/{clinic_id}")
+def delete_clinic(clinic_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != 'developer':
+        raise HTTPException(status_code=403, detail="Not authorized")
+    db.query(models.Clinic).filter(models.Clinic.id == clinic_id).delete()
+    db.commit()
+    return {"status": "success"}
     
 @app.get("/admin/users")
 def get_all_users(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -394,8 +498,8 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
         name=data.name.upper(),
         email=data.email,
         password_hash=get_password_hash(temp_password),
-        role='staff',
-        status='active',
+        role='staff', # Explicitly forced
+        status='active', # Forced default
         assigned_by=current_user.ic_passport_number,
         permissions=data.permissions
     )
@@ -411,14 +515,13 @@ def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), cur
     user = db.query(models.User).filter(models.User.ic_passport_number == ic).first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
     
-    if user.role == 'primary_admin' and current_user.role != 'primary_admin':
-        raise HTTPException(status_code=403, detail="Cannot modify primary admin")
+    if user.role in ['primary_admin', 'temporary_admin']:
+        raise HTTPException(status_code=403, detail="Cannot modify admins from the staff management interface")
         
     user.name = data.name.upper()
     user.email = data.email
-    
-    if user.role != 'primary_admin':
-        user.permissions = data.permissions
+    user.status = data.status
+    user.permissions = data.permissions
         
     db.commit()
     return {"status": "success"}
