@@ -1,5 +1,7 @@
 import os
 import httpx
+import secrets
+import string
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -27,6 +29,11 @@ def verify_password(plain_password, hashed_password):
 
 def get_password_hash(password):
     return pwd_context.hash(password)
+
+def generate_temp_password():
+    alphabet = string.ascii_letters + string.digits
+    pwd = ''.join(secrets.choice(alphabet) for i in range(8))
+    return f"tmp_{pwd}"
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
@@ -63,6 +70,11 @@ class LoginReq(BaseModel):
     email: str
     password: str
 
+class FirstLoginResetReq(BaseModel):
+    email: str
+    temp_password: str
+    new_password: str
+
 class ClinicRegistrationReq(BaseModel):
     clinic_name: str
     registration_number: Optional[str] = None
@@ -82,7 +94,6 @@ class UserCreateReq(BaseModel):
     ic_passport_number: str
     name: str
     email: str
-    password: str
     role: str
     permissions: str
     
@@ -92,7 +103,6 @@ class UserUpdateReq(BaseModel):
     role: str
     status: str
     permissions: str
-    password: Optional[str] = None
     
 class UserSelfUpdateReq(BaseModel):
     name: str
@@ -248,8 +258,10 @@ def admin_login(data: LoginReq, db: Session = Depends(get_db)):
         
     if user.status != 'active':
         raise HTTPException(status_code=403, detail="Account is disabled or suspended")
+        
+    if data.password.startswith("tmp_") and (user.password_hash == data.password or verify_password(data.password, user.password_hash)):
+        return {"status": "requires_reset", "email": data.email}
     
-    # Safe fallback if passwords were inserted manually without hashing during testing
     if user.password_hash == data.password or verify_password(data.password, user.password_hash):
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
@@ -270,10 +282,36 @@ def admin_login(data: LoginReq, db: Session = Depends(get_db)):
         
     raise HTTPException(status_code=401, detail="Invalid email or password")
 
+@app.post("/admin/force-reset")
+def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == data.email).first()
+    if not user: raise HTTPException(status_code=404, detail="User not found")
+    
+    if user.password_hash == data.temp_password or verify_password(data.temp_password, user.password_hash):
+        user.password_hash = get_password_hash(data.new_password)
+        db.commit()
+        
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.ic_passport_number, "role": user.role, "clinic_id": str(user.clinic_id)}, 
+            expires_delta=access_token_expires
+        )
+        return {
+            "status": "success", 
+            "token": access_token,
+            "user": {
+                "ic": user.ic_passport_number,
+                "name": user.name,
+                "role": user.role,
+                "permissions": user.permissions,
+                "clinic_id": str(user.clinic_id)
+            }
+        }
+    raise HTTPException(status_code=401, detail="Invalid temporary password")
+
 @app.post("/admin/register-clinic")
 def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db)):
     try:
-        # Create Clinic
         new_clinic = models.Clinic(
             name=data.clinic_name,
             registration_number=data.registration_number,
@@ -283,7 +321,6 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db)):
         db.add(new_clinic)
         db.flush()
         
-        # Create Primary Admin
         primary_admin = models.User(
             ic_passport_number=data.admin_ic,
             clinic_id=new_clinic.id,
@@ -295,7 +332,6 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db)):
         )
         db.add(primary_admin)
         
-        # Create Temporary Admin if provided
         if data.temp_admin_ic and data.temp_admin_email and data.temp_admin_password:
             temp_admin = models.User(
                 ic_passport_number=data.temp_admin_ic,
@@ -317,7 +353,7 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db)):
     
 @app.get("/admin/users")
 def get_all_users(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role not in ['primary_admin', 'temporary_admin']:
+    if current_user.role not in ['primary_admin', 'temporary_admin', 'developer']:
         raise HTTPException(status_code=403, detail="Not authorized")
     
     users = db.query(models.User).filter(models.User.clinic_id == current_user.clinic_id).all()
@@ -333,7 +369,7 @@ def get_all_users(db: Session = Depends(get_db), current_user: models.User = Dep
 
 @app.post("/admin/users")
 def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role not in ['primary_admin', 'temporary_admin']:
+    if current_user.role not in ['primary_admin', 'temporary_admin', 'developer']:
         raise HTTPException(status_code=403, detail="Not authorized")
         
     if data.role == 'primary_admin':
@@ -348,29 +384,36 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
     existing_email = db.query(models.User).filter(models.User.email == data.email).first()
     if existing_email: raise HTTPException(status_code=400, detail="Email already registered")
 
+    temp_password = generate_temp_password()
+    
+    status_val = 'active'
+    if data.role == 'temporary_admin':
+        status_val = 'inactive'
+        
     new_user = models.User(
         ic_passport_number=data.ic_passport_number,
         clinic_id=data.clinic_id,
         name=data.name.upper(),
         email=data.email,
-        password_hash=get_password_hash(data.password),
+        password_hash=get_password_hash(temp_password),
         role=data.role,
+        status=status_val,
         assigned_by=current_user.ic_passport_number,
         permissions=data.permissions if data.role == 'staff' else 'ALL'
     )
     db.add(new_user)
     db.commit()
-    return {"status": "success"}
+    return {"status": "success", "temp_password": temp_password, "message": "Password generated successfully."}
 
 @app.put("/admin/users/{ic}")
 def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role not in ['primary_admin', 'temporary_admin']:
+    if current_user.role not in ['primary_admin', 'temporary_admin', 'developer']:
         raise HTTPException(status_code=403, detail="Not authorized")
         
     user = db.query(models.User).filter(models.User.ic_passport_number == ic).first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
     
-    if user.role == 'primary_admin' and current_user.role != 'primary_admin':
+    if user.role == 'primary_admin' and current_user.role != 'primary_admin' and current_user.role != 'developer':
         raise HTTPException(status_code=403, detail="Cannot modify primary admin")
         
     user.name = data.name.upper()
@@ -380,9 +423,6 @@ def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), cur
     if user.role != 'primary_admin':
         user.role = data.role
         user.permissions = data.permissions if data.role == 'staff' else 'ALL'
-        
-    if data.password:
-        user.password_hash = get_password_hash(data.password)
         
     db.commit()
     return {"status": "success"}

@@ -16,7 +16,12 @@ export default function SettingsPage() {
       const userStr = localStorage.getItem('aicas_user');
       if (userStr) {
           const user = JSON.parse(userStr);
-          setFormData(f => ({ ...f, name: user.name, email: user.email }));
+          // Fixed Uncontrolled component warning by forcing a string fallback
+          setFormData(f => ({ 
+              ...f, 
+              name: user.name || '', 
+              email: user.email || '' 
+          }));
       }
   }, []);
 
@@ -47,7 +52,6 @@ export default function SettingsPage() {
         
         if (res.ok) {
             const data = await res.json();
-            // Update local storage so Header reflects name changes immediately
             const userStr = localStorage.getItem('aicas_user');
             if(userStr) {
                 const user = JSON.parse(userStr);
@@ -57,7 +61,7 @@ export default function SettingsPage() {
             
             setStatus({ type: 'success', text: 'Profile updated successfully.' });
             setFormData(f => ({ ...f, newPassword: '', confirmPassword: '' }));
-            window.dispatchEvent(new Event('storage')); // trigger header update
+            window.dispatchEvent(new Event('storage'));
         } else {
             const err = await res.json();
             setStatus({ type: 'error', text: err.detail || 'Update failed.' });
