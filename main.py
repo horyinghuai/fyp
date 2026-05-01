@@ -24,7 +24,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 1440 # 24 Hours
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
-        # Check against raw bcrypt. Safe truncation to 72 bytes.
         truncated_plain = plain_password.encode('utf-8')[:72]
         hash_bytes = hashed_password.encode('utf-8')
         return bcrypt.checkpw(truncated_plain, hash_bytes)
@@ -33,7 +32,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 def get_password_hash(password: str) -> str:
-    # Hash using raw bcrypt. Safe truncation to 72 bytes.
     truncated_password = password.encode('utf-8')[:72]
     salt = bcrypt.gensalt(rounds=12)
     hashed = bcrypt.hashpw(truncated_password, salt)
@@ -415,16 +413,13 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
         clinic.address = data.address
         clinic.contact_number = data.contact_number
 
-        # Update Primary Admin Details
         p_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'primary_admin').first()
         if p_admin:
             if p_admin.ic_passport_number != data.admin_ic:
-                # To safely update PK if changed
                 db.execute(models.User.__table__.update().where(models.User.ic_passport_number == p_admin.ic_passport_number).values(ic_passport_number=data.admin_ic))
             p_admin.name = data.admin_name.upper()
             p_admin.email = data.admin_email
 
-        # Update or Create Temp Admin
         t_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'temporary_admin').first()
         if t_admin:
             if not data.temp_admin_ic:
@@ -494,12 +489,12 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
         
     new_user = models.User(
         ic_passport_number=data.ic_passport_number,
-        clinic_id=data.clinic_id,
+        clinic_id=current_user.clinic_id,
         name=data.name.upper(),
         email=data.email,
         password_hash=get_password_hash(temp_password),
-        role='staff', # Explicitly forced
-        status='active', # Forced default
+        role='staff',
+        status='active',
         assigned_by=current_user.ic_passport_number,
         permissions=data.permissions
     )

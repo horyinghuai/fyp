@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
+import { CheckCircle2, XCircle } from 'lucide-react';
 
 export default function SettingsPage() {
   const [formData, setFormData] = useState({
@@ -24,12 +25,23 @@ export default function SettingsPage() {
       }
   }, []);
 
+  const reqs = {
+    length: formData.newPassword.length >= 8,
+    upper: /[A-Z]/.test(formData.newPassword),
+    lower: /[a-z]/.test(formData.newPassword),
+    number: /[0-9]/.test(formData.newPassword),
+    symbol: /[^A-Za-z0-9]/.test(formData.newPassword),
+    match: formData.newPassword !== '' && formData.newPassword === formData.confirmPassword
+  };
+  
+  const isPasswordValid = formData.newPassword === '' || Object.values(reqs).every(Boolean);
+
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatus({ type: '', text: '' });
 
-    if (formData.newPassword && formData.newPassword !== formData.confirmPassword) {
-      return setStatus({ type: 'error', text: 'New passwords do not match.' });
+    if (!isPasswordValid) {
+      return setStatus({ type: 'error', text: 'Password requirements not met.' });
     }
 
     setIsLoading(true);
@@ -72,6 +84,12 @@ export default function SettingsPage() {
     setIsLoading(false);
   };
 
+  const ReqItem = ({ met, text }: { met: boolean, text: string }) => (
+    <div className={`flex items-center gap-2 text-xs font-medium ${met ? 'text-emerald-600' : 'text-slate-400'}`}>
+        {met ? <CheckCircle2 size={14}/> : <XCircle size={14}/>} {text}
+    </div>
+  );
+
   return (
     <div className="max-w-3xl mx-auto">
       <h1 className="text-3xl font-bold text-slate-800 mb-8">My Profile Settings</h1>
@@ -113,7 +131,7 @@ export default function SettingsPage() {
              <h2 className="text-xl font-bold text-slate-800 mb-4">Change Password</h2>
              <p className="text-sm text-slate-500 mb-6">Leave blank if you do not want to change your password.</p>
              
-             <div className="grid grid-cols-2 gap-6">
+             <div className="grid grid-cols-2 gap-6 mb-6">
                 <div>
                   <label className="block text-sm font-bold text-slate-700 mb-2">New Password</label>
                   <input 
@@ -135,10 +153,21 @@ export default function SettingsPage() {
                   />
                 </div>
              </div>
+
+             {formData.newPassword && (
+                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 grid grid-cols-3 gap-3">
+                    <ReqItem met={reqs.length} text="8+ Characters" />
+                    <ReqItem met={reqs.upper} text="Uppercase Letter" />
+                    <ReqItem met={reqs.lower} text="Lowercase Letter" />
+                    <ReqItem met={reqs.number} text="Number" />
+                    <ReqItem met={reqs.symbol} text="Symbol (!@#$%)" />
+                    <ReqItem met={reqs.match} text="Passwords Match" />
+                 </div>
+             )}
           </div>
 
-          <div className="flex justify-end pt-4">
-            <button type="submit" disabled={isLoading} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition disabled:opacity-50">
+          <div className="flex justify-end pt-4 border-t">
+            <button type="submit" disabled={isLoading || !isPasswordValid} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition disabled:opacity-50">
               {isLoading ? "Saving..." : "Save Changes"}
             </button>
           </div>

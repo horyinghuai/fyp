@@ -7,9 +7,10 @@ import 'react-big-calendar/lib/css/react-big-calendar.css';
 import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle, FileText, Search } from 'lucide-react';
 
 const localizer = momentLocalizer(moment);
-const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
 
 export default function AdminDashboard() {
+  const [activeClinicId, setActiveClinicId] = useState<string>("");
+  
   const [events, setEvents] = useState<any[]>([]);
   const [doctors, setDoctors] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -27,7 +28,6 @@ export default function AdminDashboard() {
   const [isCreatingNewPatient, setIsCreatingNewPatient] = useState(false);
   const [newPatientForm, setNewPatientForm] = useState({ name: '', ic_passport_number: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
   
-  // Custom Search State for Patients Selection
   const [patientSearchText, setPatientSearchText] = useState("");
   const [showPatientDropdown, setShowPatientDropdown] = useState(false);
   
@@ -46,18 +46,31 @@ export default function AdminDashboard() {
   const [cancelReason, setCancelReason] = useState("Change of schedule");
   const [customCancelReason, setCustomCancelReason] = useState("");
   
-  // Track Inline Cancel Modification
   const [inlineCancelReason, setInlineCancelReason] = useState("");
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<View>('week'); 
 
   useEffect(() => { 
-    loadAppointments();
-    loadDoctors(); 
-    loadPatients();
-    loadServices();
+      const userStr = localStorage.getItem('aicas_user');
+      if (userStr) {
+          const user = JSON.parse(userStr);
+          if (user.clinic_id) {
+              setActiveClinicId(user.clinic_id);
+              loadData(user.clinic_id);
+          }
+      }
   }, []);
+
+  const loadData = async (cid: string) => {
+      await Promise.all([
+          loadAppointments(cid),
+          loadDoctors(cid),
+          loadPatients(cid),
+          loadServices(cid)
+      ]);
+      setIsLoading(false);
+  };
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -73,56 +86,49 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, [events, pendingReviewEvent]);
 
-  const loadDoctors = async () => {
+  const loadDoctors = async (cid: string) => {
       try {
-          const res = await fetch(`http://127.0.0.1:8000/admin/doctors-all/${CLINIC_ID}`);
+          const res = await fetch(`http://127.0.0.1:8000/admin/doctors-all/${cid}`);
           if (res.ok) {
               const docs = await res.json();
-              // Load availability schedules dynamically for precise slot calculation
               const docsWithSched = await Promise.all(docs.map(async (d: any) => {
-                  const schedRes = await fetch(`http://127.0.0.1:8000/admin/doctors/${d.ic_passport_number}/availability/${CLINIC_ID}`);
+                  const schedRes = await fetch(`http://127.0.0.1:8000/admin/doctors/${d.ic_passport_number}/availability/${cid}`);
                   const schedules = schedRes.ok ? await schedRes.json() : [];
                   return { ...d, schedules };
               }));
               setDoctors(docsWithSched);
           }
-      } catch (err) {
-          console.error("Backend offline (Doctors):", err);
-      }
+      } catch (err) {}
   };
 
-  const loadPatients = async () => {
+  const loadPatients = async (cid: string) => {
       try {
-          const res = await fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`);
+          const res = await fetch(`http://127.0.0.1:8000/admin/patients/${cid}`);
           if (res.ok) setPatients(await res.json());
-      } catch (err) {
-          console.error("Backend offline (Patients):", err);
-      }
+      } catch (err) {}
   };
 
-  const loadServices = async () => {
+  const loadServices = async (cid: string) => {
       try {
-          const vRes = await fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`);
+          const vRes = await fetch(`http://127.0.0.1:8000/vaccines/${cid}`);
           if (vRes.ok) setVaccinesList(await vRes.json());
           
-          const pkgsRes = await fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`);
+          const pkgsRes = await fetch(`http://127.0.0.1:8000/blood-tests/${cid}/package`);
           const pkgs = pkgsRes.ok ? await pkgsRes.json() : [];
           
-          const sglsRes = await fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`);
+          const sglsRes = await fetch(`http://127.0.0.1:8000/blood-tests/${cid}/single`);
           const sgls = sglsRes.ok ? await sglsRes.json() : [];
           
           setBloodTestsList([...pkgs, ...sgls]);
-      } catch (err) {
-          console.error("Backend offline (Services):", err);
-      }
+      } catch (err) {}
   };
 
-  const loadAppointments = () => {
-    fetch(`http://127.0.0.1:8000/admin/appointments/${CLINIC_ID}`)
+  const loadAppointments = (cid: string) => {
+    fetch(`http://127.0.0.1:8000/admin/appointments/${cid}`)
       .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
         if (!Array.isArray(data) || data.length === 0) { 
-            setEvents([]); setIsLoading(false); return; 
+            setEvents([]); return; 
         }
 
         let vacCount = 0, btCount = 0, consultCount = 0;
@@ -152,9 +158,8 @@ export default function AdminDashboard() {
         
         setEvents(formattedEvents);
         setStats({ total: formattedEvents.length, consultations: consultCount, vaccines: vacCount, bloodTests: btCount });
-        setIsLoading(false);
       })
-      .catch(() => { setError(true); setIsLoading(false); });
+      .catch(() => { setError(true); });
   };
 
   const handleReviewAction = async (status: string) => {
@@ -165,7 +170,7 @@ export default function AdminDashboard() {
             body: JSON.stringify({ status })
         });
         setPendingReviewEvent(null);
-        loadAppointments();
+        loadAppointments(activeClinicId);
     } catch (err) {
         alert("Failed to connect to backend");
     }
@@ -275,7 +280,7 @@ export default function AdminDashboard() {
                 const pRes = await fetch(`http://127.0.0.1:8000/register-patient`, {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ 
-                        clinic_id: CLINIC_ID, telegram_id: 0, 
+                        clinic_id: activeClinicId, telegram_id: 0, 
                         ...newPatientForm,
                         name: newPatientForm.name.toUpperCase(),
                         ic_passport_number: newPatientForm.ic_passport_number.toUpperCase()
@@ -289,7 +294,7 @@ export default function AdminDashboard() {
             }
 
             const payload = {
-                clinic_id: CLINIC_ID, telegram_id: 0, ic_passport_number: finalIc,
+                clinic_id: activeClinicId, telegram_id: 0, ic_passport_number: finalIc,
                 service_type: editForm.service,
                 details: {
                     items: editForm.items, dose: editForm.dose, general_notes: editForm.reason, assigned_doctor_id: editForm.doctor_ic

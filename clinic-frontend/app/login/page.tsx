@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { CheckCircle2, XCircle } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,6 +18,17 @@ export default function LoginPage() {
   const [isFirstLogin, setIsFirstLogin] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
+
+  // Password Requirements
+  const reqs = {
+    length: newPassword.length >= 8,
+    upper: /[A-Z]/.test(newPassword),
+    lower: /[a-z]/.test(newPassword),
+    number: /[0-9]/.test(newPassword),
+    symbol: /[^A-Za-z0-9]/.test(newPassword),
+    match: newPassword !== '' && newPassword === confirmNewPassword
+  };
+  const isPasswordValid = Object.values(reqs).every(Boolean);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,9 +64,8 @@ export default function LoginPage() {
 
   const handleFirstLoginReset = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (newPassword !== confirmNewPassword) {
-          return setStatusMsg({ type: 'error', text: 'Passwords do not match.' });
-      }
+      if (!isPasswordValid) return;
+
       setIsLoading(true);
       try {
           const res = await fetch('http://127.0.0.1:8000/admin/force-reset', {
@@ -77,6 +88,12 @@ export default function LoginPage() {
       setIsLoading(false);
   };
 
+  const ReqItem = ({ met, text }: { met: boolean, text: string }) => (
+    <div className={`flex items-center gap-2 text-xs font-medium ${met ? 'text-emerald-600' : 'text-slate-400'}`}>
+        {met ? <CheckCircle2 size={14}/> : <XCircle size={14}/>} {text}
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
       <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl p-8">
@@ -94,10 +111,11 @@ export default function LoginPage() {
         )}
 
         {isFirstLogin ? (
-           <form onSubmit={handleFirstLoginReset} className="space-y-5">
-             <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl mb-4 text-sm text-orange-800 font-medium">
+           <form onSubmit={handleFirstLoginReset} className="space-y-4">
+             <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl text-sm text-orange-800 font-medium">
                  Since this is your first time logging in with a temporary password, you must create a new secure password to continue.
              </div>
+             
              <div>
                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">New Password</label>
                <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="••••••••" />
@@ -106,7 +124,17 @@ export default function LoginPage() {
                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Confirm New Password</label>
                <input type="password" value={confirmNewPassword} onChange={e => setConfirmNewPassword(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="••••••••" />
              </div>
-             <button type="submit" disabled={isLoading} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition duration-200 mt-4 disabled:opacity-50">
+
+             <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 grid grid-cols-2 gap-2">
+                <ReqItem met={reqs.length} text="8+ Characters" />
+                <ReqItem met={reqs.upper} text="Uppercase Letter" />
+                <ReqItem met={reqs.lower} text="Lowercase Letter" />
+                <ReqItem met={reqs.number} text="Number" />
+                <ReqItem met={reqs.symbol} text="Symbol (!@#$%)" />
+                <ReqItem met={reqs.match} text="Passwords Match" />
+             </div>
+
+             <button type="submit" disabled={isLoading || !isPasswordValid} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition duration-200 mt-2 disabled:opacity-50">
                {isLoading ? "Updating..." : "Update Password & Login"}
              </button>
            </form>

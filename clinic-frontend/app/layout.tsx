@@ -6,8 +6,6 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope, ShieldCheck, PlusCircle } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
-const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
-
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -32,11 +30,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       setUserSession(parsedUser);
       setIsSessionLoaded(true);
 
-      // Skip fetching clinic specifics if developer
       if (parsedUser.role !== 'developer') {
+          const activeClinicId = parsedUser.clinic_id;
+          
           const initializeData = async () => {
             try {
-              const res = await fetch(`http://127.0.0.1:8000/clinic/${CLINIC_ID}`);
+              const res = await fetch(`http://127.0.0.1:8000/clinic/${activeClinicId}`);
               if (res.ok) {
                 const data = await res.json();
                 setClinicName(data.name || "Smart Admin Portal");
@@ -50,7 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
           const fetchPendingChats = async () => {
             try {
-              const res = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${CLINIC_ID}`);
+              const res = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${activeClinicId}`);
               if (res.ok) {
                 const data = await res.json();
                 if (data && data.count !== undefined) {
