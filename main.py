@@ -15,7 +15,6 @@ import random
 import re
 import jwt
 from passlib.context import CryptContext
-import uuid
 
 # --- JWT Config ---
 SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-aicas-key-change-me")
@@ -83,25 +82,20 @@ class ClinicRegistrationReq(BaseModel):
     admin_ic: str
     admin_name: str
     admin_email: str
-    admin_password: str
     temp_admin_ic: Optional[str] = None
     temp_admin_name: Optional[str] = None
     temp_admin_email: Optional[str] = None
-    temp_admin_password: Optional[str] = None
 
 class UserCreateReq(BaseModel):
     clinic_id: str
     ic_passport_number: str
     name: str
     email: str
-    role: str
     permissions: str
     
 class UserUpdateReq(BaseModel):
     name: str
     email: str
-    role: str
-    status: str
     permissions: str
     
 class UserSelfUpdateReq(BaseModel):
@@ -310,7 +304,13 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
     raise HTTPException(status_code=401, detail="Invalid temporary password")
 
 @app.post("/admin/register-clinic")
-def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db)):
+def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != 'developer':
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    admin_pwd = generate_temp_password()
+    temp_admin_pwd = generate_temp_password() if data.temp_admin_ic else None
+
     try:
         new_clinic = models.Clinic(
             name=data.clinic_name,
@@ -326,37 +326,45 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db)):
             clinic_id=new_clinic.id,
             name=data.admin_name.upper(),
             email=data.admin_email,
-            password_hash=get_password_hash(data.admin_password),
+            password_hash=get_password_hash(admin_pwd),
             role='primary_admin',
+            status='active',
             permissions='ALL'
         )
         db.add(primary_admin)
         
-        if data.temp_admin_ic and data.temp_admin_email and data.temp_admin_password:
+        if data.temp_admin_ic and data.temp_admin_email:
             temp_admin = models.User(
                 ic_passport_number=data.temp_admin_ic,
                 clinic_id=new_clinic.id,
                 name=data.temp_admin_name.upper(),
                 email=data.temp_admin_email,
-                password_hash=get_password_hash(data.temp_admin_password),
+                password_hash=get_password_hash(temp_admin_pwd),
                 role='temporary_admin',
+                status='inactive',
                 assigned_by=primary_admin.ic_passport_number,
                 permissions='ALL'
             )
             db.add(temp_admin)
 
         db.commit()
-        return {"status": "success", "clinic_id": str(new_clinic.id), "message": "Clinic and Admin Accounts created."}
+        return {
+            "status": "success", 
+            "clinic_id": str(new_clinic.id), 
+            "message": "Clinic and Admin Accounts created.",
+            "admin_pwd": admin_pwd,
+            "temp_admin_pwd": temp_admin_pwd
+        }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     
 @app.get("/admin/users")
 def get_all_users(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role not in ['primary_admin', 'temporary_admin', 'developer']:
+    if current_user.role not in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    users = db.query(models.User).filter(models.User.clinic_id == current_user.clinic_id).all()
+    users = db.query(models.User).filter(models.User.clinic_id == current_user.clinic_id, models.User.role != 'developer').all()
     return [{
         "ic": u.ic_passport_number,
         "name": u.name,
@@ -369,14 +377,8 @@ def get_all_users(db: Session = Depends(get_db), current_user: models.User = Dep
 
 @app.post("/admin/users")
 def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role not in ['primary_admin', 'temporary_admin', 'developer']:
+    if current_user.role not in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Not authorized")
-        
-    if data.role == 'primary_admin':
-        raise HTTPException(status_code=403, detail="Cannot create another primary admin")
-        
-    if data.role == 'temporary_admin' and current_user.role == 'temporary_admin':
-        raise HTTPException(status_code=403, detail="Temporary admin cannot create another temporary admin")
         
     existing_ic = db.query(models.User).filter(models.User.ic_passport_number == data.ic_passport_number).first()
     if existing_ic: raise HTTPException(status_code=400, detail="User with this IC already exists")
@@ -385,10 +387,6 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
     if existing_email: raise HTTPException(status_code=400, detail="Email already registered")
 
     temp_password = generate_temp_password()
-    
-    status_val = 'active'
-    if data.role == 'temporary_admin':
-        status_val = 'inactive'
         
     new_user = models.User(
         ic_passport_number=data.ic_passport_number,
@@ -396,10 +394,10 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
         name=data.name.upper(),
         email=data.email,
         password_hash=get_password_hash(temp_password),
-        role=data.role,
-        status=status_val,
+        role='staff',
+        status='active',
         assigned_by=current_user.ic_passport_number,
-        permissions=data.permissions if data.role == 'staff' else 'ALL'
+        permissions=data.permissions
     )
     db.add(new_user)
     db.commit()
@@ -407,22 +405,20 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
 
 @app.put("/admin/users/{ic}")
 def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role not in ['primary_admin', 'temporary_admin', 'developer']:
+    if current_user.role not in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Not authorized")
         
     user = db.query(models.User).filter(models.User.ic_passport_number == ic).first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
     
-    if user.role == 'primary_admin' and current_user.role != 'primary_admin' and current_user.role != 'developer':
+    if user.role == 'primary_admin' and current_user.role != 'primary_admin':
         raise HTTPException(status_code=403, detail="Cannot modify primary admin")
         
     user.name = data.name.upper()
     user.email = data.email
-    user.status = data.status
     
     if user.role != 'primary_admin':
-        user.role = data.role
-        user.permissions = data.permissions if data.role == 'staff' else 'ALL'
+        user.permissions = data.permissions
         
     db.commit()
     return {"status": "success"}

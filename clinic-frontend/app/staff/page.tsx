@@ -1,25 +1,19 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
 
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
 
 export default function StaffPage() {
-  const router = useRouter();
   const [users, setUsers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [currentUser, setCurrentUser] = useState<any>(null);
   
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<any>(null);
   
   const [generatedPasswordModal, setGeneratedPasswordModal] = useState<any>(null);
   
-  const [formData, setFormData] = useState({
-      ic: '', name: '', email: '', role: 'staff', status: 'active'
-  });
-  
+  const [formData, setFormData] = useState({ ic: '', name: '', email: '' });
   const [permissions, setPermissions] = useState<string[]>([]);
 
   const PERMISSION_OPTIONS = [
@@ -32,9 +26,6 @@ export default function StaffPage() {
 
   const fetchUsers = async () => {
       const token = localStorage.getItem('aicas_token');
-      const userStr = localStorage.getItem('aicas_user');
-      
-      if(userStr) setCurrentUser(JSON.parse(userStr));
       
       try {
           const res = await fetch(`http://127.0.0.1:8000/admin/users`, {
@@ -49,37 +40,22 @@ export default function StaffPage() {
 
   const openModal = (user: any = null) => {
       setEditingUser(user);
-      
-      // Defaults based on role
-      let defaultRole = 'staff';
-      let defaultStatus = 'active';
-      if (currentUser?.role === 'developer') {
-          defaultRole = 'temporary_admin';
-          defaultStatus = 'inactive';
-      }
-
       if (user) {
-          setFormData({
-              ic: user.ic || '', 
-              name: user.name || '', 
-              email: user.email || '', 
-              role: user.role || defaultRole, 
-              status: user.status || 'active'
-          });
+          setFormData({ ic: user.ic || '', name: user.name || '', email: user.email || '' });
           if (user.permissions === 'ALL' || user.role.includes('admin')) {
               setPermissions(PERMISSION_OPTIONS.map(p => p.id));
           } else {
               setPermissions(user.permissions ? user.permissions.split(',').map((p:string) => p.trim()) : []);
           }
       } else {
-          setFormData({ ic: '', name: '', email: '', role: defaultRole, status: defaultStatus });
+          setFormData({ ic: '', name: '', email: '' });
           setPermissions([]);
       }
       setShowModal(true);
   };
 
   const handleTogglePermission = (pid: string) => {
-      if (formData.role.includes('admin')) return; 
+      if (editingUser?.role?.includes('admin')) return; 
       if (permissions.includes(pid)) {
           setPermissions(permissions.filter(p => p !== pid));
       } else {
@@ -97,16 +73,15 @@ export default function StaffPage() {
       const url = isEditing ? `http://127.0.0.1:8000/admin/users/${editingUser.ic}` : `http://127.0.0.1:8000/admin/users`;
       
       const payload: any = {
-          clinic_id: CLINIC_ID,
           name: formData.name,
           email: formData.email,
-          role: formData.role,
-          status: formData.status,
-          password: 'auto_generated', // Dummy field to pass validation, endpoint handles real generation
           permissions: permissions.length === PERMISSION_OPTIONS.length ? 'ALL' : permissions.join(', ')
       };
 
-      if (!isEditing) payload.ic_passport_number = formData.ic;
+      if (!isEditing) {
+          payload.clinic_id = CLINIC_ID;
+          payload.ic_passport_number = formData.ic;
+      }
 
       try {
           const res = await fetch(url, {
@@ -205,23 +180,12 @@ export default function StaffPage() {
       {showModal && (
           <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
             <div className="bg-white p-6 rounded-2xl w-[500px] shadow-2xl">
-                <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingUser ? 'Edit User' : 'New Staff Account'}</h3>
+                <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingUser ? 'Edit Staff Details' : 'New Staff Account'}</h3>
                 
                 <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">IC / Passport</label>
-                            <input type="text" value={formData.ic} disabled={!!editingUser} onChange={e => setFormData({...formData, ic: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-slate-50 uppercase" />
-                        </div>
-                        {editingUser && (
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Status</label>
-                                <select value={formData.status} onChange={e => setFormData({...formData, status: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-white">
-                                    <option value="active">Active</option>
-                                    <option value="inactive">Inactive / Disabled</option>
-                                </select>
-                            </div>
-                        )}
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">IC / Passport</label>
+                        <input type="text" value={formData.ic} disabled={!!editingUser} onChange={e => setFormData({...formData, ic: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-slate-50 uppercase" />
                     </div>
 
                     <div>
@@ -230,59 +194,28 @@ export default function StaffPage() {
                     </div>
 
                     <div>
-                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Email</label>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Email Address</label>
                         <input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-slate-50" />
                     </div>
 
-                    {currentUser?.role === 'developer' ? (
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Role</label>
-                            <select 
-                                value={formData.role} 
-                                onChange={e => setFormData({...formData, role: e.target.value})} 
-                                className="w-full p-2 border rounded-lg outline-none bg-white"
-                            >
-                                <option value="primary_admin">Primary Admin</option>
-                                <option value="temporary_admin">Temporary Admin</option>
-                            </select>
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mt-2">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Module Permissions</label>
+                        <div className="space-y-2">
+                            {PERMISSION_OPTIONS.map(opt => (
+                                <label key={opt.id} className={`flex items-center gap-2 text-sm font-medium ${editingUser?.role.includes('admin') ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer text-slate-700'}`}>
+                                    <input 
+                                        type="checkbox" 
+                                        checked={permissions.includes(opt.id)}
+                                        disabled={editingUser?.role.includes('admin')}
+                                        onChange={() => handleTogglePermission(opt.id)}
+                                        className="w-4 h-4 accent-blue-600"
+                                    />
+                                    {opt.label}
+                                </label>
+                            ))}
                         </div>
-                    ) : (
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Role</label>
-                            <select 
-                                value={formData.role} 
-                                onChange={e => {
-                                    setFormData({...formData, role: e.target.value});
-                                    if (e.target.value.includes('admin')) setPermissions(PERMISSION_OPTIONS.map(p => p.id));
-                                }} 
-                                disabled={editingUser?.role === 'primary_admin'}
-                                className="w-full p-2 border rounded-lg outline-none bg-white"
-                            >
-                                <option value="staff">Staff (Restricted Access)</option>
-                                <option value="temporary_admin">Temporary Admin</option>
-                                {editingUser?.role === 'primary_admin' && <option value="primary_admin">Primary Admin</option>}
-                            </select>
-                        </div>
-                    )}
-
-                    {formData.role === 'staff' && currentUser?.role !== 'developer' && (
-                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mt-2">
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Module Permissions</label>
-                            <div className="space-y-2">
-                                {PERMISSION_OPTIONS.map(opt => (
-                                    <label key={opt.id} className="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
-                                        <input 
-                                            type="checkbox" 
-                                            checked={permissions.includes(opt.id)}
-                                            onChange={() => handleTogglePermission(opt.id)}
-                                            className="w-4 h-4 accent-blue-600"
-                                        />
-                                        {opt.label}
-                                    </label>
-                                ))}
-                            </div>
-                        </div>
-                    )}
+                        {editingUser?.role.includes('admin') && <p className="text-xs text-blue-600 mt-2 italic">Admins automatically have all permissions.</p>}
+                    </div>
                 </div>
 
                 <div className="mt-6 flex justify-end gap-3 pt-4 border-t">

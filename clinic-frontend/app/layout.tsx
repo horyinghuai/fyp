@@ -3,7 +3,7 @@
 import './globals.css';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope, ShieldCheck } from 'lucide-react';
+import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope, ShieldCheck, PlusCircle } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 const CLINIC_ID = "c1111111-1111-1111-1111-111111111111"; 
@@ -28,41 +28,46 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           return;
       }
       
-      setUserSession(JSON.parse(storedUser));
+      const parsedUser = JSON.parse(storedUser);
+      setUserSession(parsedUser);
       setIsSessionLoaded(true);
-      
-      const initializeData = async () => {
-        try {
-          const res = await fetch(`http://127.0.0.1:8000/clinic/${CLINIC_ID}`);
-          if (res.ok) {
-            const data = await res.json();
-            setClinicName(data.name || "Smart Admin Portal");
-          } else {
-            setClinicName("Smart Admin Portal");
-          }
-        } catch (error) {
-          setClinicName("Smart Admin Portal");
-        }
-      };
 
-      const fetchPendingChats = async () => {
-        try {
-          const res = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${CLINIC_ID}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.count !== undefined) {
-              setPendingChatCount(data.count);
+      // Skip fetching clinic specifics if developer
+      if (parsedUser.role !== 'developer') {
+          const initializeData = async () => {
+            try {
+              const res = await fetch(`http://127.0.0.1:8000/clinic/${CLINIC_ID}`);
+              if (res.ok) {
+                const data = await res.json();
+                setClinicName(data.name || "Smart Admin Portal");
+              } else {
+                setClinicName("Smart Admin Portal");
+              }
+            } catch (error) {
+              setClinicName("Smart Admin Portal");
             }
-          }
-        } catch (error) {
-        }
-      };
+          };
 
-      initializeData();
-      fetchPendingChats();
-      
-      const interval = setInterval(fetchPendingChats, 10000); 
-      return () => clearInterval(interval);
+          const fetchPendingChats = async () => {
+            try {
+              const res = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${CLINIC_ID}`);
+              if (res.ok) {
+                const data = await res.json();
+                if (data && data.count !== undefined) {
+                  setPendingChatCount(data.count);
+                }
+              }
+            } catch (error) {}
+          };
+
+          initializeData();
+          fetchPendingChats();
+          
+          const interval = setInterval(fetchPendingChats, 10000); 
+          return () => clearInterval(interval);
+      } else {
+          setClinicName("AICAS Master System");
+      }
     } else {
         setIsSessionLoaded(true);
     }
@@ -73,13 +78,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const hasPermission = (moduleName: string) => {
       if (!userSession) return false;
+      if (userSession.role === 'developer') return moduleName === 'DEVELOPER_ONLY';
       if (userSession.role === 'primary_admin' || userSession.role === 'temporary_admin') return true;
       if (!userSession.permissions) return false;
       if (userSession.permissions.includes('ALL')) return true;
       return userSession.permissions.includes(moduleName);
   };
 
-  const navItems = [
+  let navItems = [
     { name: 'Timetable', path: '/', icon: <Calendar size={20} />, module: 'APPOINTMENT_MANAGEMENT' },
     { name: 'Vaccines', path: '/vaccines', icon: <Syringe size={20} />, module: 'INVENTORY_MANAGEMENT' },
     { name: 'Blood Tests', path: '/blood_test', icon: <Droplet size={20} />, module: 'INVENTORY_MANAGEMENT' },
@@ -88,9 +94,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { name: 'Bot Replies', path: '/bot-settings', icon: <MessageSquare size={20} />, module: 'CHAT_SUPPORT' },
   ];
 
-  // Admins only
   if (userSession?.role === 'primary_admin' || userSession?.role === 'temporary_admin') {
       navItems.push({ name: 'Staff & Permissions', path: '/staff', icon: <ShieldCheck size={20} />, module: 'ALL' });
+  } else if (userSession?.role === 'developer') {
+      navItems = [
+          { name: 'Clinic Registration', path: '/developer', icon: <PlusCircle size={20} />, module: 'DEVELOPER_ONLY' }
+      ];
   }
 
   const handleLogout = () => {

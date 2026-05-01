@@ -20,7 +20,6 @@ class User(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    # auth_user_id has been removed since you are no longer using Supabase
     password_hash = Column(String(255), nullable=True) 
     role = Column(String(50), nullable=False)
     status = Column(String(20), default='active')

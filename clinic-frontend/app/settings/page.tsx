@@ -16,7 +16,6 @@ export default function SettingsPage() {
       const userStr = localStorage.getItem('aicas_user');
       if (userStr) {
           const user = JSON.parse(userStr);
-          // Fixed Uncontrolled component warning by forcing a string fallback
           setFormData(f => ({ 
               ...f, 
               name: user.name || '', 
@@ -44,8 +43,8 @@ export default function SettingsPage() {
                 'Authorization': `Bearer ${token}`
             },
             body: JSON.stringify({
-                name: formData.name,
-                email: formData.email,
+                name: formData.name || '',
+                email: formData.email || '',
                 password: formData.newPassword || undefined
             })
         });
@@ -92,7 +91,7 @@ export default function SettingsPage() {
               <label className="block text-sm font-bold text-slate-700 mb-2">Full Name</label>
               <input 
                 type="text" 
-                value={formData.name} 
+                value={formData.name || ''} 
                 onChange={(e) => setFormData({...formData, name: e.target.value})} 
                 className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase"
                 required
@@ -102,7 +101,7 @@ export default function SettingsPage() {
               <label className="block text-sm font-bold text-slate-700 mb-2">Email Address (Login ID)</label>
               <input 
                 type="email" 
-                value={formData.email} 
+                value={formData.email || ''} 
                 onChange={(e) => setFormData({...formData, email: e.target.value})} 
                 className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50"
                 required
@@ -120,7 +119,7 @@ export default function SettingsPage() {
                   <input 
                     type="password" 
                     placeholder="••••••••"
-                    value={formData.newPassword} 
+                    value={formData.newPassword || ''} 
                     onChange={(e) => setFormData({...formData, newPassword: e.target.value})} 
                     className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
                   />
@@ -130,7 +129,7 @@ export default function SettingsPage() {
                   <input 
                     type="password" 
                     placeholder="••••••••"
-                    value={formData.confirmPassword} 
+                    value={formData.confirmPassword || ''} 
                     onChange={(e) => setFormData({...formData, confirmPassword: e.target.value})} 
                     className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500"
                   />
