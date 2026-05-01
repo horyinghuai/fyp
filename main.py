@@ -13,6 +13,7 @@ import random
 import re
 import jwt
 from passlib.context import CryptContext
+import uuid
 
 # --- JWT Config ---
 SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-aicas-key-change-me")
@@ -61,6 +62,20 @@ app.add_middleware(
 class LoginReq(BaseModel):
     email: str
     password: str
+
+class ClinicRegistrationReq(BaseModel):
+    clinic_name: str
+    registration_number: Optional[str] = None
+    address: Optional[str] = None
+    contact_number: Optional[str] = None
+    admin_ic: str
+    admin_name: str
+    admin_email: str
+    admin_password: str
+    temp_admin_ic: Optional[str] = None
+    temp_admin_name: Optional[str] = None
+    temp_admin_email: Optional[str] = None
+    temp_admin_password: Optional[str] = None
 
 class UserCreateReq(BaseModel):
     clinic_id: str
@@ -248,11 +263,57 @@ def admin_login(data: LoginReq, db: Session = Depends(get_db)):
                 "ic": user.ic_passport_number,
                 "name": user.name,
                 "role": user.role,
-                "permissions": user.permissions
+                "permissions": user.permissions,
+                "clinic_id": str(user.clinic_id)
             }
         }
         
     raise HTTPException(status_code=401, detail="Invalid email or password")
+
+@app.post("/admin/register-clinic")
+def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db)):
+    try:
+        # Create Clinic
+        new_clinic = models.Clinic(
+            name=data.clinic_name,
+            registration_number=data.registration_number,
+            address=data.address,
+            contact_number=data.contact_number
+        )
+        db.add(new_clinic)
+        db.flush()
+        
+        # Create Primary Admin
+        primary_admin = models.User(
+            ic_passport_number=data.admin_ic,
+            clinic_id=new_clinic.id,
+            name=data.admin_name.upper(),
+            email=data.admin_email,
+            password_hash=get_password_hash(data.admin_password),
+            role='primary_admin',
+            permissions='ALL'
+        )
+        db.add(primary_admin)
+        
+        # Create Temporary Admin if provided
+        if data.temp_admin_ic and data.temp_admin_email and data.temp_admin_password:
+            temp_admin = models.User(
+                ic_passport_number=data.temp_admin_ic,
+                clinic_id=new_clinic.id,
+                name=data.temp_admin_name.upper(),
+                email=data.temp_admin_email,
+                password_hash=get_password_hash(data.temp_admin_password),
+                role='temporary_admin',
+                assigned_by=primary_admin.ic_passport_number,
+                permissions='ALL'
+            )
+            db.add(temp_admin)
+
+        db.commit()
+        return {"status": "success", "clinic_id": str(new_clinic.id), "message": "Clinic and Admin Accounts created."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
     
 @app.get("/admin/users")
 def get_all_users(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):

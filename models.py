@@ -18,10 +18,14 @@ class User(Base):
     __tablename__ = "users"
     ic_passport_number = Column(String(20), primary_key=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    auth_user_id = Column(UUID(as_uuid=True), unique=True, nullable=True) 
-    password_hash = Column(String(255), nullable=True) # Added for local PostgreSQL Auth
-    role = Column(String(50), default='admin')
+    # auth_user_id has been removed since you are no longer using Supabase
+    password_hash = Column(String(255), nullable=True) 
+    role = Column(String(50), nullable=False)
+    status = Column(String(20), default='active')
+    assigned_by = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="SET NULL"), nullable=True)
+    permissions = Column(String)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class Doctor(Base):
