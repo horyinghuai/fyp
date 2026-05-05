@@ -17,7 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const [isSessionLoaded, setIsSessionLoaded] = useState(false);
 
   useEffect(() => {
-    if (pathname !== '/login') {
+    if (pathname !== '/login' && pathname !== '/discovery') {
       const storedToken = localStorage.getItem('aicas_token');
       const storedUser = localStorage.getItem('aicas_user');
       
@@ -73,7 +73,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   }, [pathname, router]);
 
   if (!isSessionLoaded) return <html lang="en"><body></body></html>;
-  if (pathname === '/login') return <html lang="en"><body>{children}</body></html>;
+  
+  // Fully Bypass Admin UI Layout for Public / Discovery Layer
+  if (pathname === '/login' || pathname === '/discovery') return <html lang="en"><body>{children}</body></html>;
 
   const hasPermission = (moduleName: string) => {
       if (!userSession) return false;

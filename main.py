@@ -255,6 +255,13 @@ def normalize_vaccine_type(db: Session, given_type: str):
                 return t.title()
     return given_type.title()
 
+# --- PUBLIC ENDPOINTS ---
+@app.get("/clinics")
+def get_public_clinics(db: Session = Depends(get_db)):
+    clinics = db.query(models.Clinic).all()
+    return [{"id": str(c.id), "name": c.name, "address": c.address, "contact_number": c.contact_number} for c in clinics]
+
+# --- SECURE ENDPOINTS ---
 @app.post("/admin/login")
 def admin_login(data: LoginReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == data.email).first()

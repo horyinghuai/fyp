@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_BASE = "http://127.0.0.1:8000"
-CLINIC_ID = os.getenv("CLINIC_ID")
+DEFAULT_CLINIC_ID = os.getenv("CLINIC_ID", "c1111111-1111-1111-1111-111111111111")
 
 if not TOKEN:
     logger.error("CRITICAL ERROR: TELEGRAM_BOT_TOKEN is missing in the .env file! The bot cannot start.")
@@ -63,11 +63,11 @@ def get_ocr_reader():
 
 NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON, BASIC_CONFIRM, MAN_GENDER_CONFIRM, OTHERS_REASON = range(29)
 
-async def generate_date_picker(service, doctor_pref, is_editing=False):
+async def generate_date_picker(active_cid, service, doctor_pref, is_editing=False):
     duration = 15 if service == 'Vaccine' else 30
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.post(f"{API_BASE}/available-dates", json={"clinic_id": CLINIC_ID, "duration": duration, "doctor_pref": doctor_pref}, timeout=10.0)
+            res = await client.post(f"{API_BASE}/available-dates", json={"clinic_id": active_cid, "duration": duration, "doctor_pref": doctor_pref}, timeout=10.0)
             valid_dates = res.json() if res.status_code == 200 else []
         except Exception as e:
             logger.error(f"Error fetching available dates: {e}")
@@ -90,11 +90,11 @@ async def generate_date_picker(service, doctor_pref, is_editing=False):
         
     return InlineKeyboardMarkup(keyboard)
 
-async def generate_time_picker(service, date_str, doctor_pref):
+async def generate_time_picker(active_cid, service, date_str, doctor_pref):
     duration = 15 if service == 'Vaccine' else 30
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.post(f"{API_BASE}/available-times", json={"clinic_id": CLINIC_ID, "date": date_str, "duration": duration, "doctor_pref": doctor_pref}, timeout=10.0)
+            res = await client.post(f"{API_BASE}/available-times", json={"clinic_id": active_cid, "date": date_str, "duration": duration, "doctor_pref": doctor_pref}, timeout=10.0)
             data = res.json() if res.status_code == 200 else {}
         except Exception as e:
             logger.error(f"Error fetching available times: {e}")
@@ -152,12 +152,11 @@ def extract_ic_info(image_path: str):
     name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
 
     address_lines = []
-    # Enhanced OCR address extraction to scan accurately until postcode is found
     for i in range(address_start_idx, min(address_start_idx + 6, len(cleaned_results))):
         text = cleaned_results[i][1]
         if any(sw in text for sw in stop_words): continue
         address_lines.append(text)
-        if re.search(r'\d{5}', text): # Found a 5-digit postcode, which marks end of typical address block
+        if re.search(r'\d{5}', text): 
             break
             
     address = ", ".join(address_lines) if address_lines else "UNKNOWN"
@@ -168,17 +167,19 @@ def clean_bot_username(text: str) -> str:
     return cleaned.strip().upper()
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "Please enter your IC or Passport Number to find your appointments:"
+    id_label = "IC/Passport Number"
+    msg = f"Please enter your {id_label} to find your appointments:"
     if update.message: await update.message.reply_text(msg)
     else: await update.callback_query.message.reply_text(msg)
     return CANCEL_SELECT
 
 async def cancel_select_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ic = clean_bot_username(update.message.text)
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/appointments/{ic}", timeout=5.0)
+            res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
             if res.status_code != 200:
                 await update.message.reply_text("Could not find any upcoming appointments for this ID. Type /cancel to try again or /start to book.")
                 return ConversationHandler.END
@@ -261,12 +262,20 @@ async def execute_cancellation(message, context, reason):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
     context.user_data['is_editing'] = False 
-    clinic_name = "our Clinic"
     
-    if CLINIC_ID:
+    if context.args and len(context.args) > 0:
+        active_clinic = context.args[0]
+        context.user_data['active_clinic_id'] = active_clinic
+    elif 'active_clinic_id' not in context.user_data:
+        context.user_data['active_clinic_id'] = DEFAULT_CLINIC_ID
+        
+    clinic_name = "our Clinic"
+    active_cid = context.user_data['active_clinic_id']
+    
+    if active_cid:
         async with httpx.AsyncClient() as client:
             try:
-                res = await client.get(f"{API_BASE}/clinic/{CLINIC_ID}", timeout=3.0)
+                res = await client.get(f"{API_BASE}/clinic/{active_cid}", timeout=3.0)
                 if res.status_code == 200: clinic_name = res.json().get('name', 'our Clinic')
             except Exception as e: 
                 logger.error(f"Could not fetch clinic name, using default. Error: {e}")
@@ -390,10 +399,11 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MY_METHOD_CHOICE
         
     context.user_data['ic'] = ic
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{ic}", timeout=5.0)
+            res = await client.get(f"{API_BASE}/patient/{active_cid}/id/{ic}", timeout=5.0)
             if res.status_code == 200:
                 patient = res.json()
                 return await handle_existing_patient_basic_confirm(update, context, patient)
@@ -411,6 +421,7 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = clean_bot_username(update.message.text)
     is_my = context.user_data.get('is_malaysian')
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
 
     if is_my:
         ic_digits = re.sub(r'\D', '', text)
@@ -428,7 +439,7 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE}/patient/{CLINIC_ID}/id/{context.user_data['ic']}", timeout=5.0)
+            res = await client.get(f"{API_BASE}/patient/{active_cid}/id/{context.user_data['ic']}", timeout=5.0)
             if res.status_code == 200:
                 patient = res.json()
                 return await handle_existing_patient_basic_confirm(update, context, patient)
@@ -595,6 +606,8 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+    
     if query.data == "prof_edit":
         id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
         btns = [
@@ -611,7 +624,7 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/register-patient", json={
-                "clinic_id": CLINIC_ID, "name": context.user_data['name'].upper(), "ic_passport_number": context.user_data['ic'].upper(), 
+                "clinic_id": active_cid, "name": context.user_data['name'].upper(), "ic_passport_number": context.user_data['ic'].upper(), 
                 "phone": context.user_data['phone'], "telegram_id": update.effective_user.id,
                 "address": context.user_data.get('address', '').upper(), "gender": context.user_data.get('gender', '').upper(), "nationality": context.user_data.get('nationality', '').upper() 
             }, timeout=5.0)
@@ -691,10 +704,12 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("You selected: Others.\nPlease type your reason for the visit (e.g., 'Fever and cough'):")
         return OTHERS_REASON
 
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+
     async with httpx.AsyncClient() as client:
         try:
             if service == 'Vaccine':
-                res = await client.get(f"{API_BASE}/vaccines/{CLINIC_ID}", timeout=5.0)
+                res = await client.get(f"{API_BASE}/vaccines/{active_cid}", timeout=5.0)
                 vaccines = res.json()
                 
                 user_gender = context.user_data.get('gender', 'ANY').upper()
@@ -811,11 +826,12 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t_type):
     tests = []
     seen_ids = set()
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+    
     async with httpx.AsyncClient() as client:
-        # Multi-case fetch to solve DB vs API parsing issues for "PACKAGE" vs "package"
         for t_case in [t_type, t_type.upper(), t_type.title()]:
             try:
-                res = await client.get(f"{API_BASE}/blood-tests/{CLINIC_ID}/{t_case}", timeout=5.0)
+                res = await client.get(f"{API_BASE}/blood-tests/{active_cid}/{t_case}", timeout=5.0)
                 if res.status_code == 200:
                     for t in res.json():
                         if t['id'] not in seen_ids:
@@ -876,6 +892,7 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
 async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
     if data == "back_start": 
         await query.answer()
@@ -920,7 +937,7 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             included = pkg.get('included_tests', [])
             async with httpx.AsyncClient() as client:
                 try:
-                    sgl_res = await client.get(f"{API_BASE}/blood-tests/{CLINIC_ID}/single")
+                    sgl_res = await client.get(f"{API_BASE}/blood-tests/{active_cid}/single")
                     all_singles = sgl_res.json()
                     available_singles = [s for s in all_singles if s['name'] not in included and (not s.get('target_gender') or s.get('target_gender').upper() in ['ANY', user_gender])]
                     
@@ -975,10 +992,12 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     pref = query.data.replace("doc_", "")
     
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+    
     if pref == "SPECIFIC":
         await query.edit_message_text("You selected: Specific Doctor")
         async with httpx.AsyncClient() as client:
-            res = await client.get(f"{API_BASE}/doctors/{CLINIC_ID}")
+            res = await client.get(f"{API_BASE}/doctors/{active_cid}")
             doctors = res.json()
         btns = [[InlineKeyboardButton(d['name'], callback_data=f"docname_{d['name']}")] for d in doctors]
         btns.append([InlineKeyboardButton("🔙 Back to Preferences", callback_data="back_doc_pref")])
@@ -1028,8 +1047,9 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     service = context.user_data['service']
     doctor_pref = context.user_data.get('doctor_pref', 'ANY')
     is_editing = context.user_data.get('is_editing', False)
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
-    markup = await generate_date_picker(service, doctor_pref, is_editing)
+    markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
     
     if service in ['Vaccine', 'Blood Test']:
         msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
@@ -1042,6 +1062,7 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
 async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = context.user_data['service']
     doctor_pref = context.user_data.get('doctor_pref', 'ANY')
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
 
     if update.callback_query:
         query = update.callback_query
@@ -1050,13 +1071,13 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
 
         if data.startswith("date_"):
             context.user_data['book_date'] = data.replace("date_", "")
-            markup = await generate_time_picker(service, context.user_data['book_date'], doctor_pref)
+            markup = await generate_time_picker(active_cid, service, context.user_data['book_date'], doctor_pref)
             await query.edit_message_text(f"You selected: {context.user_data['book_date']}\n\nNow, please select your preferred Time:", reply_markup=markup)
             return BOOK_DATE_TIME
 
         elif data == "back_date":
             is_editing = context.user_data.get('is_editing', False)
-            markup = await generate_date_picker(service, doctor_pref, is_editing)
+            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
             if service in ['Vaccine', 'Blood Test']: msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
             else: msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
             await query.edit_message_text(msg, reply_markup=markup)
@@ -1092,7 +1113,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         
         if "error" in ext:
             is_editing = context.user_data.get('is_editing', False)
-            markup = await generate_date_picker(service, doctor_pref, is_editing)
+            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
             msg = f"⚠️ AI Process Error: {ext['error']}\n\nPlease select a Date below."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
@@ -1100,7 +1121,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         intent = ext.get('intent', 'booking')
         if intent == 'question':
             async with httpx.AsyncClient() as client:
-                await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": CLINIC_ID, "telegram_id": update.effective_user.id, "message": text})
+                await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": active_cid, "telegram_id": update.effective_user.id, "message": text})
             await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
             return BOOK_DATE_TIME
 
@@ -1119,12 +1140,12 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             return await process_availability(update, context, full_time_str)
         elif date_pref:
             context.user_data['book_date'] = date_pref
-            markup = await generate_time_picker(service, date_pref, context.user_data.get('doctor_pref'))
+            markup = await generate_time_picker(active_cid, service, date_pref, context.user_data.get('doctor_pref'))
             msg = f"I successfully understood your preferred date: {date_pref}.\nHowever, time selection is still required.\n\nPlease select an available time below, or type your preferred time. (You can also pick a new date below if you changed your mind)."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
         elif time_pref:
-            markup = await generate_date_picker(service, context.user_data.get('doctor_pref'), context.user_data.get('is_editing', False))
+            markup = await generate_date_picker(active_cid, service, context.user_data.get('doctor_pref'), context.user_data.get('is_editing', False))
             msg = f"I successfully understood your preferred time: {time_pref}.\nHowever, the date is missing.\nPlease select a valid date below or type it."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
@@ -1134,7 +1155,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
                 await update.message.reply_text(f"✅ Notes noted: {ext.get('general_notes')}")
                 return await show_booking_summary(update, context)
             
-            markup = await generate_date_picker(service, context.user_data.get('doctor_pref'), is_editing)
+            markup = await generate_date_picker(active_cid, service, context.user_data.get('doctor_pref'), is_editing)
             msg = "I understood you want to book an appointment, but the date and time format was invalid or missing.\nPlease select a Date below or provide the exact date and time."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
@@ -1143,9 +1164,10 @@ async def process_availability(update, context, full_time_str):
     service = context.user_data['service']
     duration = 15 if service == 'Vaccine' else 30
     doctor_pref = context.user_data.get('doctor_pref', 'ANY')
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
     payload = {
-        "clinic_id": CLINIC_ID,
+        "clinic_id": active_cid,
         "requested_time": full_time_str,
         "duration": duration,
         "doctor_pref": doctor_pref
@@ -1168,7 +1190,7 @@ async def process_availability(update, context, full_time_str):
         else:
             date_obj = full_time_str.split(" ")[0]
             try:
-                t_res = await client.post(f"{API_BASE}/available-times", json={"clinic_id": CLINIC_ID, "date": date_obj, "duration": duration, "doctor_pref": doctor_pref}, timeout=10.0)
+                t_res = await client.post(f"{API_BASE}/available-times", json={"clinic_id": active_cid, "date": date_obj, "duration": duration, "doctor_pref": doctor_pref}, timeout=10.0)
                 t_data = t_res.json() if t_res.status_code == 200 else {}
                 valid_times = t_data.get("times", [])
                 row = []
@@ -1243,60 +1265,6 @@ async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT
     await query.edit_message_text("What would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
     return EDIT_BOOKING_MENU
 
-async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "conf_edit":
-        return await handle_edit_menu_routing(update, context)
-
-    await query.edit_message_text("Processing your booking...")
-    
-    service = context.user_data['service']
-    vaccines = context.user_data.get('vaccines_list', [])
-    selected_vac_name = context.user_data.get('selected_items', [None])[0] if context.user_data.get('selected_items') else None
-    selected_vac = next((v for v in vaccines if v['name'] == selected_vac_name), None)
-    total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
-
-    details_block = {
-        "items": context.user_data.get('selected_items', []), 
-        "dose": context.user_data.get('dose'),
-        "total_doses": total_doses,
-        "general_notes": context.user_data.get('general_notes'),
-        "doctor_pref": context.user_data.get('doctor_pref', 'ANY'),
-        "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
-        "assigned_doctor_id": context.user_data.get('assigned_doctor_id')
-    }
-
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(f"{API_BASE}/book-appointment", json={
-                "clinic_id": CLINIC_ID, "telegram_id": update.effective_user.id, "ic_passport_number": context.user_data['ic'].upper(), 
-                "service_type": context.user_data['service'], "details": details_block, "scheduled_time": context.user_data['book_time']
-            }, timeout=10.0)
-        except Exception as e:
-            logger.error(f"Error booking appointment: {e}")
-    
-    time_str = context.user_data['book_time']
-    date_part, time_part = time_str.split(" ")
-    
-    if service == 'Vaccine': details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
-    elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
-    else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
-        
-    doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}"
-    id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
-
-    confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
-                         f"Name: {context.user_data['name']}\n{id_label}: {context.user_data['ic']}\n"
-                         f"Phone: {context.user_data['phone']}\nDate: {date_part}\nTime: {time_part}\n"
-                         f"Service: {service}\nDetails: {details}{doc_text}\n")
-    
-    await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
-    btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
-    await query.message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
-    return FINAL_HELP
-
 async def route_back_service_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1342,6 +1310,61 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
         await trigger_datetime_prompt(update, context)
         return BOOK_DATE_TIME
 
+async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "conf_edit":
+        return await handle_edit_menu_routing(update, context)
+
+    await query.edit_message_text("Processing your booking...")
+    
+    service = context.user_data['service']
+    vaccines = context.user_data.get('vaccines_list', [])
+    selected_vac_name = context.user_data.get('selected_items', [None])[0] if context.user_data.get('selected_items') else None
+    selected_vac = next((v for v in vaccines if v['name'] == selected_vac_name), None)
+    total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+
+    details_block = {
+        "items": context.user_data.get('selected_items', []), 
+        "dose": context.user_data.get('dose'),
+        "total_doses": total_doses,
+        "general_notes": context.user_data.get('general_notes'),
+        "doctor_pref": context.user_data.get('doctor_pref', 'ANY'),
+        "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
+        "assigned_doctor_id": context.user_data.get('assigned_doctor_id')
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(f"{API_BASE}/book-appointment", json={
+                "clinic_id": active_cid, "telegram_id": update.effective_user.id, "ic_passport_number": context.user_data['ic'].upper(), 
+                "service_type": context.user_data['service'], "details": details_block, "scheduled_time": context.user_data['book_time']
+            }, timeout=10.0)
+        except Exception as e:
+            logger.error(f"Error booking appointment: {e}")
+    
+    time_str = context.user_data['book_time']
+    date_part, time_part = time_str.split(" ")
+    
+    if service == 'Vaccine': details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
+    elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
+    else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
+        
+    doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}"
+    id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
+
+    confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
+                         f"Name: {context.user_data['name']}\n{id_label}: {context.user_data['ic']}\n"
+                         f"Phone: {context.user_data['phone']}\nDate: {date_part}\nTime: {time_part}\n"
+                         f"Service: {service}\nDetails: {details}{doc_text}\n")
+    
+    await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
+    btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+    await query.message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+    return FINAL_HELP
+
 async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1356,11 +1379,12 @@ async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = clean_bot_username(update.message.text)
     if not text: return
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/ask-admin", json={
-                "clinic_id": CLINIC_ID, 
+                "clinic_id": active_cid, 
                 "telegram_id": update.effective_user.id, 
                 "message": text
             }, timeout=5.0)
@@ -1489,7 +1513,6 @@ if __name__ == '__main__':
     
     app.add_handler(conv)
     app.add_handler(InlineQueryHandler(inline_query_handler))
-    # Catch any general replies when a user is not actively answering prompts
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_text))
     
     logger.info("Bot is starting...")
