@@ -53,7 +53,7 @@ export default function DiscoveryPage() {
                 
                 <div className="max-w-2xl mx-auto relative shadow-2xl rounded-2xl">
                     <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                        <Search size="{24}" className="text-slate-400"/>
+                        <Search className="w-5 h-5 text-gray-500"/>
                     </div>
                     
                     <input 
@@ -89,11 +89,11 @@ export default function DiscoveryPage() {
                                         
                                         <div className="space-y-3 mb-6">
                                             <div className="flex items-start gap-3 text-slate-600 text-sm">
-                                                <MapPin size="{18}" className="text-blue-600 mt-0.5 flex-shrink-0"/>
+                                                <MapPin className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0"/>
                                                 <span>{clinic.address || 'Address not provided'}</span>
                                             </div>
                                             <div className="flex items-center gap-3 text-slate-600 text-sm">
-                                                <Phone size="{18}" className="text-blue-600 flex-shrink-0"/>
+                                                <Phone className="w-5 h-5 text-blue-600 flex-shrink-0"/>
                                                 <span>{clinic.contact_number || 'N/A'}</span>
                                             </div>
                                         </div>
@@ -113,7 +113,7 @@ export default function DiscoveryPage() {
                                             rel="noopener noreferrer"
                                             className="flex-1 bg-blue-600 text-white font-bold py-3 px-4 rounded-xl flex items-center justify-center gap-2 hover:bg-blue-700 transition"
                                         >
-                                            <MessageCircle size="{20}"/> Chat on Telegram
+                                            <MessageCircle className="w-5 h-5"/> Chat on Telegram
                                         </a>
                                     </div>
                                 </div>
