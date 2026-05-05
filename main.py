@@ -73,6 +73,7 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
+# --- Pydantic Models ---
 class LoginReq(BaseModel):
     email: str
     password: str
@@ -198,6 +199,9 @@ class UpdateBooking(BaseModel):
     status: Optional[str] = "scheduled"
     cancel_reason: Optional[str] = None
 
+class CancelReq(BaseModel):
+    cancel_reason: str
+
 class ChatMessageModel(BaseModel):
     clinic_id: str
     telegram_id: int
@@ -267,11 +271,13 @@ def normalize_vaccine_type(db: Session, given_type: str):
                 return t.title()
     return given_type.title()
 
+# --- PUBLIC ENDPOINTS ---
 @app.get("/clinics")
 def get_public_clinics(db: Session = Depends(get_db)):
     clinics = db.query(models.Clinic).all()
     return [{"id": str(c.id), "name": c.name, "address": c.address, "contact_number": c.contact_number} for c in clinics]
 
+# --- SECURE ENDPOINTS ---
 @app.post("/admin/login")
 def admin_login(data: LoginReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == data.email).first()
@@ -359,7 +365,6 @@ def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
                 }]
             }
             
-            # Use httpx to call SendGrid's API directly
             response = httpx.post(
                 "https://api.sendgrid.com/v3/mail/send",
                 headers={
