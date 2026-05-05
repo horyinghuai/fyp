@@ -36,7 +36,7 @@ export default function DiscoveryPage() {
             {/* Header / Nav */}
             <nav className="bg-white shadow-sm px-6 py-4 flex justify-between items-center sticky top-0 z-50">
                 <div className="font-black text-2xl text-slate-800 flex items-center gap-2">
-                    <span className="text-blue-600">⚡</span> AICAS Health
+                    <span className="text-blue-600">⚡</span> AICAS
                 </div>
                 <Link href="/login" className="bg-slate-900 text-white px-5 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-slate-800 transition">
                     Admin / Staff Login
