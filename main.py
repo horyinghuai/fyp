@@ -2,6 +2,8 @@ import os
 import httpx
 import secrets
 import string
+import smtplib
+from email.mime.text import MIMEText
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -73,6 +75,7 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
+# --- Pydantic Models ---
 class LoginReq(BaseModel):
     email: str
     password: str
@@ -80,6 +83,18 @@ class LoginReq(BaseModel):
 class FirstLoginResetReq(BaseModel):
     email: str
     temp_password: str
+    new_password: str
+
+class ForgotPasswordReq(BaseModel):
+    email: str
+
+class VerifyCodeReq(BaseModel):
+    email: str
+    code: str
+
+class ResetPasswordReq(BaseModel):
+    email: str
+    code: str
     new_password: str
 
 class ClinicRegistrationReq(BaseModel):
@@ -186,6 +201,9 @@ class UpdateBooking(BaseModel):
     status: Optional[str] = "scheduled"
     cancel_reason: Optional[str] = None
 
+class CancelReq(BaseModel):
+    cancel_reason: str
+
 class ChatMessageModel(BaseModel):
     clinic_id: str
     telegram_id: int
@@ -223,6 +241,7 @@ class AdminChatReply(BaseModel):
     question: str
     answer: str
 
+# --- Helper Functions ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
@@ -320,6 +339,59 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
             }
         }
     raise HTTPException(status_code=401, detail="Invalid temporary password")
+
+@app.post("/admin/forgot-password")
+def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == req.email).first()
+    if not user:
+        return {"status": "success", "message": "If the email is registered, a code has been sent."}
+    
+    code = ''.join(random.choices(string.digits, k=6))
+    user.reset_code = code
+    user.reset_code_expires = datetime.utcnow() + timedelta(minutes=15)
+    db.commit()
+
+    smtp_email = os.getenv("SMTP_EMAIL")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    
+    if smtp_email and smtp_password:
+        try:
+            msg = MIMEText(f"Hello {user.name},\n\nYour AICAS system password reset verification code is:\n\n{code}\n\nThis code will expire in 15 minutes.")
+            msg['Subject'] = "AICAS Password Reset Verification Code"
+            msg['From'] = smtp_email
+            msg['To'] = req.email
+            
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(smtp_email, smtp_password)
+                server.send_message(msg)
+        except Exception as e:
+            print(f"Failed to send email via SMTP: {e}")
+    else:
+        print("\n========== MOCK EMAIL VERIFICATION ==========")
+        print(f"To: {req.email}")
+        print(f"Code: {code}")
+        print("=============================================\n")
+    
+    return {"status": "success"}
+
+@app.post("/admin/verify-code")
+def verify_code(req: VerifyCodeReq, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == req.email).first()
+    if not user or user.reset_code != req.code or not user.reset_code_expires or user.reset_code_expires < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+    return {"status": "success"}
+
+@app.post("/admin/reset-password")
+def reset_password(req: ResetPasswordReq, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == req.email).first()
+    if not user or user.reset_code != req.code or not user.reset_code_expires or user.reset_code_expires < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+    
+    user.password_hash = get_password_hash(req.new_password)
+    user.reset_code = None
+    user.reset_code_expires = None
+    db.commit()
+    return {"status": "success"}
 
 @app.get("/admin/clinics")
 def get_all_clinics(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -640,9 +712,6 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"DASHBOARD CRASH PREVENTED: {e}")
         return []
-
-class CancelReq(BaseModel):
-    cancel_reason: str
 
 @app.put("/admin/appointment-stages/{stage_id}")
 def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db)):
