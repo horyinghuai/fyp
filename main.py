@@ -2,8 +2,6 @@ import os
 import httpx
 import secrets
 import string
-import smtplib
-from email.mime.text import MIMEText
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -75,7 +73,6 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- Pydantic Models ---
 class LoginReq(BaseModel):
     email: str
     password: str
@@ -201,9 +198,6 @@ class UpdateBooking(BaseModel):
     status: Optional[str] = "scheduled"
     cancel_reason: Optional[str] = None
 
-class CancelReq(BaseModel):
-    cancel_reason: str
-
 class ChatMessageModel(BaseModel):
     clinic_id: str
     telegram_id: int
@@ -241,7 +235,6 @@ class AdminChatReply(BaseModel):
     question: str
     answer: str
 
-# --- Helper Functions ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
@@ -274,13 +267,11 @@ def normalize_vaccine_type(db: Session, given_type: str):
                 return t.title()
     return given_type.title()
 
-# --- PUBLIC ENDPOINTS ---
 @app.get("/clinics")
 def get_public_clinics(db: Session = Depends(get_db)):
     clinics = db.query(models.Clinic).all()
     return [{"id": str(c.id), "name": c.name, "address": c.address, "contact_number": c.contact_number} for c in clinics]
 
-# --- SECURE ENDPOINTS ---
 @app.post("/admin/login")
 def admin_login(data: LoginReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == data.email).first()
@@ -351,26 +342,44 @@ def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
     user.reset_code_expires = datetime.utcnow() + timedelta(minutes=15)
     db.commit()
 
-    smtp_email = os.getenv("SMTP_EMAIL")
-    smtp_password = os.getenv("SMTP_PASSWORD")
+    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+    sendgrid_from_email = os.getenv("SENDGRID_FROM_EMAIL")
     
-    if smtp_email and smtp_password:
+    if sendgrid_api_key and sendgrid_from_email:
         try:
-            msg = MIMEText(f"Hello {user.name},\n\nYour AICAS system password reset verification code is:\n\n{code}\n\nThis code will expire in 15 minutes.")
-            msg['Subject'] = "AICAS Password Reset Verification Code"
-            msg['From'] = smtp_email
-            msg['To'] = req.email
+            email_data = {
+                "personalizations": [{
+                    "to": [{"email": req.email}], 
+                    "subject": "AICAS Password Reset Verification Code"
+                }],
+                "from": {"email": sendgrid_from_email, "name": "AICAS System"},
+                "content": [{
+                    "type": "text/plain", 
+                    "value": f"Hello {user.name},\n\nYour AICAS system password reset verification code is:\n\n{code}\n\nThis code will expire in 15 minutes."
+                }]
+            }
             
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(smtp_email, smtp_password)
-                server.send_message(msg)
+            # Use httpx to call SendGrid's API directly
+            response = httpx.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {sendgrid_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json=email_data,
+                timeout=10.0
+            )
+            
+            if response.status_code not in [200, 202, 204]:
+                print(f"Failed to send email via SendGrid: {response.text}")
         except Exception as e:
-            print(f"Failed to send email via SMTP: {e}")
+            print(f"Failed to send email via SendGrid: {e}")
     else:
         print("\n========== MOCK EMAIL VERIFICATION ==========")
         print(f"To: {req.email}")
         print(f"Code: {code}")
         print("=============================================\n")
+        print("WARNING: SENDGRID_API_KEY or SENDGRID_FROM_EMAIL missing in .env. Fallback to terminal print.")
     
     return {"status": "success"}
 
