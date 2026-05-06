@@ -185,7 +185,7 @@ export default function DoctorsPage() {
         <div className="max-w-6xl mx-auto space-y-8">
             <div className="flex justify-between items-center">
                 <div>
-                    <h1 className="text-3xl font-black text-slate-800 tracking-tight flex items-center gap-2">Medical Providers</h1>
+                    <h1 className="text-3xl font-black text-slate-800 tracking-tight flex items-center gap-2">Doctors</h1>
                     <p className="text-slate-500 mt-1 text-sm">Manage doctors, specializations, and clinic schedules.</p>
                 </div>
                 {!isEditing && (
@@ -271,7 +271,7 @@ export default function DoctorsPage() {
                         <div className="pt-6 border-t flex justify-end gap-3">
                             <button type="button" onClick={() => setIsEditing(null)} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition">Cancel</button>
                             <button type="submit" className="bg-blue-600 text-white font-bold px-10 py-3 rounded-xl shadow-lg hover:bg-blue-700 transition">
-                                {isEditing === 'new' ? "Register Provider" : "Save Changes"}
+                                {isEditing === 'new' ? "Register Doctor" : "Save Changes"}
                             </button>
                         </div>
                     </form>
@@ -282,7 +282,7 @@ export default function DoctorsPage() {
                 <>
                 <div>
                     <h2 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">
-                        <ActivitySquare size={20} className="text-blue-600"/> Active Providers
+                        <ActivitySquare size={20} className="text-blue-600"/> Active Doctors
                     </h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {activeDocs.map(d => (
@@ -317,7 +317,7 @@ export default function DoctorsPage() {
                 {pastDocs.length > 0 && (
                 <div className="opacity-75 pt-8">
                     <h2 className="text-xl font-black text-slate-500 mb-6 flex items-center gap-2">
-                        <UserMinus size={20} /> Inactive & Resigned Providers
+                        <UserMinus size={20} /> Inactive & Resigned Doctors
                     </h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {pastDocs.map(d => (
