@@ -30,6 +30,7 @@ class ClinicStaff(Base):
     status = Column(String(20), default='active')
     assigned_by = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="SET NULL", onupdate="CASCADE"), nullable=True)
     permissions = Column(String)
+    resign_reason = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class VerificationCode(Base):
@@ -47,6 +48,8 @@ class Doctor(Base):
     name = Column(String(255), nullable=False)
     gender = Column(String(10)) 
     specialization = Column(String(100))
+    status = Column(String(20), default='active')
+    resign_reason = Column(String(255), nullable=True)
 
 class Patient(Base):
     __tablename__ = "patients"

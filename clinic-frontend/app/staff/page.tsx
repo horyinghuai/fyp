@@ -243,7 +243,6 @@ export default function StaffPage() {
                                                 <option value="Relocation">Relocation</option>
                                                 <option value="Personal Reasons">Personal Reasons</option>
                                                 <option value="Career Change">Career Change</option>
-                                                <option value="System Role Replacement">System Role Replacement</option>
                                                 <option value="Others">Others (Please specify)</option>
                                             </select>
                                             {form.resign_reason === 'Others' && (

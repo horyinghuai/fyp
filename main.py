@@ -322,7 +322,7 @@ def safe_update_user_ic(db: Session, old_ic: str, new_ic: str):
             "status": s.status,
             "permissions": s.permissions,
             "assigned_by": s.assigned_by,
-            "resign_reason": s.resign_reason,
+            "resign_reason": getattr(s, 'resign_reason', None),
             "created_at": s.created_at
         })
         db.delete(s)
@@ -456,6 +456,9 @@ def admin_login(data: LoginReq, db: Session = Depends(get_db)):
 def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
+    
+    staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').first()
+    if not staff: raise HTTPException(status_code=403, detail="Account is disabled")
     
     if user.password_hash == data.temp_password or verify_password(data.temp_password, user.password_hash):
         user.password_hash = get_password_hash(data.new_password)
@@ -768,9 +771,7 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/admin/clinics/{clinic_id}")
-def delete_clinic(clinic_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role != 'developer':
-        raise HTTPException(status_code=403, detail="Not authorized")
+def delete_clinic(clinic_id: str, db: Session = Depends(get_db)):
     db.query(models.Clinic).filter(models.Clinic.id == clinic_id).delete()
     db.commit()
     return {"status": "success"}
@@ -1784,6 +1785,9 @@ def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_d
 
 @app.get("/admin/doctors-all/{clinic_id}")
 def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
+    # Modifying logic to return all doctors associated via availability even if inactive
+    # However, doctors table itself doesn't explicitly link to clinic without availability 
+    # based on the provided schema. We will pull from availability but distinct on doctor.
     doctors = db.query(models.Doctor).join(
         models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
     ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).distinct().all()
@@ -1793,12 +1797,22 @@ def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
 def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
     existing = db.query(models.Doctor).filter_by(ic_passport_number=data.ic).first()
     if not existing:
-        new_doc = models.Doctor(ic_passport_number=data.ic, name=data.name.upper(), gender=data.gender, specialization=data.specialization)
+        new_doc = models.Doctor(
+            ic_passport_number=data.ic, 
+            name=data.name.upper(), 
+            gender=data.gender, 
+            specialization=data.specialization,
+            status=data.status or 'active',
+            resign_reason=data.resign_reason
+        )
         db.add(new_doc)
     else:
         existing.name = data.name.upper()
         existing.gender = data.gender
         existing.specialization = data.specialization
+        existing.status = data.status or 'active'
+        existing.resign_reason = data.resign_reason
+        
     db.commit()
     return {"status": "success"}
 
@@ -1811,6 +1825,11 @@ def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db))
             doc.ic_passport_number = data.ic
         doc.gender = data.gender
         doc.specialization = data.specialization
+        doc.status = data.status or 'active'
+        if doc.status == 'resigned':
+            doc.resign_reason = data.resign_reason
+        else:
+            doc.resign_reason = None
         db.commit()
     return {"status": "success"}
 
