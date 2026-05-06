@@ -350,12 +350,12 @@ async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db))
     hashed_code = get_password_hash(code)
     
     db.query(models.VerificationCode).filter(
-        models.VerificationCode.user_id == user.ic_passport_number,
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
         models.VerificationCode.used == False
     ).update({"used": True}, synchronize_session=False)
     
     v_code = models.VerificationCode(
-        user_id=user.ic_passport_number,
+        ic_passport_number=user.ic_passport_number,
         code_hash=hashed_code,
         expires_at=datetime.utcnow() + timedelta(minutes=15)
     )
@@ -409,7 +409,7 @@ def verify_code(req: VerifyCodeReq, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid request.")
         
     v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.user_id == user.ic_passport_number,
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
         models.VerificationCode.used == False,
         models.VerificationCode.expires_at > datetime.utcnow()
     ).order_by(models.VerificationCode.created_at.desc()).first()
@@ -426,7 +426,7 @@ def reset_password(req: ResetPasswordReq, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid request.")
         
     v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.user_id == user.ic_passport_number,
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
         models.VerificationCode.used == False,
         models.VerificationCode.expires_at > datetime.utcnow()
     ).order_by(models.VerificationCode.created_at.desc()).first()
@@ -555,7 +555,10 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
             p_admin.status = data.admin_status or 'active'
             db.flush()
             
+            # Cascade Update logic for Foreign Keys (Assigned By, Verification Codes)
             if old_ic != data.admin_ic:
+                db.execute(models.User.__table__.update().where(models.User.assigned_by == old_ic).values(assigned_by=data.admin_ic))
+                db.execute(models.VerificationCode.__table__.update().where(models.VerificationCode.ic_passport_number == old_ic).values(ic_passport_number=data.admin_ic))
                 db.execute(models.User.__table__.update().where(models.User.ic_passport_number == old_ic).values(ic_passport_number=data.admin_ic))
 
         t_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'temporary_admin').first()
@@ -573,7 +576,10 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
                 t_admin.status = data.temp_admin_status or 'inactive'
                 db.flush()
                 
+                # Cascade Update logic for Foreign Keys for Temporary Admin
                 if old_t_ic != data.temp_admin_ic:
+                    db.execute(models.User.__table__.update().where(models.User.assigned_by == old_t_ic).values(assigned_by=data.temp_admin_ic))
+                    db.execute(models.VerificationCode.__table__.update().where(models.VerificationCode.ic_passport_number == old_t_ic).values(ic_passport_number=data.temp_admin_ic))
                     db.execute(models.User.__table__.update().where(models.User.ic_passport_number == old_t_ic).values(ic_passport_number=data.temp_admin_ic))
         elif data.temp_admin_ic and data.temp_admin_email:
             temp_admin_pwd = generate_temp_password()
