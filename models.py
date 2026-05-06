@@ -27,6 +27,15 @@ class User(Base):
     permissions = Column(String)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+class VerificationCode(Base):
+    __tablename__ = "verification_code"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ic_passport_numberd = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="CASCADE"), nullable=False)
+    code_hash = Column(String(255), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 class Doctor(Base):
     __tablename__ = "doctors"
     ic_passport_number = Column(String(20), primary_key=True)
@@ -114,6 +123,7 @@ class DoctorClinicAvailability(Base):
     day_of_week = Column(String(10), primary_key=True)
     start_time = Column(Time, primary_key=True)
     end_time = Column(Time)
+    status = Column(String(20), default='active')
 
 class VaccineClinic(Base):
     __tablename__ = "vaccine_clinic"

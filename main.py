@@ -73,6 +73,7 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
+# --- Pydantic Models ---
 class LoginReq(BaseModel):
     email: str
     password: str
@@ -238,6 +239,7 @@ class AdminChatReply(BaseModel):
     question: str
     answer: str
 
+# --- Helper Functions ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
@@ -270,11 +272,13 @@ def normalize_vaccine_type(db: Session, given_type: str):
                 return t.title()
     return given_type.title()
 
+# --- PUBLIC ENDPOINTS ---
 @app.get("/clinics")
 def get_public_clinics(db: Session = Depends(get_db)):
     clinics = db.query(models.Clinic).all()
     return [{"id": str(c.id), "name": c.name, "address": c.address, "contact_number": c.contact_number} for c in clinics]
 
+# --- SECURE ENDPOINTS ---
 @app.post("/admin/login")
 def admin_login(data: LoginReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == data.email).first()
@@ -338,11 +342,26 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
 async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
     if not user:
+        # Always return success to prevent email enumeration attacks
         return {"status": "success", "message": "If the email is registered, a code has been sent."}
     
+    # Generate 6-digit code and Hash it for security
     code = ''.join(random.choices(string.digits, k=6))
-    user.reset_code = code
-    user.reset_code_expires = datetime.utcnow() + timedelta(minutes=15)
+    hashed_code = get_password_hash(code)
+    
+    # Invalidate older unused codes for this user to be safe
+    db.query(models.VerificationCode).filter(
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.used == False
+    ).update({"used": True})
+    
+    # Save the new token
+    v_code = models.VerificationCode(
+        ic_passport_number=user.ic_passport_number,
+        code_hash=hashed_code,
+        expires_at=datetime.utcnow() + timedelta(minutes=15)
+    )
+    db.add(v_code)
     db.commit()
 
     sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
@@ -358,7 +377,7 @@ async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db))
                 "from": {"email": sendgrid_from_email, "name": "AICAS System"},
                 "content": [{
                     "type": "text/plain", 
-                    "value": f"Hello {user.name},\n\nYour AICAS system password reset verification code is:\n\n{code}\n\nThis code will expire in 15 minutes."
+                    "value": f"Hello {user.name},\n\nYou requested to reset your password. Here is your 6-digit verification code:\n\n{code}\n\nThis code will expire in 15 minutes. If you did not request this, please ignore this email."
                 }]
             }
             
@@ -388,19 +407,39 @@ async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db))
 @app.post("/admin/verify-code")
 def verify_code(req: VerifyCodeReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
-    if not user or user.reset_code != req.code or not user.reset_code_expires or user.reset_code_expires < datetime.utcnow():
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid request.")
+        
+    # Get the latest valid token
+    v_code = db.query(models.VerificationCode).filter(
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.used == False,
+        models.VerificationCode.expires_at > datetime.utcnow()
+    ).order_by(models.VerificationCode.created_at.desc()).first()
+    
+    if not v_code or not verify_password(req.code, v_code.code_hash):
         raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+        
     return {"status": "success"}
 
 @app.post("/admin/reset-password")
 def reset_password(req: ResetPasswordReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
-    if not user or user.reset_code != req.code or not user.reset_code_expires or user.reset_code_expires < datetime.utcnow():
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid request.")
+        
+    v_code = db.query(models.VerificationCode).filter(
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.used == False,
+        models.VerificationCode.expires_at > datetime.utcnow()
+    ).order_by(models.VerificationCode.created_at.desc()).first()
+    
+    if not v_code or not verify_password(req.code, v_code.code_hash):
         raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
     
+    # Update hash and mark token as used
     user.password_hash = get_password_hash(req.new_password)
-    user.reset_code = None
-    user.reset_code_expires = None
+    v_code.used = True
     db.commit()
     return {"status": "success"}
 
@@ -503,6 +542,7 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
         clinic.address = data.address
         clinic.contact_number = data.contact_number
 
+        # Update Primary Admin Details
         p_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'primary_admin').first()
         if p_admin:
             if p_admin.ic_passport_number != data.admin_ic:
@@ -510,6 +550,7 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
             p_admin.name = data.admin_name.upper()
             p_admin.email = data.admin_email
 
+        # Update or Create Temp Admin
         t_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'temporary_admin').first()
         if t_admin:
             if not data.temp_admin_ic:
