@@ -296,13 +296,20 @@ def normalize_vaccine_type(db: Session, given_type: str):
     if not given_type: return "Other"
     given_lower = given_type.lower().strip()
     existing_types = db.query(models.Vaccine.type).distinct().all()
-    
     for (t,) in existing_types:
         if t:
             t_lower = t.lower().strip()
             if t_lower in given_lower or given_lower in t_lower:
                 return t.title()
     return given_type.title()
+
+def format_doctor_name(name: str) -> str:
+    n = name.upper().strip()
+    if not n.startswith("DR."):
+        return f"DR. {n}"
+    if n.startswith("DR.") and not n.startswith("DR. "):
+        return f"DR. {n[3:].strip()}"
+    return n
 
 def safe_update_user_ic(db: Session, old_ic: str, new_ic: str):
     dependents = db.query(models.ClinicStaff).filter(models.ClinicStaff.assigned_by == old_ic).all()
@@ -1365,6 +1372,7 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
 
 @app.get("/admin/doctors-all/{clinic_id}")
 def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
+    # To fix the 500 missing column error and display correctly, map from Availability Table.
     results = db.query(models.Doctor, models.DoctorClinicAvailability).join(
         models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
     ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).all()
@@ -1385,27 +1393,29 @@ def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
 
 @app.post("/admin/doctors")
 def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
+    final_name = format_doctor_name(data.name)
     existing = db.query(models.Doctor).filter_by(ic_passport_number=data.ic).first()
     if not existing:
         new_doc = models.Doctor(
             ic_passport_number=data.ic, 
-            name=data.name.upper(), 
+            name=final_name, 
             gender=data.gender, 
             specialization=data.specialization
         )
         db.add(new_doc)
         db.flush()
     else:
-        existing.name = data.name.upper()
+        existing.name = final_name
         existing.gender = data.gender
         existing.specialization = data.specialization
         db.flush()
         
-    link = db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=data.ic, clinic_id=data.clinic_id).first()
+    # Check if doctor is already linked to clinic
+    link = db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=data.ic, clinic_id=data.clinic_id, day_of_week='none').first()
+    db_status = 'inactive' if data.status == 'resigned' else (data.status or 'active')
+    db_reason = data.resign_reason if data.status == 'resigned' else None
+    
     if not link:
-        db_status = 'inactive' if data.status == 'resigned' else (data.status or 'active')
-        db_reason = data.resign_reason if data.status == 'resigned' else None
-        
         dummy = models.DoctorClinicAvailability(
             doctor_ic=data.ic,
             clinic_id=data.clinic_id,
@@ -1416,6 +1426,14 @@ def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
             resign_reason=db_reason
         )
         db.add(dummy)
+    else:
+        link.status = db_status
+        link.resign_reason = db_reason
+
+    db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=data.ic, clinic_id=data.clinic_id).update({
+        "status": db_status,
+        "resign_reason": db_reason
+    })
         
     db.commit()
     return {"status": "success"}
@@ -1424,7 +1442,7 @@ def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
 def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db)):
     doc = db.query(models.Doctor).filter_by(ic_passport_number=ic).first()
     if doc:
-        doc.name = data.name.upper()
+        doc.name = format_doctor_name(data.name)
         if data.ic and data.ic != ic:
             db.execute(models.Doctor.__table__.update().where(models.Doctor.ic_passport_number == ic).values(ic_passport_number=data.ic))
             ic = data.ic
@@ -1455,6 +1473,20 @@ def get_doc_availability(ic: str, clinic_id: str, db: Session = Depends(get_db))
 def add_doc_availability(ic: str, data: DoctorScheduleReq, db: Session = Depends(get_db)):
     st = datetime.strptime(data.start_time, "%H:%M").time()
     et = datetime.strptime(data.end_time, "%H:%M").time()
+
+    if st >= et:
+        raise HTTPException(status_code=400, detail="End time must be later than start time.")
+
+    existing_avails = db.query(models.DoctorClinicAvailability).filter_by(
+        doctor_ic=ic, clinic_id=data.clinic_id, day_of_week=data.day_of_week
+    ).all()
+
+    for a in existing_avails:
+        if a.day_of_week == 'none':
+            continue
+        if a.start_time < et and a.end_time > st:
+            raise HTTPException(status_code=400, detail="This time slot clashes with an existing schedule for this day.")
+
     avail = models.DoctorClinicAvailability(doctor_ic=ic, clinic_id=data.clinic_id, day_of_week=data.day_of_week, start_time=st, end_time=et)
     db.add(avail)
     db.commit()

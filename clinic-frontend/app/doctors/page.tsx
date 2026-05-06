@@ -12,7 +12,7 @@ export default function DoctorsPage() {
     const [isEditing, setIsEditing] = useState<string | null>(null);
     const [form, setForm] = useState({ 
         ic: '', name: '', gender: 'MALE', 
-        status: 'active', resign_reason: '', custom_resign_reason: '' 
+        status: 'active', resign_reason: '', custom_resign_reason: '', is_my: true
     });
     
     // Checkbox specializations logic
@@ -25,6 +25,7 @@ export default function DoctorsPage() {
     const [isAvailModalOpen, setIsAvailModalOpen] = useState(false);
     const [selectedDocAvail, setSelectedDocAvail] = useState<any[]>([]);
     const [isFetchingAvail, setIsFetchingAvail] = useState(false);
+    const [availError, setAvailError] = useState('');
 
     useEffect(() => {
         const userStr = localStorage.getItem('aicas_user');
@@ -48,6 +49,15 @@ export default function DoctorsPage() {
         setIsLoading(false);
     };
 
+    const formatIC = (ic: string) => {
+        if (!ic) return '';
+        const digitsOnly = ic.replace(/\D/g, '');
+        if (digitsOnly.length === 12) {
+            return `${digitsOnly.substring(0, 6)}-${digitsOnly.substring(6, 8)}-${digitsOnly.substring(8)}`;
+        }
+        return ic.toUpperCase();
+    };
+
     const handleEdit = (doc: any) => {
         setIsEditing(doc.ic_passport_number);
         
@@ -59,13 +69,16 @@ export default function DoctorsPage() {
             else { initResign = 'Others'; initCustomResign = doc.resign_reason; }
         }
 
+        const isMy = /^\d{6}-\d{2}-\d{4}$/.test(doc.ic_passport_number) || doc.ic_passport_number.replace(/\D/g, '').length === 12;
+
         setForm({
             ic: doc.ic_passport_number,
             name: doc.name,
             gender: doc.gender,
             status: doc.status || 'active',
             resign_reason: initResign,
-            custom_resign_reason: initCustomResign
+            custom_resign_reason: initCustomResign,
+            is_my: isMy
         });
 
         // Parse specializations
@@ -94,6 +107,14 @@ export default function DoctorsPage() {
     const handleSave = async (e: React.FormEvent) => {
         e.preventDefault();
         
+        let finalIC = form.ic.toUpperCase();
+        if (form.is_my) {
+            if (finalIC.replace(/\D/g, '').length !== 12) {
+                return alert('IC must be exactly 12 digits for Malaysians.');
+            }
+            finalIC = formatIC(finalIC);
+        }
+
         if (form.status === 'resigned' && !form.resign_reason) return alert('Please provide a reason for resignation.');
         if (form.status === 'resigned' && form.resign_reason === 'Others' && !form.custom_resign_reason.trim()) return alert('Please specify the custom resignation reason.');
 
@@ -110,8 +131,8 @@ export default function DoctorsPage() {
 
         const payload = {
             clinic_id: clinicId,
-            ic: form.ic.toUpperCase(),
-            name: form.name.toUpperCase(),
+            ic: finalIC,
+            name: form.name,
             gender: form.gender.toUpperCase(),
             specialization: finalSpecs.join(', '),
             status: form.status,
@@ -131,11 +152,17 @@ export default function DoctorsPage() {
             if (res.ok) {
                 setIsEditing(null);
                 fetchDoctors(clinicId);
+            } else {
+                const err = await res.json();
+                alert(err.detail || 'Failed to save doctor.');
             }
-        } catch (err) {}
+        } catch (err) {
+            alert('Server Connection Error');
+        }
     };
 
     const openAvailModal = async (doc: any) => {
+        setAvailError('');
         setAvailForm({ ic: doc.ic_passport_number, docName: doc.name, day: 'mon', start: '09:00', end: '17:00' });
         setIsAvailModalOpen(true);
         fetchAvail(doc.ic_passport_number);
@@ -155,6 +182,23 @@ export default function DoctorsPage() {
 
     const handleSaveAvail = async (e: React.FormEvent) => {
         e.preventDefault();
+        setAvailError('');
+        
+        if (availForm.start >= availForm.end) {
+            return setAvailError("End time must be later than start time.");
+        }
+
+        const isOverlap = selectedDocAvail.some(a => {
+            if (a.day_of_week === availForm.day) {
+                return (availForm.start < a.end_time && availForm.end > a.start_time);
+            }
+            return false;
+        });
+
+        if (isOverlap) {
+            return setAvailError("This time slot clashes with an existing schedule for this day.");
+        }
+
         const token = localStorage.getItem('aicas_token');
         try {
             const res = await fetch(`http://127.0.0.1:8000/admin/doctors/${availForm.ic}/availability`, {
@@ -162,7 +206,12 @@ export default function DoctorsPage() {
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ clinic_id: clinicId, day_of_week: availForm.day, start_time: availForm.start, end_time: availForm.end })
             });
-            if (res.ok) fetchAvail(availForm.ic);
+            if (res.ok) {
+                fetchAvail(availForm.ic);
+            } else {
+                const err = await res.json();
+                setAvailError(err.detail);
+            }
         } catch (err) {}
     };
 
@@ -185,11 +234,11 @@ export default function DoctorsPage() {
         <div className="max-w-6xl mx-auto space-y-8">
             <div className="flex justify-between items-center">
                 <div>
-                    <h1 className="text-3xl font-black text-slate-800 tracking-tight flex items-center gap-2">Doctors</h1>
+                    <h1 className="text-3xl font-black text-slate-800 tracking-tight flex items-center gap-2">Medical Providers</h1>
                     <p className="text-slate-500 mt-1 text-sm">Manage doctors, specializations, and clinic schedules.</p>
                 </div>
                 {!isEditing && (
-                    <button onClick={() => { setIsEditing('new'); setForm({ic:'', name:'', gender:'MALE', status: 'active', resign_reason:'', custom_resign_reason:''}); setSelectedSpecs([]); setIsOthersSpec(false); setCustomSpec(''); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
+                    <button onClick={() => { setIsEditing('new'); setForm({ic:'', name:'', gender:'MALE', status: 'active', resign_reason:'', custom_resign_reason:'', is_my: true}); setSelectedSpecs([]); setIsOthersSpec(false); setCustomSpec(''); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
                         <Plus size={18} /> Add Doctor
                     </button>
                 )}
@@ -203,10 +252,18 @@ export default function DoctorsPage() {
                     <form onSubmit={handleSave} className="p-8 space-y-8">
                         <div>
                             <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">Identity</h3>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                                <input type="text" placeholder="IC / Passport Number *" required disabled={isEditing !== 'new'} value={form.ic} onChange={e => setForm({...form, ic: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-mono disabled:opacity-50" />
-                                <input type="text" placeholder="Full Name (With Dr.) *" required value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="col-span-2 p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-medium" />
-                                <select value={form.gender} onChange={e => setForm({...form, gender: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-medium">
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                <div className="flex gap-2 col-span-1 md:col-span-2">
+                                    <select value={form.is_my ? "my" : "non_my"} onChange={e => setForm({...form, is_my: e.target.value === "my", ic: ''})} className="p-3 border rounded-xl outline-none bg-slate-50 font-medium text-slate-700 w-1/3 disabled:opacity-50" disabled={isEditing !== 'new'}>
+                                        <option value="my">Malaysian</option>
+                                        <option value="non_my">Non-Malaysian</option>
+                                    </select>
+                                    <input type="text" placeholder={form.is_my ? "IC Number *" : "Passport Number *"} required disabled={isEditing !== 'new'} value={form.ic} onChange={e => setForm({...form, ic: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-mono flex-1 disabled:opacity-50" />
+                                </div>
+                                
+                                <input type="text" placeholder="Full Name (E.g. Dr. John) *" required value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="col-span-1 md:col-span-1 p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-medium" />
+                                
+                                <select value={form.gender} onChange={e => setForm({...form, gender: e.target.value})} className="col-span-1 md:col-span-1 p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-medium">
                                     <option value="MALE">MALE</option>
                                     <option value="FEMALE">FEMALE</option>
                                 </select>
@@ -271,7 +328,7 @@ export default function DoctorsPage() {
                         <div className="pt-6 border-t flex justify-end gap-3">
                             <button type="button" onClick={() => setIsEditing(null)} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition">Cancel</button>
                             <button type="submit" className="bg-blue-600 text-white font-bold px-10 py-3 rounded-xl shadow-lg hover:bg-blue-700 transition">
-                                {isEditing === 'new' ? "Register Doctor" : "Save Changes"}
+                                {isEditing === 'new' ? "Register Provider" : "Save Changes"}
                             </button>
                         </div>
                     </form>
@@ -282,7 +339,7 @@ export default function DoctorsPage() {
                 <>
                 <div>
                     <h2 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">
-                        <ActivitySquare size={20} className="text-blue-600"/> Active Doctors
+                        <ActivitySquare size={20} className="text-blue-600"/> Active Providers
                     </h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {activeDocs.map(d => (
@@ -317,7 +374,7 @@ export default function DoctorsPage() {
                 {pastDocs.length > 0 && (
                 <div className="opacity-75 pt-8">
                     <h2 className="text-xl font-black text-slate-500 mb-6 flex items-center gap-2">
-                        <UserMinus size={20} /> Inactive & Resigned Doctors
+                        <UserMinus size={20} /> Inactive & Resigned Providers
                     </h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {pastDocs.map(d => (
@@ -363,6 +420,11 @@ export default function DoctorsPage() {
                         </div>
                         
                         <div className="p-6 overflow-y-auto flex-1">
+                            {availError && (
+                                <div className="mb-4 p-3 bg-red-50 border border-red-100 text-red-600 text-sm font-bold rounded-xl">
+                                    {availError}
+                                </div>
+                            )}
                             <form onSubmit={handleSaveAvail} className="bg-indigo-50 border border-indigo-100 p-5 rounded-2xl mb-8">
                                 <h4 className="text-xs font-black text-indigo-800 uppercase tracking-widest mb-3">Add Time Slot</h4>
                                 <div className="grid grid-cols-3 gap-3 mb-4">
