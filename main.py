@@ -73,7 +73,6 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- Pydantic Models ---
 class LoginReq(BaseModel):
     email: str
     password: str
@@ -271,13 +270,11 @@ def normalize_vaccine_type(db: Session, given_type: str):
                 return t.title()
     return given_type.title()
 
-# --- PUBLIC ENDPOINTS ---
 @app.get("/clinics")
 def get_public_clinics(db: Session = Depends(get_db)):
     clinics = db.query(models.Clinic).all()
     return [{"id": str(c.id), "name": c.name, "address": c.address, "contact_number": c.contact_number} for c in clinics]
 
-# --- SECURE ENDPOINTS ---
 @app.post("/admin/login")
 def admin_login(data: LoginReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == data.email).first()
@@ -338,7 +335,7 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
     raise HTTPException(status_code=401, detail="Invalid temporary password")
 
 @app.post("/admin/forgot-password")
-def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
+async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
     if not user:
         return {"status": "success", "message": "If the email is registered, a code has been sent."}
@@ -365,18 +362,18 @@ def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
                 }]
             }
             
-            response = httpx.post(
-                "https://api.sendgrid.com/v3/mail/send",
-                headers={
-                    "Authorization": f"Bearer {sendgrid_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json=email_data,
-                timeout=10.0
-            )
-            
-            if response.status_code not in [200, 202, 204]:
-                print(f"Failed to send email via SendGrid: {response.text}")
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    "https://api.sendgrid.com/v3/mail/send",
+                    headers={
+                        "Authorization": f"Bearer {sendgrid_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=email_data,
+                    timeout=10.0
+                )
+                if res.status_code not in [200, 202, 204]:
+                    print(f"Failed to send email via SendGrid: {res.text}")
         except Exception as e:
             print(f"Failed to send email via SendGrid: {e}")
     else:
