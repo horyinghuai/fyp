@@ -134,7 +134,7 @@ export default function LoginPage() {
               setResendTimer(30);
               setStatusMsg({ type: 'success', text: 'Verification code sent to your email.' });
           } else {
-              setStatusMsg({ type: 'error', text: 'Failed to request code.' });
+              setStatusMsg({ type: 'error', text: 'The provided email address is not registered. Kindly verify the email and try again.' });
           }
       } catch (err) {
           setStatusMsg({ type: 'error', text: 'Server error.' });

@@ -344,18 +344,18 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
 async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
     if not user:
-        return {"status": "success", "message": "If the email is registered, a code has been sent."}
+        raise HTTPException(status_code=404, detail="This email is not registered.")
     
     code = ''.join(random.choices(string.digits, k=6))
     hashed_code = get_password_hash(code)
     
     db.query(models.VerificationCode).filter(
-        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.user_id == user.ic_passport_number,
         models.VerificationCode.used == False
     ).update({"used": True}, synchronize_session=False)
     
     v_code = models.VerificationCode(
-        ic_passport_number=user.ic_passport_number,
+        user_id=user.ic_passport_number,
         code_hash=hashed_code,
         expires_at=datetime.utcnow() + timedelta(minutes=15)
     )
@@ -409,7 +409,7 @@ def verify_code(req: VerifyCodeReq, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid request.")
         
     v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.user_id == user.ic_passport_number,
         models.VerificationCode.used == False,
         models.VerificationCode.expires_at > datetime.utcnow()
     ).order_by(models.VerificationCode.created_at.desc()).first()
@@ -426,7 +426,7 @@ def reset_password(req: ResetPasswordReq, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid request.")
         
     v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.user_id == user.ic_passport_number,
         models.VerificationCode.used == False,
         models.VerificationCode.expires_at > datetime.utcnow()
     ).order_by(models.VerificationCode.created_at.desc()).first()
