@@ -342,22 +342,18 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
 async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == req.email).first()
     if not user:
-        # Always return success to prevent email enumeration attacks
         return {"status": "success", "message": "If the email is registered, a code has been sent."}
     
-    # Generate 6-digit code and Hash it for security
     code = ''.join(random.choices(string.digits, k=6))
     hashed_code = get_password_hash(code)
     
-    # Invalidate older unused codes for this user to be safe
     db.query(models.VerificationCode).filter(
-        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.user_id == user.ic_passport_number,
         models.VerificationCode.used == False
-    ).update({"used": True})
+    ).update({"used": True}, synchronize_session=False)
     
-    # Save the new token
     v_code = models.VerificationCode(
-        ic_passport_number=user.ic_passport_number,
+        user_id=user.ic_passport_number,
         code_hash=hashed_code,
         expires_at=datetime.utcnow() + timedelta(minutes=15)
     )
@@ -410,9 +406,8 @@ def verify_code(req: VerifyCodeReq, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=400, detail="Invalid request.")
         
-    # Get the latest valid token
     v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.user_id == user.ic_passport_number,
         models.VerificationCode.used == False,
         models.VerificationCode.expires_at > datetime.utcnow()
     ).order_by(models.VerificationCode.created_at.desc()).first()
@@ -429,7 +424,7 @@ def reset_password(req: ResetPasswordReq, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid request.")
         
     v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.user_id == user.ic_passport_number,
         models.VerificationCode.used == False,
         models.VerificationCode.expires_at > datetime.utcnow()
     ).order_by(models.VerificationCode.created_at.desc()).first()
@@ -437,7 +432,6 @@ def reset_password(req: ResetPasswordReq, db: Session = Depends(get_db)):
     if not v_code or not verify_password(req.code, v_code.code_hash):
         raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
     
-    # Update hash and mark token as used
     user.password_hash = get_password_hash(req.new_password)
     v_code.used = True
     db.commit()
@@ -542,24 +536,39 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
         clinic.address = data.address
         clinic.contact_number = data.contact_number
 
-        # Update Primary Admin Details
+        admin_pwd = None
+        temp_admin_pwd = None
+
         p_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'primary_admin').first()
         if p_admin:
-            if p_admin.ic_passport_number != data.admin_ic:
-                db.execute(models.User.__table__.update().where(models.User.ic_passport_number == p_admin.ic_passport_number).values(ic_passport_number=data.admin_ic))
+            if p_admin.ic_passport_number != data.admin_ic or p_admin.email != data.admin_email:
+                admin_pwd = generate_temp_password()
+                p_admin.password_hash = get_password_hash(admin_pwd)
+            
+            old_ic = p_admin.ic_passport_number
             p_admin.name = data.admin_name.upper()
             p_admin.email = data.admin_email
+            db.flush()
+            
+            if old_ic != data.admin_ic:
+                db.execute(models.User.__table__.update().where(models.User.ic_passport_number == old_ic).values(ic_passport_number=data.admin_ic))
 
-        # Update or Create Temp Admin
         t_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'temporary_admin').first()
         if t_admin:
             if not data.temp_admin_ic:
                 db.delete(t_admin)
             else:
-                if t_admin.ic_passport_number != data.temp_admin_ic:
-                    db.execute(models.User.__table__.update().where(models.User.ic_passport_number == t_admin.ic_passport_number).values(ic_passport_number=data.temp_admin_ic))
+                if t_admin.ic_passport_number != data.temp_admin_ic or t_admin.email != data.temp_admin_email:
+                    temp_admin_pwd = generate_temp_password()
+                    t_admin.password_hash = get_password_hash(temp_admin_pwd)
+                    
+                old_t_ic = t_admin.ic_passport_number
                 t_admin.name = data.temp_admin_name.upper()
                 t_admin.email = data.temp_admin_email
+                db.flush()
+                
+                if old_t_ic != data.temp_admin_ic:
+                    db.execute(models.User.__table__.update().where(models.User.ic_passport_number == old_t_ic).values(ic_passport_number=data.temp_admin_ic))
         elif data.temp_admin_ic and data.temp_admin_email:
             temp_admin_pwd = generate_temp_password()
             new_temp = models.User(
@@ -576,7 +585,11 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
             db.add(new_temp)
 
         db.commit()
-        return {"status": "success"}
+        return {
+            "status": "success",
+            "admin_pwd": admin_pwd,
+            "temp_admin_pwd": temp_admin_pwd
+        }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))

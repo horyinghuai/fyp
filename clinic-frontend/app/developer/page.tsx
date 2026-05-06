@@ -88,7 +88,6 @@ export default function DeveloperPage() {
       e.preventDefault();
       setStatusMsg({ type: '', text: '' });
 
-      // Validations
       if (devForm.contact_number) {
           const formattedPhone = formatAndValidatePhone(devForm.contact_number);
           if (!formattedPhone) return setStatusMsg({ type: 'error', text: 'Invalid Clinic Phone Format. Must be +60X-XXXXXXX or 0X-XXXXXXX.' });
@@ -108,6 +107,11 @@ export default function DeveloperPage() {
       if (devForm.temp_admin_email && devForm.temp_admin_is_my) {
           if (finalTempAdminIC.replace(/\D/g, '').length !== 12) return setStatusMsg({ type: 'error', text: 'Temporary Admin IC must be exactly 12 digits for Malaysians.' });
           finalTempAdminIC = formatIC(finalTempAdminIC);
+      }
+
+      // ADDED CONFIRMATION BEFORE SAVING TO DATABASE
+      if (!window.confirm(`Are you sure you want to save the clinic details?`)) {
+          return;
       }
 
       const payload = {
@@ -135,7 +139,13 @@ export default function DeveloperPage() {
                   setStatusMsg({ type: 'success', text: 'Clinic successfully registered!' });
                   setGeneratedDevPasswords({ admin: data.admin_pwd, temp: data.temp_admin_pwd });
               } else {
-                  setIsEditing(null);
+                  if (data.admin_pwd || data.temp_admin_pwd) {
+                      setStatusMsg({ type: 'success', text: 'Clinic updated. Passwords generated due to credential changes.' });
+                      setGeneratedDevPasswords({ admin: data.admin_pwd, temp: data.temp_admin_pwd });
+                  } else {
+                      setStatusMsg({ type: 'success', text: 'Clinic successfully updated!' });
+                      setIsEditing(null);
+                  }
               }
           } else {
               const err = await res.json();
@@ -216,16 +226,18 @@ export default function DeveloperPage() {
              </form>
         ) : generatedDevPasswords ? (
              <div className="bg-white border border-slate-200 p-8 rounded-2xl shadow-sm mb-8">
-                 <h3 className="font-bold text-2xl text-slate-800 mb-2">🎉 Accounts Generated Successfully</h3>
+                 <h3 className="font-bold text-2xl text-slate-800 mb-2">🎉 Credentials Updated/Generated Successfully</h3>
                  <p className="text-slate-600 mb-6">Please securely share these temporary passwords with the clinic administrators. The system will force them to reset upon their first login.</p>
                  <div className="space-y-4">
-                     <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex justify-between items-center">
-                         <div>
-                             <span className="block text-xs font-bold text-slate-400 uppercase">Primary Admin</span>
-                             <span className="font-bold text-slate-700">{devForm.admin_email}</span>
+                     {generatedDevPasswords.admin && (
+                         <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex justify-between items-center">
+                             <div>
+                                 <span className="block text-xs font-bold text-slate-400 uppercase">Primary Admin</span>
+                                 <span className="font-bold text-slate-700">{devForm.admin_email}</span>
+                             </div>
+                             <span className="font-mono bg-white px-4 py-2 rounded-lg border text-red-600 font-bold">{generatedDevPasswords.admin}</span>
                          </div>
-                         <span className="font-mono bg-white px-4 py-2 rounded-lg border text-red-600 font-bold">{generatedDevPasswords.admin}</span>
-                     </div>
+                     )}
                      {generatedDevPasswords.temp && (
                          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex justify-between items-center">
                              <div>

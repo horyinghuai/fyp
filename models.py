@@ -30,7 +30,7 @@ class User(Base):
 class VerificationCode(Base):
     __tablename__ = "verification_code"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    ic_passport_numberd = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="CASCADE"), nullable=False)
+    ic_passport_number = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="CASCADE"), nullable=False)
     code_hash = Column(String(255), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     used = Column(Boolean, default=False)

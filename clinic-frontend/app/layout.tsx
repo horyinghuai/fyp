@@ -65,7 +65,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           const interval = setInterval(fetchPendingChats, 10000); 
           return () => clearInterval(interval);
       } else {
-          setClinicName("AICAS Master System");
+          setClinicName("AICAS Clinic System");
       }
     } else {
         setIsSessionLoaded(true);
