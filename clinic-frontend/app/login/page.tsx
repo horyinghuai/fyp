@@ -7,27 +7,26 @@ import { CheckCircle2, XCircle, ArrowLeft } from 'lucide-react';
 export default function LoginPage() {
   const router = useRouter();
   
-  // Standard Login States
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [clinicId, setClinicId] = useState('');
+  const [availableClinics, setAvailableClinics] = useState<any[]>([]);
+  const [isFetchingClinics, setIsFetchingClinics] = useState(false);
   const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
   const [isLoading, setIsLoading] = useState(false);
   
-  // First Time Login Flow
   const [isFirstLogin, setIsFirstLogin] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
-  // Enhanced Forgot Password Flow States
   const [isForgotPassword, setIsForgotPassword] = useState(false);
-  const [forgotStep, setForgotStep] = useState(0); // 0=None, 1=Email, 2=Code, 3=Reset
+  const [forgotStep, setForgotStep] = useState(0); 
   const [forgotEmail, setForgotEmail] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
   const [resetPassword, setResetPassword] = useState('');
   const [confirmResetPassword, setConfirmResetPassword] = useState('');
 
-  // Live Password Requirements Tracker
   const buildReqs = (pwd: string, confirm: string) => ({
     length: pwd.length >= 8,
     upper: /[A-Z]/.test(pwd),
@@ -43,7 +42,6 @@ export default function LoginPage() {
   const forgotReqs = buildReqs(resetPassword, confirmResetPassword);
   const isForgotValid = Object.values(forgotReqs).every(Boolean);
 
-  // Timer Effect for Resend Code
   useEffect(() => {
       if (resendTimer > 0) {
           const timer = setTimeout(() => setResendTimer(resendTimer - 1), 1000);
@@ -51,16 +49,48 @@ export default function LoginPage() {
       }
   }, [resendTimer]);
 
+  const handleEmailBlur = async () => {
+      if (!email) {
+          setAvailableClinics([]);
+          setClinicId('');
+          return;
+      }
+      setIsFetchingClinics(true);
+      try {
+          const res = await fetch('http://127.0.0.1:8000/admin/check-email', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email })
+          });
+          if (res.ok) {
+              const clinics = await res.json();
+              setAvailableClinics(clinics);
+              if (clinics.length > 0) {
+                  setClinicId(clinics[0].id);
+              } else {
+                  setClinicId('');
+              }
+          }
+      } catch (e) {
+          setAvailableClinics([]);
+      }
+      setIsFetchingClinics(false);
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatusMsg({ type: '', text: '' });
-    setIsLoading(true);
+    
+    if (!clinicId) {
+        return setStatusMsg({ type: 'error', text: 'Please select a clinic to login.' });
+    }
 
+    setIsLoading(true);
     try {
       const res = await fetch('http://127.0.0.1:8000/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password, clinic_id: clinicId })
       });
       
       if (res.ok) {
@@ -72,7 +102,6 @@ export default function LoginPage() {
             localStorage.setItem('aicas_token', data.token);
             localStorage.setItem('aicas_user', JSON.stringify(data.user));
             
-            // Redirect based on role
             if (data.user.role === 'developer') {
                 router.push('/developer');
             } else {
@@ -98,7 +127,7 @@ export default function LoginPage() {
           const res = await fetch('http://127.0.0.1:8000/admin/force-reset', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ email, temp_password: password, new_password: newPassword })
+              body: JSON.stringify({ email, temp_password: password, new_password: newPassword, clinic_id: clinicId })
           });
           if (res.ok) {
               const data = await res.json();
@@ -119,7 +148,6 @@ export default function LoginPage() {
       setIsLoading(false);
   };
 
-  // --- FORGOT PASSWORD WORKFLOW ---
   const handleSendCode = async (e?: React.FormEvent) => {
       if(e) e.preventDefault();
       setIsLoading(true);
@@ -134,7 +162,8 @@ export default function LoginPage() {
               setResendTimer(30);
               setStatusMsg({ type: 'success', text: 'Verification code sent to your email.' });
           } else {
-              setStatusMsg({ type: 'error', text: 'The provided email address is not registered. Kindly verify the email and try again.' });
+              const err = await res.json();
+              setStatusMsg({ type: 'error', text: err.detail || 'Failed to request code.' });
           }
       } catch (err) {
           setStatusMsg({ type: 'error', text: 'Server error.' });
@@ -196,8 +225,6 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative">
-      
-      {/* Back to Discovery Button */}
       <button 
           onClick={() => router.push('/discovery')} 
           className="absolute top-8 left-8 text-slate-300 hover:text-white transition flex items-center gap-2 font-bold bg-slate-800 px-5 py-2.5 rounded-xl shadow-md"
@@ -210,7 +237,7 @@ export default function LoginPage() {
           <h1 className="text-3xl font-black text-slate-800 tracking-tight flex items-center justify-center gap-2">
             <span className="text-blue-600">⚡</span> AICAS
           </h1>
-          <p className="text-slate-500 mt-2 text-sm">AICAS CLINIC SYSTEM</p>
+          <p className="text-slate-500 mt-2 text-sm">Secure Admin Portal Authentication</p>
         </div>
 
         {statusMsg.text && (
@@ -224,7 +251,6 @@ export default function LoginPage() {
              <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl text-sm text-orange-800 font-medium">
                  Since this is your first time logging in with a temporary password, you must create a new secure password to continue.
              </div>
-             
              <div>
                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">New Password</label>
                <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="••••••••" />
@@ -233,7 +259,6 @@ export default function LoginPage() {
                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Confirm New Password</label>
                <input type="password" value={confirmNewPassword} onChange={e => setConfirmNewPassword(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="••••••••" />
              </div>
-
              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 grid grid-cols-2 gap-2">
                 <ReqItem met={firstLoginReqs.length} text="8+ Characters" />
                 <ReqItem met={firstLoginReqs.upper} text="Uppercase Letter" />
@@ -242,7 +267,6 @@ export default function LoginPage() {
                 <ReqItem met={firstLoginReqs.symbol} text="Symbol (!@#$%)" />
                 <ReqItem met={firstLoginReqs.match} text="Passwords Match" />
              </div>
-
              <button type="submit" disabled={isLoading || !isFirstLoginValid} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition duration-200 mt-2 disabled:opacity-50">
                {isLoading ? "Updating..." : "Update Password & Login"}
              </button>
@@ -286,7 +310,6 @@ export default function LoginPage() {
                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Confirm New Password</label>
                <input type="password" value={confirmResetPassword} onChange={e => setConfirmResetPassword(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="••••••••" />
              </div>
-
              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 grid grid-cols-2 gap-2">
                 <ReqItem met={forgotReqs.length} text="8+ Characters" />
                 <ReqItem met={forgotReqs.upper} text="Uppercase Letter" />
@@ -295,7 +318,6 @@ export default function LoginPage() {
                 <ReqItem met={forgotReqs.symbol} text="Symbol (!@#$%)" />
                 <ReqItem met={forgotReqs.match} text="Passwords Match" />
              </div>
-
              <button type="submit" disabled={isLoading || !isForgotValid} className="w-full py-3 bg-emerald-600 text-white font-bold rounded-xl shadow-md hover:bg-emerald-700 transition duration-200 mt-2 disabled:opacity-50">
                {isLoading ? "Resetting..." : "Confirm & Reset Password"}
              </button>
@@ -305,16 +327,31 @@ export default function LoginPage() {
           <form onSubmit={handleLogin} className="space-y-5">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Email Address</label>
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="admin@clinic.com" />
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} onBlur={handleEmailBlur} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="admin@clinic.com" />
             </div>
+            
+            {email && !isFetchingClinics && availableClinics.length > 0 && (
+                <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Select Clinic</label>
+                  <select value={clinicId} onChange={e => setClinicId(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50 font-bold text-slate-700">
+                      {availableClinics.map(c => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                  </select>
+                </div>
+            )}
+            {email && !isFetchingClinics && availableClinics.length === 0 && (
+                <p className="text-xs font-bold text-red-500 bg-red-50 p-2 rounded-lg border border-red-100">No active clinics found for this email.</p>
+            )}
+
             <div>
               <div className="flex justify-between items-end mb-1">
                 <label className="block text-xs font-bold text-slate-500 uppercase">Password</label>
-                <button type="button" onClick={() => { setIsForgotPassword(true); setForgotStep(1); }} className="text-xs font-bold text-blue-600 hover:underline">Forgot Password?</button>
+                <button type="button" onClick={() => { setIsForgotPassword(true); setForgotStep(1); }} className="text-xs font-bold text-blue-600 hover:underline">Forgot?</button>
               </div>
               <input type="password" value={password} onChange={e => setPassword(e.target.value)} required className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition bg-slate-50" placeholder="••••••••" />
             </div>
-            <button type="submit" disabled={isLoading} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition duration-200 mt-4 disabled:opacity-50">
+            <button type="submit" disabled={isLoading || availableClinics.length === 0} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl shadow-md hover:bg-blue-700 transition duration-200 mt-4 disabled:opacity-50">
               {isLoading ? "Authenticating..." : "Sign In"}
             </button>
           </form>

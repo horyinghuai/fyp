@@ -93,14 +93,19 @@ app.add_middleware(
 )
 
 # --- Pydantic Models ---
+class CheckEmailReq(BaseModel):
+    email: str
+
 class LoginReq(BaseModel):
     email: str
     password: str
+    clinic_id: str
 
 class FirstLoginResetReq(BaseModel):
     email: str
     temp_password: str
     new_password: str
+    clinic_id: str
 
 class ForgotPasswordReq(BaseModel):
     email: str
@@ -144,6 +149,7 @@ class UserUpdateReq(BaseModel):
     email: str
     status: str
     permissions: str
+    resign_reason: Optional[str] = None
     force_email_update: Optional[bool] = False
     
 class UserSelfUpdateReq(BaseModel):
@@ -157,6 +163,8 @@ class DoctorCreateReq(BaseModel):
     name: str
     gender: str
     specialization: Optional[str] = None
+    status: Optional[str] = 'active'
+    resign_reason: Optional[str] = None
 
 class DoctorScheduleReq(BaseModel):
     clinic_id: str
@@ -296,8 +304,52 @@ def normalize_vaccine_type(db: Session, given_type: str):
                 return t.title()
     return given_type.title()
 
+def safe_update_user_ic(db: Session, old_ic: str, new_ic: str):
+    dependents = db.query(models.ClinicStaff).filter(models.ClinicStaff.assigned_by == old_ic).all()
+    for dep in dependents:
+        dep.assigned_by = None
+    db.flush()
+    
+    db.query(models.VerificationCode).filter(models.VerificationCode.ic_passport_number == old_ic).delete(synchronize_session=False)
+    db.flush()
+    
+    staff_records = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == old_ic).all()
+    staff_data = []
+    for s in staff_records:
+        staff_data.append({
+            "clinic_id": s.clinic_id,
+            "role": s.role,
+            "status": s.status,
+            "permissions": s.permissions,
+            "assigned_by": s.assigned_by,
+            "resign_reason": s.resign_reason,
+            "created_at": s.created_at
+        })
+        db.delete(s)
+    db.flush()
+    
+    db.execute(models.User.__table__.update().where(models.User.ic_passport_number == old_ic).values(ic_passport_number=new_ic))
+    db.flush()
+    
+    for sd in staff_data:
+        new_staff = models.ClinicStaff(
+            ic_passport_number=new_ic,
+            clinic_id=sd["clinic_id"],
+            role=sd["role"],
+            status=sd["status"],
+            permissions=sd["permissions"],
+            assigned_by=sd["assigned_by"],
+            resign_reason=sd["resign_reason"],
+            created_at=sd["created_at"]
+        )
+        db.add(new_staff)
+    db.flush()
+    
+    for dep in dependents:
+        dep.assigned_by = new_ic
+    db.flush()
+
 def check_and_update_user(db: Session, ic: str, name: str, email: str, force_email_update: bool):
-    """Safely checks user existence, validates global email constraints, and updates credentials."""
     user = db.query(models.User).filter_by(ic_passport_number=ic).first()
     temp_pwd = None
     
@@ -335,17 +387,47 @@ def get_public_clinics(db: Session = Depends(get_db)):
     clinics = db.query(models.Clinic).all()
     return [{"id": str(c.id), "name": c.name, "address": c.address, "contact_number": c.contact_number} for c in clinics]
 
+@app.post("/admin/check-email")
+def check_email_for_clinics(req: CheckEmailReq, db: Session = Depends(get_db)):
+    if req.email == "developer@aicas.com":
+        return [{"id": "dev", "name": "Developer Console"}]
+        
+    user = db.query(models.User).filter(models.User.email == req.email).first()
+    if not user:
+        return []
+        
+    staff_records = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').all()
+    clinic_ids = [s.clinic_id for s in staff_records]
+    
+    if not clinic_ids: return []
+    
+    clinics = db.query(models.Clinic).filter(models.Clinic.id.in_(clinic_ids)).all()
+    return [{"id": str(c.id), "name": c.name} for c in clinics]
+
 # --- SECURE ENDPOINTS ---
 @app.post("/admin/login")
 def admin_login(data: LoginReq, db: Session = Depends(get_db)):
+    if data.email == 'developer@aicas.com' and data.password == 'aicasdev2026' and data.clinic_id == 'dev':
+        return {
+            "status": "success", 
+            "token": "dev-token",
+            "user": {
+                "ic": "dev",
+                "name": "AICAS Developer",
+                "role": "developer",
+                "permissions": "ALL",
+                "clinic_id": "dev"
+            }
+        }
+
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
         
-    staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').first()
+    staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.clinic_id == data.clinic_id, models.ClinicStaff.status == 'active').first()
     
     if not staff:
-        raise HTTPException(status_code=403, detail="Account is disabled or not mapped to an active clinic")
+        raise HTTPException(status_code=403, detail="Account is disabled or not mapped to this clinic")
         
     if data.password.startswith("tmp_") and (user.password_hash == data.password or verify_password(data.password, user.password_hash)):
         return {"status": "requires_reset", "email": data.email}
@@ -375,13 +457,20 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
     
-    staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').first()
-    if not staff: raise HTTPException(status_code=403, detail="Account is disabled")
-    
     if user.password_hash == data.temp_password or verify_password(data.temp_password, user.password_hash):
         user.password_hash = get_password_hash(data.new_password)
         db.commit()
         
+        if data.clinic_id == 'dev':
+             return {
+                "status": "success", 
+                "token": "dev-token",
+                "user": { "ic": "dev", "name": "AICAS Developer", "role": "developer", "permissions": "ALL", "clinic_id": "dev" }
+            }
+            
+        staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.clinic_id == data.clinic_id, models.ClinicStaff.status == 'active').first()
+        if not staff: raise HTTPException(status_code=403, detail="Account is disabled or not mapped to this clinic")
+
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
             data={"sub": user.ic_passport_number, "role": staff.role, "clinic_id": str(staff.clinic_id)}, 
@@ -602,89 +691,70 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
         admin_pwd = None
         temp_admin_pwd = None
 
-        # --- PRIMARY ADMIN REAL-WORLD LOGIC ---
-        p_user, p_temp_pwd = check_and_update_user(db, data.admin_ic, data.admin_name, data.admin_email, data.force_email_update)
-        if p_temp_pwd: admin_pwd = p_temp_pwd
-
         p_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, role='primary_admin').first()
         if p_staff:
-            if p_staff.ic_passport_number != data.admin_ic:
-                # Archiving Old Admin
+            p_user = db.query(models.User).filter_by(ic_passport_number=p_staff.ic_passport_number).first()
+            old_ic = p_user.ic_passport_number
+            
+            p_user_upd, p_temp_pwd = check_and_update_user(db, data.admin_ic, data.admin_name, data.admin_email, data.force_email_update)
+            if p_temp_pwd: admin_pwd = p_temp_pwd
+            
+            if old_ic != data.admin_ic:
                 p_staff.role = 'staff'
                 p_staff.status = 'resigned'
+                p_staff.permissions = None
+                p_staff.resign_reason = "System Role Replacement"
                 db.flush()
                 
-                # Promoting or Add New Admin
                 new_p_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, ic_passport_number=data.admin_ic).first()
                 if new_p_staff:
                     new_p_staff.role = 'primary_admin'
                     new_p_staff.status = data.admin_status or 'active'
+                    new_p_staff.permissions = 'ALL'
+                    new_p_staff.resign_reason = None
                 else:
-                    new_p_staff = models.ClinicStaff(
-                        ic_passport_number=data.admin_ic,
-                        clinic_id=clinic_id,
-                        role='primary_admin',
-                        status=data.admin_status or 'active',
-                        permissions='ALL'
-                    )
+                    new_p_staff = models.ClinicStaff(ic_passport_number=data.admin_ic, clinic_id=clinic_id, role='primary_admin', status=data.admin_status or 'active', permissions='ALL')
                     db.add(new_p_staff)
             else:
                 p_staff.status = data.admin_status or 'active'
         else:
-            new_p_staff = models.ClinicStaff(
-                ic_passport_number=data.admin_ic,
-                clinic_id=clinic_id,
-                role='primary_admin',
-                status=data.admin_status or 'active',
-                permissions='ALL'
-            )
+            p_user_upd, p_temp_pwd = check_and_update_user(db, data.admin_ic, data.admin_name, data.admin_email, data.force_email_update)
+            if p_temp_pwd: admin_pwd = p_temp_pwd
+            new_p_staff = models.ClinicStaff(ic_passport_number=data.admin_ic, clinic_id=clinic_id, role='primary_admin', status=data.admin_status or 'active', permissions='ALL')
             db.add(new_p_staff)
 
-        db.flush()
-
-        # --- TEMPORARY ADMIN REAL-WORLD LOGIC ---
         t_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, role='temporary_admin').first()
         if not data.temp_admin_ic:
             if t_staff:
                 t_staff.role = 'staff'
                 t_staff.status = 'resigned'
+                t_staff.permissions = None
+                t_staff.resign_reason = "System Role Replacement"
         else:
-            t_user, t_temp_pwd = check_and_update_user(db, data.temp_admin_ic, data.temp_admin_name, data.temp_admin_email, data.force_email_update)
+            t_user_upd, t_temp_pwd = check_and_update_user(db, data.temp_admin_ic, data.temp_admin_name, data.temp_admin_email, data.force_email_update)
             if t_temp_pwd: temp_admin_pwd = t_temp_pwd
             
             if t_staff:
                 if t_staff.ic_passport_number != data.temp_admin_ic:
-                    # Archiving Old Temp Admin
                     t_staff.role = 'staff'
                     t_staff.status = 'resigned'
+                    t_staff.permissions = None
+                    t_staff.resign_reason = "System Role Replacement"
                     db.flush()
                     
-                    # Promoting or Add New Temp Admin
                     new_t_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, ic_passport_number=data.temp_admin_ic).first()
                     if new_t_staff:
                         new_t_staff.role = 'temporary_admin'
                         new_t_staff.status = data.temp_admin_status or 'inactive'
+                        new_t_staff.permissions = 'ALL'
+                        new_t_staff.resign_reason = None
                     else:
-                        new_t_staff = models.ClinicStaff(
-                            ic_passport_number=data.temp_admin_ic,
-                            clinic_id=clinic_id,
-                            role='temporary_admin',
-                            status=data.temp_admin_status or 'inactive',
-                            assigned_by=data.admin_ic,
-                            permissions='ALL'
-                        )
+                        new_t_staff = models.ClinicStaff(ic_passport_number=data.temp_admin_ic, clinic_id=clinic_id, role='temporary_admin', status=data.temp_admin_status or 'inactive', assigned_by=data.admin_ic, permissions='ALL')
                         db.add(new_t_staff)
                 else:
                     t_staff.status = data.temp_admin_status or 'inactive'
             else:
-                new_t_staff = models.ClinicStaff(
-                    ic_passport_number=data.temp_admin_ic,
-                    clinic_id=clinic_id,
-                    role='temporary_admin',
-                    status=data.temp_admin_status or 'inactive',
-                    assigned_by=data.admin_ic,
-                    permissions='ALL'
-                )
+                new_t_staff = models.ClinicStaff(ic_passport_number=data.temp_admin_ic, clinic_id=clinic_id, role='temporary_admin', status=data.temp_admin_status or 'inactive', assigned_by=data.admin_ic, permissions='ALL')
                 db.add(new_t_staff)
 
         db.commit()
@@ -724,6 +794,7 @@ def get_all_users(db: Session = Depends(get_db), current_user: models.User = Dep
         "role": s.role,
         "status": s.status,
         "permissions": s.permissions,
+        "resign_reason": s.resign_reason,
         "created_at": s.created_at
     } for u, s in staff]
 
@@ -755,19 +826,24 @@ def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), cur
     if current_user.role not in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    user = db.query(models.User).filter(models.User.ic_passport_number == ic).first()
-    if not user: raise HTTPException(status_code=404, detail="User not found")
-    
     staff = db.query(models.ClinicStaff).filter_by(ic_passport_number=ic, clinic_id=current_user.clinic_id).first()
     if not staff: raise HTTPException(status_code=404, detail="Staff record not found in this clinic")
     
-    if staff.role in ['primary_admin', 'temporary_admin']:
-        raise HTTPException(status_code=403, detail="Cannot modify admins from the staff management interface")
+    if staff.role in ['primary_admin', 'temporary_admin'] and current_user.ic_passport_number != ic:
+        raise HTTPException(status_code=403, detail="Only Developers can modify primary/temporary admins from the Developer Console.")
         
     user, temp_pwd = check_and_update_user(db, ic, data.name, data.email, data.force_email_update)
     
     staff.status = data.status
-    staff.permissions = data.permissions
+    if data.status == 'resigned':
+        staff.resign_reason = data.resign_reason
+        staff.permissions = None 
+    else:
+        staff.resign_reason = None
+        if staff.role in ['primary_admin', 'temporary_admin']:
+            staff.permissions = 'ALL'
+        else:
+            staff.permissions = data.permissions
         
     db.commit()
     return {"status": "success", "temp_password": temp_pwd}

@@ -12,7 +12,9 @@ export default function StaffPage() {
     const [form, setForm] = useState({
         ic: '', name: '', email: '', is_my: true,
         permissions: { PATIENT_REGISTRATION: false, APPOINTMENT_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, CHAT_SUPPORT: false, PATIENT_INQUIRY: false },
-        status: 'active'
+        status: 'active',
+        resign_reason: '',
+        custom_resign_reason: ''
     });
 
     const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
@@ -51,8 +53,24 @@ export default function StaffPage() {
         
         const isMy = user.ic.replace(/\D/g, '').length === 12;
         const permsArray = user.permissions ? user.permissions.split(', ') : [];
+        
+        let initialReason = '';
+        let customReason = '';
+        const defaultReasons = ["Found Better Opportunity", "Relocation", "Personal Reasons", "Career Change", "System Role Replacement"];
+        
+        if (user.status === 'resigned' && user.resign_reason) {
+            if (defaultReasons.includes(user.resign_reason)) {
+                initialReason = user.resign_reason;
+            } else {
+                initialReason = 'Others';
+                customReason = user.resign_reason;
+            }
+        }
+
         setForm({
             ic: user.ic, name: user.name, email: user.email, is_my: isMy, status: user.status,
+            resign_reason: initialReason,
+            custom_resign_reason: customReason,
             permissions: {
                 PATIENT_REGISTRATION: permsArray.includes('PATIENT_REGISTRATION') || permsArray.includes('ALL'),
                 APPOINTMENT_MANAGEMENT: permsArray.includes('APPOINTMENT_MANAGEMENT') || permsArray.includes('ALL'),
@@ -73,9 +91,20 @@ export default function StaffPage() {
             }
             finalIC = formatIC(finalIC);
         }
+        
+        if (form.status === 'resigned' && !form.resign_reason) {
+            return setStatusMsg({ type: 'error', text: 'Please provide a reason for resignation.' });
+        }
+        if (form.status === 'resigned' && form.resign_reason === 'Others' && !form.custom_resign_reason.trim()) {
+            return setStatusMsg({ type: 'error', text: 'Please specify the custom resignation reason.' });
+        }
 
         const activePerms = Object.keys(form.permissions).filter((k) => form.permissions[k as keyof typeof form.permissions]);
         const permissionsStr = activePerms.length === 5 ? 'ALL' : activePerms.join(', ');
+        
+        const finalResignReason = form.status === 'resigned' 
+            ? (form.resign_reason === 'Others' ? form.custom_resign_reason : form.resign_reason)
+            : null;
 
         const submitPayload = async (isForced = false) => {
             const token = localStorage.getItem('aicas_token');
@@ -92,6 +121,7 @@ export default function StaffPage() {
                         email: form.email,
                         status: form.status,
                         permissions: permissionsStr,
+                        resign_reason: finalResignReason,
                         clinic_id: 'default',
                         force_email_update: isForced
                     })
@@ -147,7 +177,7 @@ export default function StaffPage() {
                     <p className="text-slate-500 mt-1 text-sm">Manage clinic personnel, permissions, and roles.</p>
                 </div>
                 {!isEditing && (
-                    <button onClick={() => { setIsEditing('new'); setStatusMsg({type:'', text:''}); setTempPassword(null); setForm({ic:'', name:'', email:'', is_my: true, status: 'active', permissions: { PATIENT_REGISTRATION: false, APPOINTMENT_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, CHAT_SUPPORT: false, PATIENT_INQUIRY: false }}); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
+                    <button onClick={() => { setIsEditing('new'); setStatusMsg({type:'', text:''}); setTempPassword(null); setForm({ic:'', name:'', email:'', is_my: true, status: 'active', resign_reason: '', custom_resign_reason: '', permissions: { PATIENT_REGISTRATION: false, APPOINTMENT_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, CHAT_SUPPORT: false, PATIENT_INQUIRY: false }}); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
                         <Plus size={18} /> Add New Staff
                     </button>
                 )}
@@ -195,28 +225,50 @@ export default function StaffPage() {
                                     <input type="email" placeholder="Login Email" required value={form.email} onChange={e => setForm({...form, email: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-medium text-slate-800" />
                                     
                                     {isEditing !== 'new' && (
-                                        <select value={form.status} onChange={e => setForm({...form, status: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white font-bold text-slate-700">
+                                        <select value={form.status} onChange={e => setForm({...form, status: e.target.value, resign_reason: e.target.value !== 'resigned' ? '' : form.resign_reason})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-white font-bold text-slate-700 shadow-sm border-slate-200">
                                             <option value="active">Active</option>
                                             <option value="inactive">Inactive</option>
-                                            <option value="resigned">Resigned</option>
+                                            <option value="resigned">Resigned / Archived</option>
                                         </select>
                                     )}
                                 </div>
+                                
+                                {form.status === 'resigned' && (
+                                    <div className="mt-4 animate-in fade-in slide-in-from-top-2 p-4 bg-red-50 border border-red-100 rounded-xl">
+                                        <label className="block text-xs font-bold text-red-500 uppercase mb-2">Reason for Resignation</label>
+                                        <div className="flex gap-4">
+                                            <select value={form.resign_reason} onChange={e => setForm({...form, resign_reason: e.target.value})} required className="flex-1 p-3 border border-red-200 rounded-xl outline-none bg-white font-medium text-slate-700">
+                                                <option value="" disabled>Select a reason...</option>
+                                                <option value="Found Better Opportunity">Found Better Opportunity</option>
+                                                <option value="Relocation">Relocation</option>
+                                                <option value="Personal Reasons">Personal Reasons</option>
+                                                <option value="Career Change">Career Change</option>
+                                                <option value="System Role Replacement">System Role Replacement</option>
+                                                <option value="Others">Others (Please specify)</option>
+                                            </select>
+                                            {form.resign_reason === 'Others' && (
+                                                <input type="text" placeholder="Please specify..." value={form.custom_resign_reason} onChange={e => setForm({...form, custom_resign_reason: e.target.value})} required className="flex-1 p-3 border border-red-200 rounded-xl outline-none bg-white font-medium text-slate-700" />
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
-                            <div>
-                                <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">Module Permissions</h3>
-                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                                    {Object.keys(form.permissions).map((key) => (
-                                        <label key={key} className={`flex items-start gap-3 p-4 border rounded-xl cursor-pointer transition ${form.permissions[key as keyof typeof form.permissions] ? 'border-blue-500 bg-blue-50/50' : 'bg-white hover:bg-slate-50'}`}>
-                                            <input type="checkbox" checked={form.permissions[key as keyof typeof form.permissions]} onChange={(e) => setForm({ ...form, permissions: { ...form.permissions, [key]: e.target.checked } })} className="mt-1 w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500" />
-                                            <div>
-                                                <div className="font-bold text-slate-800 text-sm">{key.replace(/_/g, ' ')}</div>
-                                            </div>
-                                        </label>
-                                    ))}
+                            {form.status !== 'resigned' && (
+                                <div className="animate-in fade-in">
+                                    <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">Module Permissions</h3>
+                                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                                        {Object.keys(form.permissions).map((key) => (
+                                            <label key={key} className={`flex items-start gap-3 p-4 border rounded-xl cursor-pointer transition ${form.permissions[key as keyof typeof form.permissions] ? 'border-blue-500 bg-blue-50/50' : 'bg-white hover:bg-slate-50'}`}>
+                                                <input type="checkbox" checked={form.permissions[key as keyof typeof form.permissions]} onChange={(e) => setForm({ ...form, permissions: { ...form.permissions, [key]: e.target.checked } })} className="mt-1 w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500" />
+                                                <div>
+                                                    <div className="font-bold text-slate-800 text-sm">{key.replace(/_/g, ' ')}</div>
+                                                </div>
+                                            </label>
+                                        ))}
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
                             <div className="pt-6 border-t flex justify-end gap-3">
                                 <button type="button" onClick={() => setIsEditing(null)} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition">Cancel</button>
@@ -231,10 +283,9 @@ export default function StaffPage() {
 
             {!isEditing && (
                 <>
-                {/* Active Staff List */}
                 <div>
                     <h2 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2">
-                        <UserCog size={20} className="text-blue-600"/> Active Staff
+                        <UserCog size={20} className="text-blue-600"/> Active Personnel
                     </h2>
                     <div className="grid grid-cols-1 gap-4">
                         {activeStaff.map((s, idx) => (
@@ -281,11 +332,10 @@ export default function StaffPage() {
                     </div>
                 </div>
 
-                {/* Past / Resigned Staff List */}
                 {pastStaff.length > 0 && (
                 <div className="opacity-75">
                     <h2 className="text-xl font-black text-slate-500 mb-6 flex items-center gap-2">
-                        <UserMinus size={20} /> Inactive & Resigned Staff
+                        <UserMinus size={20} /> Archived & Resigned Personnel
                     </h2>
                     <div className="grid grid-cols-1 gap-4">
                         {pastStaff.map((s, idx) => (
@@ -300,6 +350,11 @@ export default function StaffPage() {
                                             <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-red-100 text-red-700">
                                                 {s.status}
                                             </span>
+                                            {s.status === 'resigned' && s.resign_reason && (
+                                                <span className="text-[10px] font-medium text-slate-500 italic">
+                                                    Reason: {s.resign_reason}
+                                                </span>
+                                            )}
                                         </div>
                                         <div className="flex items-center gap-3 text-xs text-slate-400 font-medium">
                                             <span className="font-mono">{s.ic}</span>
