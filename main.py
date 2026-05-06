@@ -104,10 +104,12 @@ class ClinicRegistrationReq(BaseModel):
     admin_name: str
     admin_email: str
     admin_password: Optional[str] = None
+    admin_status: Optional[str] = 'active'
     temp_admin_ic: Optional[str] = None
     temp_admin_name: Optional[str] = None
     temp_admin_email: Optional[str] = None
     temp_admin_password: Optional[str] = None
+    temp_admin_status: Optional[str] = 'inactive'
 
 class UserCreateReq(BaseModel):
     clinic_id: str
@@ -348,12 +350,12 @@ async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db))
     hashed_code = get_password_hash(code)
     
     db.query(models.VerificationCode).filter(
-        models.VerificationCode.user_id == user.ic_passport_number,
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
         models.VerificationCode.used == False
     ).update({"used": True}, synchronize_session=False)
     
     v_code = models.VerificationCode(
-        user_id=user.ic_passport_number,
+        ic_passport_number=user.ic_passport_number,
         code_hash=hashed_code,
         expires_at=datetime.utcnow() + timedelta(minutes=15)
     )
@@ -407,7 +409,7 @@ def verify_code(req: VerifyCodeReq, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid request.")
         
     v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.user_id == user.ic_passport_number,
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
         models.VerificationCode.used == False,
         models.VerificationCode.expires_at > datetime.utcnow()
     ).order_by(models.VerificationCode.created_at.desc()).first()
@@ -424,7 +426,7 @@ def reset_password(req: ResetPasswordReq, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid request.")
         
     v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.user_id == user.ic_passport_number,
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
         models.VerificationCode.used == False,
         models.VerificationCode.expires_at > datetime.utcnow()
     ).order_by(models.VerificationCode.created_at.desc()).first()
@@ -456,12 +458,14 @@ def get_all_clinics(db: Session = Depends(get_db), current_user: models.User = D
             "admin": {
                 "ic": primary.ic_passport_number if primary else "",
                 "name": primary.name if primary else "",
-                "email": primary.email if primary else ""
+                "email": primary.email if primary else "",
+                "status": primary.status if primary else "active"
             } if primary else None,
             "temp_admin": {
                 "ic": temp.ic_passport_number if temp else "",
                 "name": temp.name if temp else "",
-                "email": temp.email if temp else ""
+                "email": temp.email if temp else "",
+                "status": temp.status if temp else "inactive"
             } if temp else None
         })
     return res
@@ -548,6 +552,7 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
             old_ic = p_admin.ic_passport_number
             p_admin.name = data.admin_name.upper()
             p_admin.email = data.admin_email
+            p_admin.status = data.admin_status or 'active'
             db.flush()
             
             if old_ic != data.admin_ic:
@@ -565,6 +570,7 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
                 old_t_ic = t_admin.ic_passport_number
                 t_admin.name = data.temp_admin_name.upper()
                 t_admin.email = data.temp_admin_email
+                t_admin.status = data.temp_admin_status or 'inactive'
                 db.flush()
                 
                 if old_t_ic != data.temp_admin_ic:
@@ -578,7 +584,7 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
                 email=data.temp_admin_email,
                 password_hash=get_password_hash(temp_admin_pwd),
                 role='temporary_admin',
-                status='inactive',
+                status=data.temp_admin_status or 'inactive',
                 assigned_by=data.admin_ic,
                 permissions='ALL'
             )
@@ -1374,7 +1380,7 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
         chosen = random.choice(best_docs)
         return {"is_valid": True, "reason": "Slot available.", "doctor_id": str(chosen['doc'].ic_passport_number), "doctor_name": chosen['doc'].name, "suggestions": []}
     else:
-        date_has_slots = any(len(ds['slots']) > 0 for ds in doc_slots)
+        date_has_slots = any(len(ds['slots']) > 0 for doc in doc_slots for ds in [doc]) # Quick safe check
         if date_has_slots:
             reason = f"Date {date_obj.strftime('%Y-%m-%d')} is available, but the selected time {req_dt.strftime('%H:%M')} is unavailable."
         else:

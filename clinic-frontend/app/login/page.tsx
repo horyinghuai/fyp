@@ -7,23 +7,27 @@ import { CheckCircle2, XCircle, ArrowLeft } from 'lucide-react';
 export default function LoginPage() {
   const router = useRouter();
   
+  // Standard Login States
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
   const [isLoading, setIsLoading] = useState(false);
   
+  // First Time Login Flow
   const [isFirstLogin, setIsFirstLogin] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
+  // Enhanced Forgot Password Flow States
   const [isForgotPassword, setIsForgotPassword] = useState(false);
-  const [forgotStep, setForgotStep] = useState(0); 
+  const [forgotStep, setForgotStep] = useState(0); // 0=None, 1=Email, 2=Code, 3=Reset
   const [forgotEmail, setForgotEmail] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
   const [resetPassword, setResetPassword] = useState('');
   const [confirmResetPassword, setConfirmResetPassword] = useState('');
 
+  // Live Password Requirements Tracker
   const buildReqs = (pwd: string, confirm: string) => ({
     length: pwd.length >= 8,
     upper: /[A-Z]/.test(pwd),
@@ -39,6 +43,7 @@ export default function LoginPage() {
   const forgotReqs = buildReqs(resetPassword, confirmResetPassword);
   const isForgotValid = Object.values(forgotReqs).every(Boolean);
 
+  // Timer Effect for Resend Code
   useEffect(() => {
       if (resendTimer > 0) {
           const timer = setTimeout(() => setResendTimer(resendTimer - 1), 1000);
@@ -50,15 +55,6 @@ export default function LoginPage() {
     e.preventDefault();
     setStatusMsg({ type: '', text: '' });
     setIsLoading(true);
-    
-    if (email === 'developer@aicas.com' && password === 'aicasdev2026') {
-        setStatusMsg({ type: 'success', text: 'Developer Access Granted.' });
-        localStorage.setItem('aicas_token', 'dev-token');
-        localStorage.setItem('aicas_user', JSON.stringify({ role: 'developer', name: 'AICAS Developer' }));
-        router.push('/developer');
-        setIsLoading(false);
-        return;
-    }
 
     try {
       const res = await fetch('http://127.0.0.1:8000/admin/login', {
@@ -75,7 +71,13 @@ export default function LoginPage() {
         } else {
             localStorage.setItem('aicas_token', data.token);
             localStorage.setItem('aicas_user', JSON.stringify(data.user));
-            router.push('/');
+            
+            // Redirect based on role
+            if (data.user.role === 'developer') {
+                router.push('/developer');
+            } else {
+                router.push('/');
+            }
         }
       } else {
         const err = await res.json();
@@ -102,7 +104,12 @@ export default function LoginPage() {
               const data = await res.json();
               localStorage.setItem('aicas_token', data.token);
               localStorage.setItem('aicas_user', JSON.stringify(data.user));
-              router.push('/');
+              
+              if (data.user.role === 'developer') {
+                  router.push('/developer');
+              } else {
+                  router.push('/');
+              }
           } else {
               setStatusMsg({ type: 'error', text: 'Failed to reset password.' });
           }
@@ -112,6 +119,7 @@ export default function LoginPage() {
       setIsLoading(false);
   };
 
+  // --- FORGOT PASSWORD WORKFLOW ---
   const handleSendCode = async (e?: React.FormEvent) => {
       if(e) e.preventDefault();
       setIsLoading(true);
@@ -202,7 +210,7 @@ export default function LoginPage() {
           <h1 className="text-3xl font-black text-slate-800 tracking-tight flex items-center justify-center gap-2">
             <span className="text-blue-600">⚡</span> AICAS
           </h1>
-          <p className="text-slate-500 mt-2 text-sm">Secure Admin Portal Authentication</p>
+          <p className="text-slate-500 mt-2 text-sm">AICAS CLINIC SYSTEM</p>
         </div>
 
         {statusMsg.text && (

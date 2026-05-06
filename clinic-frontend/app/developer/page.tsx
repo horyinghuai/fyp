@@ -8,8 +8,8 @@ export default function DeveloperPage() {
   
   const [devForm, setDevForm] = useState({
       clinic_name: '', registration_number: '', address: '', contact_number: '',
-      admin_ic: '', admin_name: '', admin_email: '', admin_is_my: true,
-      temp_admin_ic: '', temp_admin_name: '', temp_admin_email: '', temp_admin_is_my: true
+      admin_ic: '', admin_name: '', admin_email: '', admin_is_my: true, admin_status: 'active',
+      temp_admin_ic: '', temp_admin_name: '', temp_admin_email: '', temp_admin_is_my: true, temp_admin_status: 'inactive'
   });
   
   const [isEditing, setIsEditing] = useState<string | null>(null);
@@ -68,18 +68,20 @@ export default function DeveloperPage() {
               admin_ic: clinic.admin?.ic || '',
               admin_name: clinic.admin?.name || '',
               admin_email: clinic.admin?.email || '',
+              admin_status: clinic.admin?.status || 'active',
               admin_is_my: adminIsMy,
               temp_admin_ic: clinic.temp_admin?.ic || '',
               temp_admin_name: clinic.temp_admin?.name || '',
               temp_admin_email: clinic.temp_admin?.email || '',
+              temp_admin_status: clinic.temp_admin?.status || 'inactive',
               temp_admin_is_my: tempAdminIsMy
           });
       } else {
           setIsEditing('new');
           setDevForm({ 
               clinic_name: '', registration_number: '', address: '', contact_number: '',
-              admin_ic: '', admin_name: '', admin_email: '', admin_is_my: true,
-              temp_admin_ic: '', temp_admin_name: '', temp_admin_email: '', temp_admin_is_my: true
+              admin_ic: '', admin_name: '', admin_email: '', admin_is_my: true, admin_status: 'active',
+              temp_admin_ic: '', temp_admin_name: '', temp_admin_email: '', temp_admin_is_my: true, temp_admin_status: 'inactive'
           });
       }
   };
@@ -109,7 +111,6 @@ export default function DeveloperPage() {
           finalTempAdminIC = formatIC(finalTempAdminIC);
       }
 
-      // ADDED CONFIRMATION BEFORE SAVING TO DATABASE
       if (!window.confirm(`Are you sure you want to save the clinic details?`)) {
           return;
       }
@@ -195,25 +196,37 @@ export default function DeveloperPage() {
 
                 <div>
                     <h3 className="font-bold text-lg text-purple-700 mb-4 border-b pb-2">2. Primary Administrator</h3>
-                    <div className="grid grid-cols-4 gap-4">
+                    <div className={`grid gap-4 ${isEditing === 'new' ? 'grid-cols-4' : 'grid-cols-5'}`}>
                         <select value={devForm.admin_is_my ? "my" : "non_my"} onChange={e => setDevForm({...devForm, admin_is_my: e.target.value === "my", admin_ic: ''})} className="p-3 border rounded-xl outline-none bg-slate-50">
                             <option value="my">Malaysian</option><option value="non_my">Non-Malaysian</option>
                         </select>
                         <input type="text" placeholder={devForm.admin_is_my ? "IC Number *" : "Passport Number *"} required value={devForm.admin_ic} onChange={e => setDevForm({...devForm, admin_ic: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase" />
                         <input type="text" placeholder="Full Name *" required value={devForm.admin_name} onChange={e => setDevForm({...devForm, admin_name: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase" />
                         <input type="email" placeholder="Login Email *" required value={devForm.admin_email} onChange={e => setDevForm({...devForm, admin_email: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50" />
+                        {isEditing !== 'new' && (
+                            <select value={devForm.admin_status} onChange={e => setDevForm({...devForm, admin_status: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-white shadow-sm font-bold text-slate-700">
+                                <option value="active">Active</option>
+                                <option value="inactive">Inactive</option>
+                            </select>
+                        )}
                     </div>
                 </div>
 
                 <div>
                     <h3 className="font-bold text-lg text-emerald-700 mb-4 border-b pb-2">3. Temporary Administrator (Optional)</h3>
-                    <div className="grid grid-cols-4 gap-4">
+                    <div className={`grid gap-4 ${isEditing === 'new' ? 'grid-cols-4' : 'grid-cols-5'}`}>
                         <select value={devForm.temp_admin_is_my ? "my" : "non_my"} onChange={e => setDevForm({...devForm, temp_admin_is_my: e.target.value === "my", temp_admin_ic: ''})} className="p-3 border rounded-xl outline-none bg-slate-50">
                             <option value="my">Malaysian</option><option value="non_my">Non-Malaysian</option>
                         </select>
                         <input type="text" placeholder={devForm.temp_admin_is_my ? "IC Number" : "Passport Number"} value={devForm.temp_admin_ic} onChange={e => setDevForm({...devForm, temp_admin_ic: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase" />
                         <input type="text" placeholder="Full Name" value={devForm.temp_admin_name} onChange={e => setDevForm({...devForm, temp_admin_name: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase" />
                         <input type="email" placeholder="Login Email" value={devForm.temp_admin_email} onChange={e => setDevForm({...devForm, temp_admin_email: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50" />
+                        {isEditing !== 'new' && devForm.temp_admin_ic && (
+                            <select value={devForm.temp_admin_status} onChange={e => setDevForm({...devForm, temp_admin_status: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white shadow-sm font-bold text-slate-700">
+                                <option value="active">Active</option>
+                                <option value="inactive">Inactive</option>
+                            </select>
+                        )}
                     </div>
                 </div>
 
@@ -262,13 +275,23 @@ export default function DeveloperPage() {
                             </div>
                             <div className="flex gap-6">
                                 <div className="bg-purple-50 border border-purple-100 p-3 rounded-lg min-w-[200px]">
-                                    <p className="text-[10px] font-bold text-purple-400 uppercase">Primary Admin</p>
+                                    <div className="flex justify-between items-center mb-1">
+                                        <p className="text-[10px] font-bold text-purple-400 uppercase">Primary Admin</p>
+                                        <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${c.admin?.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                                            {c.admin?.status || 'Active'}
+                                        </span>
+                                    </div>
                                     <p className="font-bold text-slate-700 text-sm">{c.admin?.name || 'Missing'}</p>
                                     <p className="text-xs text-slate-500 font-mono mt-1">{c.admin?.ic}</p>
                                 </div>
                                 {c.temp_admin && (
                                     <div className="bg-emerald-50 border border-emerald-100 p-3 rounded-lg min-w-[200px]">
-                                        <p className="text-[10px] font-bold text-emerald-400 uppercase">Temp Admin</p>
+                                        <div className="flex justify-between items-center mb-1">
+                                            <p className="text-[10px] font-bold text-emerald-500 uppercase">Temp Admin</p>
+                                            <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${c.temp_admin.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                                                {c.temp_admin.status}
+                                            </span>
+                                        </div>
                                         <p className="font-bold text-slate-700 text-sm">{c.temp_admin.name}</p>
                                         <p className="text-xs text-slate-500 font-mono mt-1">{c.temp_admin.ic}</p>
                                     </div>
