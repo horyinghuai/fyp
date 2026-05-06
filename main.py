@@ -1363,12 +1363,11 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
         if slots: doc_slots.append({"doc": doc, "slots": slots, "free_count": len(slots)})
     return doc_slots
 
-@app.get("/doctors/{clinic_id}")
-def get_doctors(clinic_id: str, db: Session = Depends(get_db)):
-    doctors = db.query(models.Doctor).join(
-        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
-    ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).distinct().all()
-    return doctors
+@app.get("/admin/doctors-all/{clinic_id}")
+def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
+    # Resolves empty list issue by retrieving all doctors.
+    # The current DB schema establishes Doctors as a global pool across clinics.
+    return db.query(models.Doctor).all()
 
 @app.get("/vaccines/{clinic_id}")
 def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
@@ -1783,15 +1782,26 @@ def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_d
     db.commit()
     return {"status": "success"}
 
-@app.get("/admin/doctors-all/{clinic_id}")
-def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
-    # Modifying logic to return all doctors associated via availability even if inactive
-    # However, doctors table itself doesn't explicitly link to clinic without availability 
-    # based on the provided schema. We will pull from availability but distinct on doctor.
-    doctors = db.query(models.Doctor).join(
-        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
-    ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).distinct().all()
-    return doctors
+@app.get("/admin/doctors/{ic}/availability/{clinic_id}")
+def get_doc_availability(ic: str, clinic_id: str, db: Session = Depends(get_db)):
+    avails = db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=ic, clinic_id=clinic_id).all()
+    return [{"day_of_week": a.day_of_week, "start_time": a.start_time.strftime("%H:%M"), "end_time": a.end_time.strftime("%H:%M")} for a in avails]
+
+@app.post("/admin/doctors/{ic}/availability")
+def add_doc_availability(ic: str, data: DoctorScheduleReq, db: Session = Depends(get_db)):
+    st = datetime.strptime(data.start_time, "%H:%M").time()
+    et = datetime.strptime(data.end_time, "%H:%M").time()
+    avail = models.DoctorClinicAvailability(doctor_ic=ic, clinic_id=data.clinic_id, day_of_week=data.day_of_week, start_time=st, end_time=et)
+    db.add(avail)
+    db.commit()
+    return {"status": "success"}
+
+@app.delete("/admin/doctors/{ic}/availability/{clinic_id}/{day}/{start_time}")
+def del_doc_availability(ic: str, clinic_id: str, day: str, start_time: str, db: Session = Depends(get_db)):
+    st = datetime.strptime(start_time, "%H:%M").time()
+    db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=ic, clinic_id=clinic_id, day_of_week=day, start_time=st).delete()
+    db.commit()
+    return {"status": "success"}
 
 @app.post("/admin/doctors")
 def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
@@ -1831,27 +1841,6 @@ def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db))
         else:
             doc.resign_reason = None
         db.commit()
-    return {"status": "success"}
-
-@app.get("/admin/doctors/{ic}/availability/{clinic_id}")
-def get_doc_availability(ic: str, clinic_id: str, db: Session = Depends(get_db)):
-    avails = db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=ic, clinic_id=clinic_id).all()
-    return [{"day_of_week": a.day_of_week, "start_time": a.start_time.strftime("%H:%M"), "end_time": a.end_time.strftime("%H:%M")} for a in avails]
-
-@app.post("/admin/doctors/{ic}/availability")
-def add_doc_availability(ic: str, data: DoctorScheduleReq, db: Session = Depends(get_db)):
-    st = datetime.strptime(data.start_time, "%H:%M").time()
-    et = datetime.strptime(data.end_time, "%H:%M").time()
-    avail = models.DoctorClinicAvailability(doctor_ic=ic, clinic_id=data.clinic_id, day_of_week=data.day_of_week, start_time=st, end_time=et)
-    db.add(avail)
-    db.commit()
-    return {"status": "success"}
-
-@app.delete("/admin/doctors/{ic}/availability/{clinic_id}/{day}/{start_time}")
-def del_doc_availability(ic: str, clinic_id: str, day: str, start_time: str, db: Session = Depends(get_db)):
-    st = datetime.strptime(start_time, "%H:%M").time()
-    db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=ic, clinic_id=clinic_id, day_of_week=day, start_time=st).delete()
-    db.commit()
     return {"status": "success"}
 
 @app.get("/admin/chat-history/{clinic_id}")

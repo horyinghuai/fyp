@@ -48,8 +48,6 @@ class Doctor(Base):
     name = Column(String(255), nullable=False)
     gender = Column(String(10)) 
     specialization = Column(String(100))
-    status = Column(String(20), default='active')
-    resign_reason = Column(String(255), nullable=True)
 
 class Patient(Base):
     __tablename__ = "patients"
@@ -132,6 +130,7 @@ class DoctorClinicAvailability(Base):
     start_time = Column(Time, primary_key=True)
     end_time = Column(Time)
     status = Column(String(20), default='active')
+    resign_reason = Column(String(255), nullable=True)
 
 class VaccineClinic(Base):
     __tablename__ = "vaccine_clinic"
