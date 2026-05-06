@@ -129,6 +129,7 @@ class ClinicRegistrationReq(BaseModel):
     temp_admin_email: Optional[str] = None
     temp_admin_password: Optional[str] = None
     temp_admin_status: Optional[str] = 'inactive'
+    force_email_update: Optional[bool] = False
 
 class UserCreateReq(BaseModel):
     clinic_id: str
@@ -136,12 +137,14 @@ class UserCreateReq(BaseModel):
     name: str
     email: str
     permissions: str
+    force_email_update: Optional[bool] = False
     
 class UserUpdateReq(BaseModel):
     name: str
     email: str
     status: str
     permissions: str
+    force_email_update: Optional[bool] = False
     
 class UserSelfUpdateReq(BaseModel):
     name: str
@@ -293,55 +296,38 @@ def normalize_vaccine_type(db: Session, given_type: str):
                 return t.title()
     return given_type.title()
 
-def safe_update_user_ic(db: Session, old_ic: str, new_ic: str):
-    """Safely updates a User's IC by cascading the change to dependent assigned_by rows and clearing code locks."""
-    # 1. Nullify dependent assigned_by in clinic_staff to break the FK lock
-    dependents = db.query(models.ClinicStaff).filter(models.ClinicStaff.assigned_by == old_ic).all()
-    for dep in dependents:
-        dep.assigned_by = None
-    db.flush()
+def check_and_update_user(db: Session, ic: str, name: str, email: str, force_email_update: bool):
+    """Safely checks user existence, validates global email constraints, and updates credentials."""
+    user = db.query(models.User).filter_by(ic_passport_number=ic).first()
+    temp_pwd = None
     
-    # 2. Delete temporary verification codes holding the old IC
-    db.query(models.VerificationCode).filter(models.VerificationCode.ic_passport_number == old_ic).delete(synchronize_session=False)
-    db.flush()
-    
-    # 3. Store and momentarily delete all ClinicStaff records for the old IC to break the FK lock
-    staff_records = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == old_ic).all()
-    staff_data = []
-    for s in staff_records:
-        staff_data.append({
-            "clinic_id": s.clinic_id,
-            "role": s.role,
-            "status": s.status,
-            "permissions": s.permissions,
-            "assigned_by": s.assigned_by,
-            "created_at": s.created_at
-        })
-        db.delete(s)
-    db.flush()
-    
-    # 4. Safely update the core User IC
-    db.execute(models.User.__table__.update().where(models.User.ic_passport_number == old_ic).values(ic_passport_number=new_ic))
-    db.flush()
-    
-    # 5. Re-insert the ClinicStaff records seamlessly pointing to the new IC
-    for sd in staff_data:
-        new_staff = models.ClinicStaff(
-            ic_passport_number=new_ic,
-            clinic_id=sd["clinic_id"],
-            role=sd["role"],
-            status=sd["status"],
-            permissions=sd["permissions"],
-            assigned_by=sd["assigned_by"],
-            created_at=sd["created_at"]
+    if user:
+        if user.email != email:
+            if not force_email_update:
+                raise HTTPException(status_code=409, detail="EMAIL_MISMATCH")
+            else:
+                email_conflict = db.query(models.User).filter(models.User.email == email).first()
+                if email_conflict and email_conflict.ic_passport_number != ic:
+                    raise HTTPException(status_code=400, detail=f"Email {email} is already used by another account.")
+                
+                user.email = email
+                temp_pwd = generate_temp_password()
+                user.password_hash = get_password_hash(temp_pwd)
+        user.name = name.upper()
+    else:
+        email_conflict = db.query(models.User).filter(models.User.email == email).first()
+        if email_conflict:
+            raise HTTPException(status_code=400, detail=f"Email {email} is already used by another account.")
+        
+        temp_pwd = generate_temp_password()
+        user = models.User(
+            ic_passport_number=ic, 
+            name=name.upper(), 
+            email=email, 
+            password_hash=get_password_hash(temp_pwd)
         )
-        db.add(new_staff)
-    db.flush()
-    
-    # 6. Re-link the dependents back to the new IC
-    for dep in dependents:
-        dep.assigned_by = new_ic
-    db.flush()
+        db.add(user)
+    return user, temp_pwd
 
 # --- PUBLIC ENDPOINTS ---
 @app.get("/clinics")
@@ -520,7 +506,6 @@ def get_all_clinics(db: Session = Depends(get_db), current_user: models.User = D
     clinics = db.query(models.Clinic).all()
     res = []
     for c in clinics:
-        # EXPLICIT JOIN CONDITION ADDED HERE TO PREVENT AmbiguousForeignKeysError
         admins = db.query(models.User, models.ClinicStaff).join(
             models.ClinicStaff, models.User.ic_passport_number == models.ClinicStaff.ic_passport_number
         ).filter(models.ClinicStaff.clinic_id == c.id).all()
@@ -552,11 +537,11 @@ def get_all_clinics(db: Session = Depends(get_db), current_user: models.User = D
 def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     if current_user.role != 'developer':
         raise HTTPException(status_code=403, detail="Not authorized")
-        
-    admin_pwd = generate_temp_password()
-    temp_admin_pwd = generate_temp_password() if data.temp_admin_ic else None
 
     try:
+        p_user, admin_pwd = check_and_update_user(db, data.admin_ic, data.admin_name, data.admin_email, data.force_email_update)
+        temp_admin_pwd = None
+        
         new_clinic = models.Clinic(
             name=data.clinic_name,
             registration_number=data.registration_number,
@@ -565,16 +550,6 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db), 
         )
         db.add(new_clinic)
         db.flush()
-        
-        p_user = db.query(models.User).filter_by(ic_passport_number=data.admin_ic).first()
-        if not p_user:
-            p_user = models.User(
-                ic_passport_number=data.admin_ic,
-                name=data.admin_name.upper(),
-                email=data.admin_email,
-                password_hash=get_password_hash(admin_pwd)
-            )
-            db.add(p_user)
         
         p_staff = models.ClinicStaff(
             ic_passport_number=data.admin_ic,
@@ -586,15 +561,7 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db), 
         db.add(p_staff)
         
         if data.temp_admin_ic and data.temp_admin_email:
-            t_user = db.query(models.User).filter_by(ic_passport_number=data.temp_admin_ic).first()
-            if not t_user:
-                t_user = models.User(
-                    ic_passport_number=data.temp_admin_ic,
-                    name=data.temp_admin_name.upper(),
-                    email=data.temp_admin_email,
-                    password_hash=get_password_hash(temp_admin_pwd)
-                )
-                db.add(t_user)
+            t_user, temp_admin_pwd = check_and_update_user(db, data.temp_admin_ic, data.temp_admin_name, data.temp_admin_email, data.force_email_update)
                 
             t_staff = models.ClinicStaff(
                 ic_passport_number=data.temp_admin_ic,
@@ -635,68 +602,90 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
         admin_pwd = None
         temp_admin_pwd = None
 
-        # Update Primary Admin Details
+        # --- PRIMARY ADMIN REAL-WORLD LOGIC ---
+        p_user, p_temp_pwd = check_and_update_user(db, data.admin_ic, data.admin_name, data.admin_email, data.force_email_update)
+        if p_temp_pwd: admin_pwd = p_temp_pwd
+
         p_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, role='primary_admin').first()
         if p_staff:
-            p_user = db.query(models.User).filter_by(ic_passport_number=p_staff.ic_passport_number).first()
-            old_ic = p_user.ic_passport_number
-            
-            if old_ic != data.admin_ic or p_user.email != data.admin_email:
-                admin_pwd = generate_temp_password()
-                p_user.password_hash = get_password_hash(admin_pwd)
-            
-            p_user.name = data.admin_name.upper()
-            p_user.email = data.admin_email
-            p_staff.status = data.admin_status or 'active'
-            db.flush()
-            
-            if old_ic != data.admin_ic:
-                safe_update_user_ic(db, old_ic, data.admin_ic)
-
-        # Update or Create Temp Admin
-        t_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, role='temporary_admin').first()
-        if t_staff:
-            if not data.temp_admin_ic:
-                db.delete(t_staff)
-            else:
-                t_user = db.query(models.User).filter_by(ic_passport_number=t_staff.ic_passport_number).first()
-                old_t_ic = t_user.ic_passport_number
-                
-                if old_t_ic != data.temp_admin_ic or t_user.email != data.temp_admin_email:
-                    temp_admin_pwd = generate_temp_password()
-                    t_user.password_hash = get_password_hash(temp_admin_pwd)
-                    
-                t_user.name = data.temp_admin_name.upper()
-                t_user.email = data.temp_admin_email
-                t_staff.status = data.temp_admin_status or 'inactive'
+            if p_staff.ic_passport_number != data.admin_ic:
+                # Archiving Old Admin
+                p_staff.role = 'staff'
+                p_staff.status = 'resigned'
                 db.flush()
                 
-                if old_t_ic != data.temp_admin_ic:
-                    safe_update_user_ic(db, old_t_ic, data.temp_admin_ic)
-                        
-        elif data.temp_admin_ic and data.temp_admin_email:
-            temp_admin_pwd = generate_temp_password()
-            t_user = db.query(models.User).filter_by(ic_passport_number=data.temp_admin_ic).first()
-            if not t_user:
-                t_user = models.User(
-                    ic_passport_number=data.temp_admin_ic,
-                    name=data.temp_admin_name.upper(),
-                    email=data.temp_admin_email,
-                    password_hash=get_password_hash(temp_admin_pwd)
-                )
-                db.add(t_user)
+                # Promoting or Add New Admin
+                new_p_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, ic_passport_number=data.admin_ic).first()
+                if new_p_staff:
+                    new_p_staff.role = 'primary_admin'
+                    new_p_staff.status = data.admin_status or 'active'
+                else:
+                    new_p_staff = models.ClinicStaff(
+                        ic_passport_number=data.admin_ic,
+                        clinic_id=clinic_id,
+                        role='primary_admin',
+                        status=data.admin_status or 'active',
+                        permissions='ALL'
+                    )
+                    db.add(new_p_staff)
             else:
-                t_user.password_hash = get_password_hash(temp_admin_pwd)
-                
-            new_t_staff = models.ClinicStaff(
-                ic_passport_number=data.temp_admin_ic,
+                p_staff.status = data.admin_status or 'active'
+        else:
+            new_p_staff = models.ClinicStaff(
+                ic_passport_number=data.admin_ic,
                 clinic_id=clinic_id,
-                role='temporary_admin',
-                status=data.temp_admin_status or 'inactive',
-                assigned_by=data.admin_ic,
+                role='primary_admin',
+                status=data.admin_status or 'active',
                 permissions='ALL'
             )
-            db.add(new_t_staff)
+            db.add(new_p_staff)
+
+        db.flush()
+
+        # --- TEMPORARY ADMIN REAL-WORLD LOGIC ---
+        t_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, role='temporary_admin').first()
+        if not data.temp_admin_ic:
+            if t_staff:
+                t_staff.role = 'staff'
+                t_staff.status = 'resigned'
+        else:
+            t_user, t_temp_pwd = check_and_update_user(db, data.temp_admin_ic, data.temp_admin_name, data.temp_admin_email, data.force_email_update)
+            if t_temp_pwd: temp_admin_pwd = t_temp_pwd
+            
+            if t_staff:
+                if t_staff.ic_passport_number != data.temp_admin_ic:
+                    # Archiving Old Temp Admin
+                    t_staff.role = 'staff'
+                    t_staff.status = 'resigned'
+                    db.flush()
+                    
+                    # Promoting or Add New Temp Admin
+                    new_t_staff = db.query(models.ClinicStaff).filter_by(clinic_id=clinic_id, ic_passport_number=data.temp_admin_ic).first()
+                    if new_t_staff:
+                        new_t_staff.role = 'temporary_admin'
+                        new_t_staff.status = data.temp_admin_status or 'inactive'
+                    else:
+                        new_t_staff = models.ClinicStaff(
+                            ic_passport_number=data.temp_admin_ic,
+                            clinic_id=clinic_id,
+                            role='temporary_admin',
+                            status=data.temp_admin_status or 'inactive',
+                            assigned_by=data.admin_ic,
+                            permissions='ALL'
+                        )
+                        db.add(new_t_staff)
+                else:
+                    t_staff.status = data.temp_admin_status or 'inactive'
+            else:
+                new_t_staff = models.ClinicStaff(
+                    ic_passport_number=data.temp_admin_ic,
+                    clinic_id=clinic_id,
+                    role='temporary_admin',
+                    status=data.temp_admin_status or 'inactive',
+                    assigned_by=data.admin_ic,
+                    permissions='ALL'
+                )
+                db.add(new_t_staff)
 
         db.commit()
         return {
@@ -721,7 +710,6 @@ def get_all_users(db: Session = Depends(get_db), current_user: models.User = Dep
     if current_user.role not in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # EXPLICIT JOIN CONDITION ADDED HERE TOO
     staff = db.query(models.User, models.ClinicStaff).join(
         models.ClinicStaff, models.User.ic_passport_number == models.ClinicStaff.ic_passport_number
     ).filter(
@@ -744,21 +732,7 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
     if current_user.role not in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    existing_user = db.query(models.User).filter(models.User.ic_passport_number == data.ic_passport_number).first()
-    temp_password = generate_temp_password()
-    
-    if not existing_user:
-        existing_email = db.query(models.User).filter(models.User.email == data.email).first()
-        if existing_email: raise HTTPException(status_code=400, detail="Email already registered")
-        new_user = models.User(
-            ic_passport_number=data.ic_passport_number,
-            name=data.name.upper(),
-            email=data.email,
-            password_hash=get_password_hash(temp_password)
-        )
-        db.add(new_user)
-    else:
-        temp_password = None
+    user, temp_pwd = check_and_update_user(db, data.ic_passport_number, data.name, data.email, data.force_email_update)
         
     existing_staff = db.query(models.ClinicStaff).filter_by(ic_passport_number=data.ic_passport_number, clinic_id=current_user.clinic_id).first()
     if existing_staff:
@@ -774,7 +748,7 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
     )
     db.add(new_staff)
     db.commit()
-    return {"status": "success", "temp_password": temp_password, "message": "Password generated successfully." if temp_password else "Existing user successfully linked to clinic."}
+    return {"status": "success", "temp_password": temp_pwd, "message": "Password generated successfully." if temp_pwd else "Existing user successfully linked to clinic."}
 
 @app.put("/admin/users/{ic}")
 def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -790,13 +764,13 @@ def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), cur
     if staff.role in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Cannot modify admins from the staff management interface")
         
-    user.name = data.name.upper()
-    user.email = data.email
+    user, temp_pwd = check_and_update_user(db, ic, data.name, data.email, data.force_email_update)
+    
     staff.status = data.status
     staff.permissions = data.permissions
         
     db.commit()
-    return {"status": "success"}
+    return {"status": "success", "temp_password": temp_pwd}
     
 @app.put("/admin/profile")
 def update_self_profile(data: UserSelfUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):

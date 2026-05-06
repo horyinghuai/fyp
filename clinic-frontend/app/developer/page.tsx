@@ -115,45 +115,58 @@ export default function DeveloperPage() {
           return;
       }
 
-      const payload = {
-          ...devForm,
-          admin_ic: finalAdminIC,
-          temp_admin_ic: finalTempAdminIC
-      };
+      const submitPayload = async (isForced = false) => {
+          const payload = {
+              ...devForm,
+              admin_ic: finalAdminIC,
+              temp_admin_ic: finalTempAdminIC,
+              force_email_update: isForced
+          };
 
-      setIsSubmitting(true);
-      const token = localStorage.getItem('aicas_token');
-      const method = isEditing === 'new' ? 'POST' : 'PUT';
-      const url = isEditing === 'new' ? 'http://127.0.0.1:8000/admin/register-clinic' : `http://127.0.0.1:8000/admin/clinics/${isEditing}`;
+          setIsSubmitting(true);
+          const token = localStorage.getItem('aicas_token');
+          const method = isEditing === 'new' ? 'POST' : 'PUT';
+          const url = isEditing === 'new' ? 'http://127.0.0.1:8000/admin/register-clinic' : `http://127.0.0.1:8000/admin/clinics/${isEditing}`;
 
-      try {
-          const res = await fetch(url, {
-              method,
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify(payload)
-          });
-          
-          if (res.ok) {
-              const data = await res.json();
-              fetchClinics();
-              if (isEditing === 'new') {
-                  setStatusMsg({ type: 'success', text: 'Clinic successfully registered!' });
-                  setGeneratedDevPasswords({ admin: data.admin_pwd, temp: data.temp_admin_pwd });
-              } else {
-                  if (data.admin_pwd || data.temp_admin_pwd) {
-                      setStatusMsg({ type: 'success', text: 'Clinic updated. Passwords generated due to credential changes.' });
+          try {
+              const res = await fetch(url, {
+                  method,
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                  body: JSON.stringify(payload)
+              });
+              
+              if (res.ok) {
+                  const data = await res.json();
+                  fetchClinics();
+                  if (isEditing === 'new') {
+                      setStatusMsg({ type: 'success', text: 'Clinic successfully registered!' });
                       setGeneratedDevPasswords({ admin: data.admin_pwd, temp: data.temp_admin_pwd });
                   } else {
-                      setStatusMsg({ type: 'success', text: 'Clinic successfully updated!' });
-                      setIsEditing(null);
+                      if (data.admin_pwd || data.temp_admin_pwd) {
+                          setStatusMsg({ type: 'success', text: 'Clinic updated. Passwords generated due to credential changes.' });
+                          setGeneratedDevPasswords({ admin: data.admin_pwd, temp: data.temp_admin_pwd });
+                      } else {
+                          setStatusMsg({ type: 'success', text: 'Clinic successfully updated!' });
+                          setIsEditing(null);
+                      }
+                  }
+              } else {
+                  const err = await res.json();
+                  if (err.detail === "EMAIL_MISMATCH" || err.detail?.includes("EMAIL_MISMATCH")) {
+                      if (window.confirm("The IC number entered is currently linked to a DIFFERENT email address in another clinic. Do you want to overwrite their email globally to the new one you provided? (This will reset their password)")) {
+                          submitPayload(true);
+                      } else {
+                          setStatusMsg({ type: 'error', text: 'Action cancelled. Please use the original email address for this user IC.' });
+                      }
+                  } else {
+                      setStatusMsg({ type: 'error', text: err.detail || 'Save failed.' });
                   }
               }
-          } else {
-              const err = await res.json();
-              setStatusMsg({ type: 'error', text: err.detail || 'Save failed.' });
-          }
-      } catch (err) { setStatusMsg({ type: 'error', text: 'Server connection error.' }); }
-      setIsSubmitting(false);
+          } catch (err) { setStatusMsg({ type: 'error', text: 'Server connection error.' }); }
+          setIsSubmitting(false);
+      };
+
+      submitPayload(false);
   };
 
   const handleDeleteClinic = async (id: string) => {
