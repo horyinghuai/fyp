@@ -543,44 +543,84 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
         admin_pwd = None
         temp_admin_pwd = None
 
+        # Update Primary Admin Details
         p_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'primary_admin').first()
         if p_admin:
-            if p_admin.ic_passport_number != data.admin_ic or p_admin.email != data.admin_email:
+            old_ic = p_admin.ic_passport_number
+            
+            if old_ic != data.admin_ic or p_admin.email != data.admin_email:
                 admin_pwd = generate_temp_password()
                 p_admin.password_hash = get_password_hash(admin_pwd)
             
-            old_ic = p_admin.ic_passport_number
             p_admin.name = data.admin_name.upper()
             p_admin.email = data.admin_email
             p_admin.status = data.admin_status or 'active'
             db.flush()
             
-            # Cascade Update logic for Foreign Keys (Assigned By, Verification Codes)
+            # Cascade Update logic for Foreign Keys safely
             if old_ic != data.admin_ic:
-                db.execute(models.User.__table__.update().where(models.User.assigned_by == old_ic).values(assigned_by=data.admin_ic))
-                db.execute(models.VerificationCode.__table__.update().where(models.VerificationCode.ic_passport_number == old_ic).values(ic_passport_number=data.admin_ic))
+                # 1. Identify dependents
+                dependent_users = db.query(models.User).filter(models.User.assigned_by == old_ic).all()
+                dependent_ics = [u.ic_passport_number for u in dependent_users]
+                
+                # 2. Nullify FK temporarily
+                if dependent_ics:
+                    db.query(models.User).filter(models.User.assigned_by == old_ic).update({"assigned_by": None}, synchronize_session=False)
+                    db.flush()
+                
+                # 3. Delete Verification Codes (temporary, safe to drop to release FK lock)
+                db.query(models.VerificationCode).filter(models.VerificationCode.ic_passport_number == old_ic).delete(synchronize_session=False)
+                db.flush()
+                
+                # 4. Update the actual IC
                 db.execute(models.User.__table__.update().where(models.User.ic_passport_number == old_ic).values(ic_passport_number=data.admin_ic))
+                db.flush()
+                
+                # 5. Restore FK
+                if dependent_ics:
+                    db.query(models.User).filter(models.User.ic_passport_number.in_(dependent_ics)).update({"assigned_by": data.admin_ic}, synchronize_session=False)
+                    db.flush()
 
+        # Update or Create Temp Admin
         t_admin = db.query(models.User).filter(models.User.clinic_id == clinic_id, models.User.role == 'temporary_admin').first()
         if t_admin:
             if not data.temp_admin_ic:
                 db.delete(t_admin)
             else:
-                if t_admin.ic_passport_number != data.temp_admin_ic or t_admin.email != data.temp_admin_email:
+                old_t_ic = t_admin.ic_passport_number
+                if old_t_ic != data.temp_admin_ic or t_admin.email != data.temp_admin_email:
                     temp_admin_pwd = generate_temp_password()
                     t_admin.password_hash = get_password_hash(temp_admin_pwd)
                     
-                old_t_ic = t_admin.ic_passport_number
                 t_admin.name = data.temp_admin_name.upper()
                 t_admin.email = data.temp_admin_email
                 t_admin.status = data.temp_admin_status or 'inactive'
                 db.flush()
                 
-                # Cascade Update logic for Foreign Keys for Temporary Admin
+                # Cascade Update logic for Foreign Keys for Temporary Admin safely
                 if old_t_ic != data.temp_admin_ic:
-                    db.execute(models.User.__table__.update().where(models.User.assigned_by == old_t_ic).values(assigned_by=data.temp_admin_ic))
-                    db.execute(models.VerificationCode.__table__.update().where(models.VerificationCode.ic_passport_number == old_t_ic).values(ic_passport_number=data.temp_admin_ic))
+                    # 1. Identify dependents
+                    dependent_t_users = db.query(models.User).filter(models.User.assigned_by == old_t_ic).all()
+                    dependent_t_ics = [u.ic_passport_number for u in dependent_t_users]
+                    
+                    # 2. Nullify FK temporarily
+                    if dependent_t_ics:
+                        db.query(models.User).filter(models.User.assigned_by == old_t_ic).update({"assigned_by": None}, synchronize_session=False)
+                        db.flush()
+                    
+                    # 3. Delete Verification Codes
+                    db.query(models.VerificationCode).filter(models.VerificationCode.ic_passport_number == old_t_ic).delete(synchronize_session=False)
+                    db.flush()
+                    
+                    # 4. Update the actual IC
                     db.execute(models.User.__table__.update().where(models.User.ic_passport_number == old_t_ic).values(ic_passport_number=data.temp_admin_ic))
+                    db.flush()
+                    
+                    # 5. Restore FK
+                    if dependent_t_ics:
+                        db.query(models.User).filter(models.User.ic_passport_number.in_(dependent_t_ics)).update({"assigned_by": data.temp_admin_ic}, synchronize_session=False)
+                        db.flush()
+                        
         elif data.temp_admin_ic and data.temp_admin_email:
             temp_admin_pwd = generate_temp_password()
             new_temp = models.User(

@@ -230,7 +230,7 @@ export default function StaffPage() {
                                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Status</label>
                                 <select value={formData.status} onChange={e => setFormData({...formData, status: e.target.value})} className="w-full p-2 border rounded-lg outline-none bg-white">
                                     <option value="active">Active</option>
-                                    <option value="inactive">Inactive / Disabled</option>
+                                    <option value="inactive">Inactive</option>
                                 </select>
                             </div>
                         )}
