@@ -17,20 +17,25 @@ class Clinic(Base):
 class User(Base):
     __tablename__ = "users"
     ic_passport_number = Column(String(20), primary_key=True)
-    clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=True) 
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class ClinicStaff(Base):
+    __tablename__ = "clinic_staff"
+    ic_passport_number = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True)
+    clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), primary_key=True)
     role = Column(String(50), nullable=False)
     status = Column(String(20), default='active')
-    assigned_by = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="SET NULL"), nullable=True)
+    assigned_by = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="SET NULL", onupdate="CASCADE"), nullable=True)
     permissions = Column(String)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class VerificationCode(Base):
     __tablename__ = "verification_code"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    ic_passport_number = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="CASCADE"), nullable=False)
+    ic_passport_number = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     code_hash = Column(String(255), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     used = Column(Boolean, default=False)
