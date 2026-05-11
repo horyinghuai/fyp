@@ -66,7 +66,6 @@ def get_current_user(authorization: str = Header(None), db: Session = Depends(ge
         user = db.query(models.User).filter(models.User.ic_passport_number == ic).first()
         if user is None: raise HTTPException(status_code=401, detail="User not found")
         
-        # FIX: Intercept "dev" logins before hitting the UUID strict columns
         if clinic_id == "dev" and payload.get("role") == "developer":
             user.role = 'developer'
             user.clinic_id = 'dev'
@@ -375,6 +374,7 @@ def check_and_update_user(db: Session, ic: str, name: str, email: str, force_ema
                 temp_pwd = generate_temp_password()
                 user.password_hash = get_password_hash(temp_pwd)
         user.name = name.upper()
+        db.flush() # Ensure update is registered before FK links
     else:
         email_conflict = db.query(models.User).filter(models.User.email == email).first()
         if email_conflict:
@@ -388,6 +388,7 @@ def check_and_update_user(db: Session, ic: str, name: str, email: str, force_ema
             password_hash=get_password_hash(temp_pwd)
         )
         db.add(user)
+        db.flush() # CRITICAL: Push new user to DB so ClinicStaff FK doesn't fail
     return user, temp_pwd
 
 # --- PUBLIC ENDPOINTS ---
@@ -644,9 +645,10 @@ def get_all_clinics(db: Session = Depends(get_db), current_user: models.User = D
     clinics = db.query(models.Clinic).all()
     res = []
     for c in clinics:
-        admins = db.query(models.User, models.ClinicStaff).join(
-            models.ClinicStaff, models.User.ic_passport_number == models.ClinicStaff.ic_passport_number
-        ).filter(models.ClinicStaff.clinic_id == c.id).all()
+        admins = db.query(models.User, models.ClinicStaff).filter(
+            models.User.ic_passport_number == models.ClinicStaff.ic_passport_number,
+            models.ClinicStaff.clinic_id == c.id
+        ).all()
         
         primary = next(((u, s) for u, s in admins if s.role == 'primary_admin'), None)
         temp = next(((u, s) for u, s in admins if s.role == 'temporary_admin'), None)
@@ -719,6 +721,9 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db), 
             "admin_pwd": admin_pwd,
             "temp_admin_pwd": temp_admin_pwd
         }
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -812,6 +817,9 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
             "admin_pwd": admin_pwd,
             "temp_admin_pwd": temp_admin_pwd
         }
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -829,9 +837,8 @@ def get_all_users(db: Session = Depends(get_db), current_user: models.User = Dep
     if current_user.role not in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    staff = db.query(models.User, models.ClinicStaff).join(
-        models.ClinicStaff, models.User.ic_passport_number == models.ClinicStaff.ic_passport_number
-    ).filter(
+    staff = db.query(models.User, models.ClinicStaff).filter(
+        models.User.ic_passport_number == models.ClinicStaff.ic_passport_number,
         models.ClinicStaff.clinic_id == current_user.clinic_id,
         models.ClinicStaff.role != 'developer'
     ).all()
@@ -852,23 +859,30 @@ def create_user(data: UserCreateReq, db: Session = Depends(get_db), current_user
     if current_user.role not in ['primary_admin', 'temporary_admin']:
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    user, temp_pwd = check_and_update_user(db, data.ic_passport_number, data.name, data.email, data.force_email_update)
-        
-    existing_staff = db.query(models.ClinicStaff).filter_by(ic_passport_number=data.ic_passport_number, clinic_id=current_user.clinic_id).first()
-    if existing_staff:
-        raise HTTPException(status_code=400, detail="User is already registered as staff in this clinic")
-        
-    new_staff = models.ClinicStaff(
-        ic_passport_number=data.ic_passport_number,
-        clinic_id=current_user.clinic_id,
-        role='staff',
-        status='active',
-        assigned_by=current_user.ic_passport_number,
-        permissions=data.permissions
-    )
-    db.add(new_staff)
-    db.commit()
-    return {"status": "success", "temp_password": temp_pwd, "message": "Password generated successfully." if temp_pwd else "Existing user successfully linked to clinic."}
+    try:
+        user, temp_pwd = check_and_update_user(db, data.ic_passport_number, data.name, data.email, data.force_email_update)
+            
+        existing_staff = db.query(models.ClinicStaff).filter_by(ic_passport_number=data.ic_passport_number, clinic_id=current_user.clinic_id).first()
+        if existing_staff:
+            raise HTTPException(status_code=400, detail="User is already registered as staff in this clinic")
+            
+        new_staff = models.ClinicStaff(
+            ic_passport_number=data.ic_passport_number,
+            clinic_id=current_user.clinic_id,
+            role='staff',
+            status='active',
+            assigned_by=current_user.ic_passport_number,
+            permissions=data.permissions
+        )
+        db.add(new_staff)
+        db.commit()
+        return {"status": "success", "temp_password": temp_pwd, "message": "Password generated successfully." if temp_pwd else "Existing user successfully linked to clinic."}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/admin/users/{ic}")
 def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -881,21 +895,28 @@ def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), cur
     if staff.role in ['primary_admin', 'temporary_admin'] and current_user.ic_passport_number != ic:
         raise HTTPException(status_code=403, detail="Only Developers can modify primary/temporary admins from the Developer Console.")
         
-    user, temp_pwd = check_and_update_user(db, ic, data.name, data.email, data.force_email_update)
-    
-    staff.status = data.status
-    if data.status == 'resigned':
-        staff.resign_reason = data.resign_reason
-        staff.permissions = None 
-    else:
-        staff.resign_reason = None
-        if staff.role in ['primary_admin', 'temporary_admin']:
-            staff.permissions = 'ALL'
-        else:
-            staff.permissions = data.permissions
+    try:
+        user, temp_pwd = check_and_update_user(db, ic, data.name, data.email, data.force_email_update)
         
-    db.commit()
-    return {"status": "success", "temp_password": temp_pwd}
+        staff.status = data.status
+        if data.status == 'resigned':
+            staff.resign_reason = data.resign_reason
+            staff.permissions = None 
+        else:
+            staff.resign_reason = None
+            if staff.role in ['primary_admin', 'temporary_admin']:
+                staff.permissions = 'ALL'
+            else:
+                staff.permissions = data.permissions
+            
+        db.commit()
+        return {"status": "success", "temp_password": temp_pwd}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
     
 @app.put("/admin/profile")
 def update_self_profile(data: UserSelfUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -1122,6 +1143,9 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
             
         db.commit()
         return {"status": "success"}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -1194,6 +1218,9 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
 
         db.commit()
         return {"status": "success"}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -1232,6 +1259,9 @@ def create_bt(data: BloodTestCreate, db: Session = Depends(get_db)):
                 db.add(models.BloodTestComponent(package_id=bt.id, test_id=cid))
         db.commit()
         return {"status": "success"}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -1249,6 +1279,9 @@ def update_bt(bt_id: int, data: BloodTestCreate, db: Session = Depends(get_db)):
                     db.add(models.BloodTestComponent(package_id=bt.id, test_id=cid))
             db.commit()
         return {"status": "success"}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
