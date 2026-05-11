@@ -400,7 +400,7 @@ def get_public_clinics(db: Session = Depends(get_db)):
 @app.post("/admin/check-email")
 def check_email_for_clinics(req: CheckEmailReq, db: Session = Depends(get_db)):
     if req.email == "developer@aicas.com":
-        return [{"id": "dev", "name": "Developer"}]
+        return [{"id": "dev", "name": "Developer Console"}]
         
     user = db.query(models.User).filter(models.User.email == req.email).first()
     if not user:
@@ -409,7 +409,7 @@ def check_email_for_clinics(req: CheckEmailReq, db: Session = Depends(get_db)):
     staff_records = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').all()
     
     if not staff_records: 
-        return [{"id": "dev", "name": "Developer"}]
+        return [{"id": "dev", "name": "Developer Console"}]
         
     clinic_ids = [s.clinic_id for s in staff_records]
     clinics = db.query(models.Clinic).filter(models.Clinic.id.in_(clinic_ids)).all()
@@ -931,16 +931,16 @@ def update_self_profile(data: UserSelfUpdateReq, db: Session = Depends(get_db), 
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     try:
-        appointments = db.query(models.Appointment).filter(models.Appointment.clinic_id == clinic_id).all()
+        appointments = db.query(models.Appointment).join(models.Patient, models.Appointment.patient_id == models.Patient.id).filter(models.Patient.clinic_id == clinic_id).all()
         appt_ids = [a.id for a in appointments]
         if not appt_ids: return []
         
         stages = db.query(models.ApptStage).filter(models.ApptStage.appointment_id.in_(appt_ids)).all()
         appt_dict = {str(a.id): a for a in appointments}
         
-        patient_ics = list({a.patient_ic for a in appointments if a.patient_ic})
-        patients = db.query(models.Patient).filter(models.Patient.ic_passport_number.in_(patient_ics)).all() if patient_ics else []
-        patient_dict = {str(p.ic_passport_number): p for p in patients}
+        patient_ids = list({a.patient_id for a in appointments if a.patient_id})
+        patients = db.query(models.Patient).filter(models.Patient.id.in_(patient_ids)).all() if patient_ids else []
+        patient_dict = {str(p.id): p for p in patients}
         
         doctor_ics = list({a.doctor_ic for a in appointments if a.doctor_ic})
         doctors = db.query(models.Doctor).filter(models.Doctor.ic_passport_number.in_(doctor_ics)).all() if doctor_ics else []
@@ -973,7 +973,7 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
             appt = appt_dict.get(str(stage.appointment_id))
             if not appt: continue
             
-            patient = patient_dict.get(str(appt.patient_ic))
+            patient = patient_dict.get(str(appt.patient_id))
             doctor = doctor_dict.get(str(appt.doctor_ic)) if appt.doctor_ic else None
 
             key = str(appt.id)
@@ -1055,7 +1055,7 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
 @app.post("/book-appointment")
 def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     try:
-        patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == booking.ic_passport_number).first()
+        patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == booking.ic_passport_number, models.Patient.clinic_id == booking.clinic_id).first()
         if not patient: raise HTTPException(status_code=404, detail="Patient missing")
         
         mapped_appt_type = 'single-visit'
@@ -1083,8 +1083,7 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
 
         new_appt = models.Appointment(
-            clinic_id=booking.clinic_id, 
-            patient_ic=patient.ic_passport_number, 
+            patient_id=patient.id, 
             doctor_ic=doc_ic, 
             appt_type=mapped_appt_type, 
             total_stages=total_stages, 
@@ -1270,27 +1269,23 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.post("/cancel-appointment/{appt_id}")
+def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_db)):
+    db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled", "cancel_reason": req.cancel_reason})
+    db.commit()
+    return {"status": "success"}
+
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
-    registered_patients = db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
-    appt_patient_ics = db.query(models.Appointment.patient_ic).filter(models.Appointment.clinic_id == clinic_id).distinct().all()
-    ic_list = [ic[0] for ic in appt_patient_ics]
-    
-    visiting_patients = []
-    if ic_list:
-        visiting_patients = db.query(models.Patient).filter(models.Patient.ic_passport_number.in_(ic_list)).all()
-        
-    all_patients = {p.ic_passport_number: p for p in registered_patients + visiting_patients}
-    return list(all_patients.values())
+    return db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
 
-@app.put("/admin/patients/{ic}")
-def admin_update_patient(ic: str, data: PatientUpdate, db: Session = Depends(get_db)):
-    p = db.query(models.Patient).filter_by(ic_passport_number=ic).first()
+@app.put("/admin/patients/{patient_id}")
+def admin_update_patient(patient_id: str, data: PatientUpdate, db: Session = Depends(get_db)):
+    p = db.query(models.Patient).filter_by(id=patient_id).first()
     if p:
         try:
-            if data.ic_passport_number and data.ic_passport_number.upper() != ic.upper():
-                db.execute(models.Patient.__table__.update().where(models.Patient.ic_passport_number == ic).values(ic_passport_number=data.ic_passport_number.upper()))
-                ic = data.ic_passport_number.upper()
+            if data.ic_passport_number and data.ic_passport_number.upper() != p.ic_passport_number:
+                p.ic_passport_number = data.ic_passport_number.upper()
             
             p.name = data.name.upper()
             p.phone = data.phone
@@ -1306,9 +1301,9 @@ def admin_update_patient(ic: str, data: PatientUpdate, db: Session = Depends(get
             raise HTTPException(status_code=400, detail=f"Update failed: {e}")
     return {"status": "success"}
 
-@app.delete("/admin/patients/{ic}")
-def admin_delete_patient(ic: str, db: Session = Depends(get_db)):
-    db.query(models.Patient).filter_by(ic_passport_number=ic).delete()
+@app.delete("/admin/patients/{patient_id}")
+def admin_delete_patient(patient_id: str, db: Session = Depends(get_db)):
+    db.query(models.Patient).filter_by(id=patient_id).delete()
     db.commit()
     return {"status": "success"}
 
@@ -1561,7 +1556,7 @@ def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db))
 
 @app.post("/ask-admin")
 def ask_admin(msg: ChatMessageModel, db: Session = Depends(get_db)):
-    patient = db.query(models.Patient).filter_by(telegram_id=msg.telegram_id).first()
+    patient = db.query(models.Patient).filter_by(telegram_id=msg.telegram_id, clinic_id=msg.clinic_id).first()
     phone = patient.phone if patient else None
     new_msg = models.ChatMessage(
         clinic_id=msg.clinic_id, 
@@ -1598,7 +1593,7 @@ async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
         target_phone = msg.phone
         channel = msg.channel or 'telegram'
     elif req.phone:
-        patient = db.query(models.Patient).filter_by(phone=req.phone).first()
+        patient = db.query(models.Patient).filter_by(phone=req.phone, clinic_id=req.clinic_id).first()
         if patient and patient.telegram_id:
             target_telegram_id = patient.telegram_id
             target_phone = patient.phone
@@ -1699,7 +1694,7 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
     start_of_day = datetime.combine(date_obj, datetime.min.time())
     end_of_day = datetime.combine(date_obj, datetime.max.time())
     
-    clashes = db.query(models.ApptStage.scheduled_time, models.Appointment.doctor_ic).join(models.Appointment).filter(models.Appointment.clinic_id == clinic_id, models.ApptStage.scheduled_time >= start_of_day, models.ApptStage.scheduled_time <= end_of_day).all()
+    clashes = db.query(models.ApptStage.scheduled_time, models.Appointment.doctor_ic).join(models.Appointment).join(models.Patient, models.Appointment.patient_id == models.Patient.id).filter(models.Patient.clinic_id == clinic_id, models.ApptStage.scheduled_time >= start_of_day, models.ApptStage.scheduled_time <= end_of_day).all()
     clash_dict = {}
     for c_time, d_ic in clashes:
         if d_ic not in clash_dict: clash_dict[d_ic] = []
@@ -1855,13 +1850,13 @@ def del_doc_availability(ic: str, clinic_id: str, day: str, start_time: str, db:
 
 @app.get("/patient/{clinic_id}/id/{ic_passport}")
 def get_patient_by_id(clinic_id: str, ic_passport: str, db: Session = Depends(get_db)):
-    patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == ic_passport).first()
+    patient = db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id, models.Patient.ic_passport_number == ic_passport).first()
     if not patient: raise HTTPException(status_code=404, detail="Patient not found")
     return patient
 
 @app.get("/patient/{clinic_id}/appointments/{ic}")
 def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_db)):
-    patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == ic).first()
+    patient = db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id, models.Patient.ic_passport_number == ic).first()
     if not patient: raise HTTPException(status_code=404, detail="Patient not found")
     
     now = datetime.now()
@@ -1870,8 +1865,7 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
     ).outerjoin(
         models.Doctor, models.Appointment.doctor_ic == models.Doctor.ic_passport_number
     ).filter(
-        models.Appointment.patient_ic == patient.ic_passport_number,
-        models.Appointment.clinic_id == clinic_id,
+        models.Appointment.patient_id == patient.id,
         models.ApptStage.scheduled_time >= now,
         models.ApptStage.status != 'canceled'
     ).all()
@@ -1914,6 +1908,7 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
         if data_dict.get('nationality'): data_dict['nationality'] = data_dict['nationality'].upper()
         
         existing = db.query(models.Patient).filter(
+            models.Patient.clinic_id == data.clinic_id, 
             models.Patient.ic_passport_number == data_dict['ic_passport_number']
         ).first()
         

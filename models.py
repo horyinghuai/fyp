@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, BigInteger, Numeric, Boolean, Time
+from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, BigInteger, Numeric, Boolean, Time, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import uuid
@@ -51,7 +51,8 @@ class Doctor(Base):
 
 class Patient(Base):
     __tablename__ = "patients"
-    ic_passport_number = Column(String(20), primary_key=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ic_passport_number = Column(String(20), nullable=False)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     telegram_id = Column(BigInteger) 
@@ -59,18 +60,22 @@ class Patient(Base):
     address = Column(String) 
     gender = Column(String(10)) 
     nationality = Column(String(50)) 
+    
+    __table_args__ = (
+        UniqueConstraint('ic_passport_number', 'clinic_id', name='uq_patient_ic_clinic'),
+    )
 
 class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
-    patient_ic = Column(String(20), ForeignKey("patients.ic_passport_number", ondelete="CASCADE"), nullable=False)
+    patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
     doctor_ic = Column(String(20), ForeignKey("doctors.ic_passport_number"), nullable=True) 
     appt_type = Column("type", String(50)) 
     total_stages = Column(Integer, default=1)
     general_notes = Column(String(255), nullable=True)
     
     stages = relationship("ApptStage", back_populates="appointment", cascade="all, delete-orphan")
+    patient = relationship("Patient")
 
 class ApptStage(Base):
     __tablename__ = "appointment_stages"

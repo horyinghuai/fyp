@@ -116,7 +116,7 @@ export default function PatientsPage() {
 
     try {
         const isEditing = !!editingPatient;
-        const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${editingPatient.ic_passport_number}` : `http://127.0.0.1:8000/register-patient`;
+        const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${editingPatient.id}` : `http://127.0.0.1:8000/register-patient`;
         
         const payload = isEditing ? { 
             ic_passport_number: formData.ic.toUpperCase(), 
@@ -147,9 +147,9 @@ export default function PatientsPage() {
     }
   };
 
-  const handleDelete = async (ic: string) => {
+  const handleDelete = async (patient_id: string) => {
     if(window.confirm("Are you sure you want to delete this patient? Deleting this patient will also delete all records of this patient also.")) {
-      await fetch(`http://127.0.0.1:8000/admin/patients/${ic}`, { method: 'DELETE' }); loadData(clinicId);
+      await fetch(`http://127.0.0.1:8000/admin/patients/${patient_id}`, { method: 'DELETE' }); loadData(clinicId);
     }
   };
 
@@ -199,7 +199,7 @@ export default function PatientsPage() {
           </thead>
           <tbody>
             {filteredPatients.map((p, i) => (
-              <tr key={p.ic_passport_number} className={`border-b border-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+              <tr key={p.id} className={`border-b border-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                 <td className="p-4">
                   <div className="font-bold text-slate-800">{p.name}</div>
                   <span className="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded-full">{p.gender}</span>
@@ -209,7 +209,7 @@ export default function PatientsPage() {
                 <td className="p-4 text-slate-600">{p.phone}</td>
                 <td className="p-4 text-center space-x-2">
                   <button onClick={() => openModal(p)} className="px-3 py-1 bg-slate-100 rounded text-sm font-medium text-slate-600 hover:bg-slate-200">Edit</button>
-                  <button onClick={() => handleDelete(p.ic_passport_number)} className="px-3 py-1 bg-red-100 text-red-600 rounded text-sm font-medium hover:bg-red-200">Delete</button>
+                  <button onClick={() => handleDelete(p.id)} className="px-3 py-1 bg-red-100 text-red-600 rounded text-sm font-medium hover:bg-red-200">Delete</button>
                 </td>
               </tr>
             ))}
