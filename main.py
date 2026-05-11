@@ -1578,7 +1578,7 @@ def get_pending_chat_count(clinic_id: str, db: Session = Depends(get_db)):
 @app.post("/admin/chat-reply")
 async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
-    bot_username = os.getenv("TELEGRAM_BOT_USERNAME", "AICAS_Clinic_Bot")
+    bot_username = os.getenv("TELEGRAM_BOT_USERNAME", "AICAS_chatbot")
     
     target_telegram_id = req.telegram_id
     target_phone = req.phone

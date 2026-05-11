@@ -12,7 +12,7 @@ export default function DiscoveryPage() {
     // State for zoomed QR Code
     const [zoomedQr, setZoomedQr] = useState<string | null>(null);
 
-    const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || 'AICAS_Clinic_Bot';
+    const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || 'AICAS_chatbot';
 
     useEffect(() => {
         const fetchPublicClinics = async () => {
