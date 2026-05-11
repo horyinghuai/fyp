@@ -2,9 +2,8 @@
 
 import { useState, useEffect } from 'react';
 
-const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
-
 export default function BloodTestsPage() {
+  const [clinicId, setClinicId] = useState<string>('');
   const [packages, setPackages] = useState<any[]>([]);
   const [singles, setSingles] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -16,13 +15,20 @@ export default function BloodTestsPage() {
     name: '', description: '', price: '', test_type: 'single', component_ids: [], target_gender: 'ANY' 
   });
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { 
+      const userStr = localStorage.getItem('aicas_user');
+      if (userStr) {
+          const user = JSON.parse(userStr);
+          setClinicId(user.clinic_id);
+          loadData(user.clinic_id);
+      }
+  }, []);
 
-  const loadData = async () => {
+  const loadData = async (cid: string) => {
     try {
       const [pkgRes, sglRes] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`),
-        fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`)
+        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/package`),
+        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/single`)
       ]);
       
       const pkgData = await pkgRes.json();
@@ -52,7 +58,7 @@ export default function BloodTestsPage() {
     }
 
     const payload = {
-      clinic_id: CLINIC_ID,
+      clinic_id: clinicId,
       name: formData.name.trim(),
       description: formData.description.trim() === '' ? null : formData.description.trim(),
       price: priceNum,
@@ -79,7 +85,7 @@ export default function BloodTestsPage() {
       }
 
       setShowModal(false);
-      loadData();
+      loadData(clinicId);
     } catch (err: any) {
       alert(`Failed to save: ${err.message}`);
     }
@@ -88,7 +94,7 @@ export default function BloodTestsPage() {
   const handleDelete = async (id: number) => {
     if (confirm("Delete this Blood Test? This cannot be undone.")) {
       await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { method: 'DELETE' });
-      loadData();
+      loadData(clinicId);
     }
   };
 

@@ -2,8 +2,6 @@
 
 import { useState, useEffect } from 'react';
 
-const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
-
 const COUNTRIES = [
   "Malaysia", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia", "Australia", 
   "Austria", "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", 
@@ -30,6 +28,7 @@ const COUNTRIES = [
 ];
 
 export default function PatientsPage() {
+  const [clinicId, setClinicId] = useState<string>('');
   const [patients, setPatients] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -40,10 +39,17 @@ export default function PatientsPage() {
   const [isMalaysian, setIsMalaysian] = useState(true);
   const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { 
+      const userStr = localStorage.getItem('aicas_user');
+      if (userStr) {
+          const user = JSON.parse(userStr);
+          setClinicId(user.clinic_id);
+          loadData(user.clinic_id);
+      }
+  }, []);
 
-  const loadData = () => {
-    fetch(`http://127.0.0.1:8000/admin/patients/${CLINIC_ID}`)
+  const loadData = (cid: string) => {
+    fetch(`http://127.0.0.1:8000/admin/patients/${cid}`)
       .then(res => res.json())
       .then(data => { setPatients(data); setIsLoading(false); })
       .catch(() => { setIsLoading(false); });
@@ -120,7 +126,7 @@ export default function PatientsPage() {
             nationality: formData.nationality.toUpperCase(), 
             address: formData.address.toUpperCase() 
         } : { 
-            clinic_id: CLINIC_ID, 
+            clinic_id: clinicId, 
             ic_passport_number: formData.ic.toUpperCase(), 
             name: formData.name.toUpperCase(), 
             phone: finalPhone, 
@@ -135,7 +141,7 @@ export default function PatientsPage() {
         if (data.status === "error") { alert("⚠️ " + data.reason); return; }
         
         setShowModal(false);
-        loadData();
+        loadData(clinicId);
     } catch (e) {
         alert("⚠️ Failed to save. Check your connection.");
     }
@@ -143,7 +149,7 @@ export default function PatientsPage() {
 
   const handleDelete = async (ic: string) => {
     if(window.confirm("Are you sure you want to delete this patient? Deleting this patient will also delete all records of this patient also.")) {
-      await fetch(`http://127.0.0.1:8000/admin/patients/${ic}`, { method: 'DELETE' }); loadData();
+      await fetch(`http://127.0.0.1:8000/admin/patients/${ic}`, { method: 'DELETE' }); loadData(clinicId);
     }
   };
 

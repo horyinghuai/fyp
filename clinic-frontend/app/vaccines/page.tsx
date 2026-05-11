@@ -3,8 +3,6 @@
 import { useState, useEffect } from 'react';
 import { Syringe, Sparkles, AlertTriangle } from 'lucide-react';
 
-const CLINIC_ID = "c1111111-1111-1111-1111-111111111111";
-
 // Helper Function for Title Case Enforcement
 const capitalizeFirstLetter = (str: string) => {
     if (!str) return '';
@@ -12,6 +10,7 @@ const capitalizeFirstLetter = (str: string) => {
 };
 
 export default function VaccinesPage() {
+  const [clinicId, setClinicId] = useState<string>('');
   const [vaccines, setVaccines] = useState<any[]>([]);
   const [globalVaccines, setGlobalVaccines] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -32,12 +31,19 @@ export default function VaccinesPage() {
       target_gender: 'ANY'
   });
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { 
+      const userStr = localStorage.getItem('aicas_user');
+      if (userStr) {
+          const user = JSON.parse(userStr);
+          setClinicId(user.clinic_id);
+          loadData(user.clinic_id);
+      }
+  }, []);
 
-  const loadData = async () => {
+  const loadData = async (cid: string) => {
     try {
       const [resClinic, resGlobal] = await Promise.all([ 
-          fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`), 
+          fetch(`http://127.0.0.1:8000/vaccines/${cid}`), 
           fetch(`http://127.0.0.1:8000/admin/global-vaccines`) 
       ]);
       
@@ -157,7 +163,7 @@ export default function VaccinesPage() {
         const response = await fetch(url, { 
             method: isEditing ? 'PUT' : 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ clinic_id: CLINIC_ID, ...payload }) 
+            body: JSON.stringify({ clinic_id: clinicId, ...payload }) 
         });
         
         if (!response.ok) {
@@ -166,7 +172,7 @@ export default function VaccinesPage() {
             return;
         }
         setShowModal(false); 
-        loadData();
+        loadData(clinicId);
     } catch(e) {
         alert("Failed to connect to the server.");
     }
@@ -174,7 +180,7 @@ export default function VaccinesPage() {
 
   const handleDelete = async (id: number) => {
     if(confirm("Remove this vaccine from clinic offerings?")) {
-      await fetch(`http://127.0.0.1:8000/admin/vaccines/${id}/${CLINIC_ID}`, { method: 'DELETE' }); loadData();
+      await fetch(`http://127.0.0.1:8000/admin/vaccines/${id}/${clinicId}`, { method: 'DELETE' }); loadData(clinicId);
     }
   };
 
