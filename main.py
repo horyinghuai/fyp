@@ -374,7 +374,7 @@ def check_and_update_user(db: Session, ic: str, name: str, email: str, force_ema
                 temp_pwd = generate_temp_password()
                 user.password_hash = get_password_hash(temp_pwd)
         user.name = name.upper()
-        db.flush() # Ensure update is registered before FK links
+        db.flush()
     else:
         email_conflict = db.query(models.User).filter(models.User.email == email).first()
         if email_conflict:
@@ -388,7 +388,7 @@ def check_and_update_user(db: Session, ic: str, name: str, email: str, force_ema
             password_hash=get_password_hash(temp_pwd)
         )
         db.add(user)
-        db.flush() # CRITICAL: Push new user to DB so ClinicStaff FK doesn't fail
+        db.flush()
     return user, temp_pwd
 
 # --- PUBLIC ENDPOINTS ---
@@ -1054,7 +1054,18 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
 
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
-    return db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
+    # Safely merge patients natively registered to the clinic AND patients who have visited for appointments
+    registered_patients = db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
+    
+    appt_patient_ics = db.query(models.Appointment.patient_ic).filter(models.Appointment.clinic_id == clinic_id).distinct().all()
+    ic_list = [ic[0] for ic in appt_patient_ics]
+    
+    visiting_patients = []
+    if ic_list:
+        visiting_patients = db.query(models.Patient).filter(models.Patient.ic_passport_number.in_(ic_list)).all()
+        
+    all_patients = {p.ic_passport_number: p for p in registered_patients + visiting_patients}
+    return list(all_patients.values())
 
 @app.put("/admin/patients/{ic}")
 def admin_update_patient(ic: str, data: PatientUpdate, db: Session = Depends(get_db)):
@@ -1622,63 +1633,84 @@ def del_doc_availability(ic: str, clinic_id: str, day: str, start_time: str, db:
     db.commit()
     return {"status": "success"}
 
-@app.post("/admin/doctors")
-def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
-    existing = db.query(models.Doctor).filter_by(ic_passport_number=data.ic).first()
-    if not existing:
-        new_doc = models.Doctor(
-            ic_passport_number=data.ic, 
-            name=data.name.upper(), 
-            gender=data.gender, 
-            specialization=data.specialization,
-            status=data.status or 'active',
-            resign_reason=data.resign_reason
-        )
-        db.add(new_doc)
-    else:
-        existing.name = data.name.upper()
-        existing.gender = data.gender
-        existing.specialization = data.specialization
-        existing.status = data.status or 'active'
-        existing.resign_reason = data.resign_reason
-        
-    db.commit()
-    return {"status": "success"}
+@app.get("/patient/{clinic_id}/id/{ic_passport}")
+def get_patient_by_id(clinic_id: str, ic_passport: str, db: Session = Depends(get_db)):
+    patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == ic_passport).first()
+    if not patient: raise HTTPException(status_code=404, detail="Patient not found")
+    return patient
 
-@app.put("/admin/doctors/{ic}")
-def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db)):
-    doc = db.query(models.Doctor).filter_by(ic_passport_number=ic).first()
-    if doc:
-        doc.name = data.name.upper()
-        if data.ic and data.ic != ic:
-            doc.ic_passport_number = data.ic
-        doc.gender = data.gender
-        doc.specialization = data.specialization
-        doc.status = data.status or 'active'
-        if doc.status == 'resigned':
-            doc.resign_reason = data.resign_reason
-        else:
-            doc.resign_reason = None
-        db.commit()
-    return {"status": "success"}
+@app.get("/patient/{clinic_id}/appointments/{ic}")
+def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_db)):
+    patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == ic).first()
+    if not patient: raise HTTPException(status_code=404, detail="Patient not found")
+    
+    now = datetime.now()
+    appts = db.query(models.Appointment, models.ApptStage, models.Doctor).join(
+        models.ApptStage, models.Appointment.id == models.ApptStage.appointment_id
+    ).outerjoin(
+        models.Doctor, models.Appointment.doctor_ic == models.Doctor.ic_passport_number
+    ).filter(
+        models.Appointment.patient_ic == patient.ic_passport_number,
+        models.Appointment.clinic_id == clinic_id,
+        models.ApptStage.scheduled_time >= now,
+        models.ApptStage.status != 'canceled'
+    ).all()
 
-@app.get("/admin/chat-history/{clinic_id}")
-def get_chat_history(clinic_id: str, db: Session = Depends(get_db)):
-    msgs = db.query(models.ChatMessage).filter_by(clinic_id=clinic_id).order_by(models.ChatMessage.created_at.asc()).all()
     res = []
-    for m in msgs:
-        phone = m.phone
-        if not phone and m.telegram_id:
-            patient = db.query(models.Patient).filter_by(telegram_id=m.telegram_id).first()
-            phone = patient.phone if patient and patient.phone else f"Unknown ({m.telegram_id})"
-        res.append({
-            "id": m.id, 
-            "telegram_id": m.telegram_id, 
-            "phone": phone,
-            "channel": m.channel or 'telegram',
-            "message": m.message, 
-            "reply": m.reply, 
-            "created_at": m.created_at, 
-            "status": m.status
-        })
+    for appt, stage, doc in appts:
+        appt_vaccines = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).all()
+        appt_tests = db.query(models.AppointmentBloodTest).filter_by(appointment_id=appt.id).all()
+        service = "Others"
+        item_names = []
+        dose = None
+        reason = appt.general_notes
+        
+        if appt_vaccines:
+            service = "Vaccine"
+            for av in appt_vaccines:
+                dose = av.dose_number
+                v = db.query(models.Vaccine).filter_by(id=av.vaccine_id).first()
+                if v: item_names.append(v.name)
+        elif appt_tests:
+            service = "Blood Test"
+            for at in appt_tests:
+                bt = db.query(models.BloodTest).filter_by(id=at.blood_test_id).first()
+                if bt: item_names.append(bt.name)
+        elif reason:
+            service = "Others"
+                
+        details_block = { "items": item_names, "dose": dose, "reason": reason, "assigned_doctor_name": doc.name if doc else "ANY", "assigned_doctor_id": str(doc.ic_passport_number) if doc else None, "service_type": service }
+        res.append({ "appt_id": str(appt.id), "service": service, "details": details_block, "date": stage.scheduled_time.strftime("%Y-%m-%d"), "time": stage.scheduled_time.strftime("%H:%M:%S"), "doctor_name": doc.name if doc else "ANY" })
     return res
+
+@app.post("/register-patient")
+def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
+    try:
+        data_dict = data.dict(exclude_unset=True)
+        data_dict['name'] = data_dict['name'].upper() 
+        data_dict['ic_passport_number'] = data_dict['ic_passport_number'].upper()
+        if data_dict.get('address'): data_dict['address'] = data_dict['address'].upper()
+        if data_dict.get('gender'): data_dict['gender'] = data_dict['gender'].upper()
+        if data_dict.get('nationality'): data_dict['nationality'] = data_dict['nationality'].upper()
+        
+        existing = db.query(models.Patient).filter(
+            models.Patient.ic_passport_number == data_dict['ic_passport_number']
+        ).first()
+        
+        if existing:
+            existing.name = data_dict['name']
+            existing.phone = data_dict['phone']
+            if 'address' in data_dict: existing.address = data_dict['address']
+            if 'gender' in data_dict: existing.gender = data_dict['gender']
+            if 'nationality' in data_dict: existing.nationality = data_dict['nationality']
+            if data_dict.get('telegram_id'): existing.telegram_id = data_dict['telegram_id']
+            db.commit()
+            return {"status": "success", "message": "Patient updated globally"}
+        
+        new_patient = models.Patient(**data_dict)
+        db.add(new_patient)
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
