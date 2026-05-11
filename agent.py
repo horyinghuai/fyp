@@ -143,7 +143,14 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
             general_notes=llm_data.get("general_notes")
         )
     except Exception as e:
-        return {"error": f"AI Parsing Error: {str(e)}"}
+        # Fallback if both AIs fail: Just capture the whole text as a general booking note
+        return AppointmentExtraction(
+            intent="booking",
+            date_preference=None,
+            time_preference=None,
+            doctor_preference=None,
+            general_notes=user_text
+        )
 
 async def generate_vaccine_schedule_ai(search_query: str):
     prompt = f"""

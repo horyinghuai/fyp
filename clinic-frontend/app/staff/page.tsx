@@ -9,9 +9,10 @@ export default function StaffPage() {
     const [currentUserRole, setCurrentUserRole] = useState('');
     const [isEditing, setIsEditing] = useState<string | null>(null);
 
+    // Initialized with 6 exact permissions
     const [form, setForm] = useState({
         ic: '', name: '', email: '', is_my: true,
-        permissions: { PATIENT_REGISTRATION: false, APPOINTMENT_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, CHAT_SUPPORT: false, PATIENT_INQUIRY: false },
+        permissions: { APPOINTMENT_MANAGEMENT: false, BLOOD_TEST_MANAGEMENT: false, VACCINE_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, PATIENT_MANAGEMENT: false, CHAT_SUPPORT: false },
         status: 'active',
         resign_reason: '',
         custom_resign_reason: ''
@@ -72,11 +73,12 @@ export default function StaffPage() {
             resign_reason: initialReason,
             custom_resign_reason: customReason,
             permissions: {
-                PATIENT_REGISTRATION: permsArray.includes('PATIENT_REGISTRATION') || permsArray.includes('ALL'),
                 APPOINTMENT_MANAGEMENT: permsArray.includes('APPOINTMENT_MANAGEMENT') || permsArray.includes('ALL'),
+                BLOOD_TEST_MANAGEMENT: permsArray.includes('BLOOD_TEST_MANAGEMENT') || permsArray.includes('ALL'),
+                VACCINE_MANAGEMENT: permsArray.includes('VACCINE_MANAGEMENT') || permsArray.includes('ALL'),
                 DOCTOR_MANAGEMENT: permsArray.includes('DOCTOR_MANAGEMENT') || permsArray.includes('ALL'),
+                PATIENT_MANAGEMENT: permsArray.includes('PATIENT_MANAGEMENT') || permsArray.includes('ALL'),
                 CHAT_SUPPORT: permsArray.includes('CHAT_SUPPORT') || permsArray.includes('ALL'),
-                PATIENT_INQUIRY: permsArray.includes('PATIENT_INQUIRY') || permsArray.includes('ALL'),
             }
         });
     };
@@ -100,7 +102,7 @@ export default function StaffPage() {
         }
 
         const activePerms = Object.keys(form.permissions).filter((k) => form.permissions[k as keyof typeof form.permissions]);
-        const permissionsStr = activePerms.length === 5 ? 'ALL' : activePerms.join(', ');
+        const permissionsStr = activePerms.length === 6 ? 'ALL' : activePerms.join(', ');
         
         const finalResignReason = form.status === 'resigned' 
             ? (form.resign_reason === 'Others' ? form.custom_resign_reason : form.resign_reason)
@@ -177,7 +179,7 @@ export default function StaffPage() {
                     <p className="text-slate-500 mt-1 text-sm">Manage clinic personnel, permissions, and roles.</p>
                 </div>
                 {!isEditing && (
-                    <button onClick={() => { setIsEditing('new'); setStatusMsg({type:'', text:''}); setTempPassword(null); setForm({ic:'', name:'', email:'', is_my: true, status: 'active', resign_reason: '', custom_resign_reason: '', permissions: { PATIENT_REGISTRATION: false, APPOINTMENT_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, CHAT_SUPPORT: false, PATIENT_INQUIRY: false }}); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
+                    <button onClick={() => { setIsEditing('new'); setStatusMsg({type:'', text:''}); setTempPassword(null); setForm({ic:'', name:'', email:'', is_my: true, status: 'active', resign_reason: '', custom_resign_reason: '', permissions: { APPOINTMENT_MANAGEMENT: false, BLOOD_TEST_MANAGEMENT: false, VACCINE_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, PATIENT_MANAGEMENT: false, CHAT_SUPPORT: false }}); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
                         <Plus size={18} /> Add New Staff
                     </button>
                 )}
@@ -243,6 +245,7 @@ export default function StaffPage() {
                                                 <option value="Relocation">Relocation</option>
                                                 <option value="Personal Reasons">Personal Reasons</option>
                                                 <option value="Career Change">Career Change</option>
+                                                <option value="System Role Replacement">System Role Replacement</option>
                                                 <option value="Others">Others (Please specify)</option>
                                             </select>
                                             {form.resign_reason === 'Others' && (

@@ -88,9 +88,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   let navItems = [
     { name: 'Timetable', path: '/', icon: <Calendar size={20} />, module: 'APPOINTMENT_MANAGEMENT' },
-    { name: 'Vaccines', path: '/vaccines', icon: <Syringe size={20} />, module: 'INVENTORY_MANAGEMENT' },
-    { name: 'Blood Tests', path: '/blood_test', icon: <Droplet size={20} />, module: 'INVENTORY_MANAGEMENT' },
-    { name: 'Patients', path: '/patients', icon: <Users size={20} />, module: 'PATIENT_REGISTRATION' },
+    { name: 'Vaccines', path: '/vaccines', icon: <Syringe size={20} />, module: 'VACCINE_MANAGEMENT' },
+    { name: 'Blood Tests', path: '/blood_test', icon: <Droplet size={20} />, module: 'BLOOD_TEST_MANAGEMENT' },
+    { name: 'Patients', path: '/patients', icon: <Users size={20} />, module: 'PATIENT_MANAGEMENT' },
     { name: 'Doctors', path: '/doctors', icon: <Stethoscope size={20} />, module: 'DOCTOR_MANAGEMENT' },
     { name: 'Bot Replies', path: '/bot-settings', icon: <MessageSquare size={20} />, module: 'CHAT_SUPPORT' },
   ];
