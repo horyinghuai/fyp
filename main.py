@@ -400,7 +400,7 @@ def get_public_clinics(db: Session = Depends(get_db)):
 @app.post("/admin/check-email")
 def check_email_for_clinics(req: CheckEmailReq, db: Session = Depends(get_db)):
     if req.email == "developer@aicas.com":
-        return [{"id": "dev", "name": "Developer Console"}]
+        return [{"id": "dev", "name": "Developer"}]
         
     user = db.query(models.User).filter(models.User.email == req.email).first()
     if not user:
@@ -409,7 +409,7 @@ def check_email_for_clinics(req: CheckEmailReq, db: Session = Depends(get_db)):
     staff_records = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').all()
     
     if not staff_records: 
-        return [{"id": "dev", "name": "Developer Console"}]
+        return [{"id": "dev", "name": "Developer"}]
         
     clinic_ids = [s.clinic_id for s in staff_records]
     clinics = db.query(models.Clinic).filter(models.Clinic.id.in_(clinic_ids)).all()
@@ -1052,11 +1052,227 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
     db.commit()
     return {"status": "success"}
 
+@app.post("/book-appointment")
+def book_appointment(booking: Booking, db: Session = Depends(get_db)):
+    try:
+        patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == booking.ic_passport_number).first()
+        if not patient: raise HTTPException(status_code=404, detail="Patient missing")
+        
+        mapped_appt_type = 'single-visit'
+        total_stages = 1
+        v_model = None
+        dose_val = str(booking.details.get('dose', 'Single Dose'))
+        items_list = booking.details.get('items', [])
+        start_dose_num = 1
+        
+        if booking.service_type == 'Vaccine':
+            if items_list:
+                v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
+                if v_model:
+                    total_stages = v_model.total_doses + (1 if v_model.has_booster else 0)
+                    if dose_val.startswith("Dose "):
+                        try: start_dose_num = int(dose_val.split(" ")[1])
+                        except: pass
+                    elif dose_val == "Booster":
+                        start_dose_num = v_model.total_doses + 1
+                    
+                    if (total_stages - start_dose_num + 1) > 1:
+                        mapped_appt_type = 'multi-stage'
+        
+        doc_ic = booking.details.get('assigned_doctor_id')
+        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
+
+        new_appt = models.Appointment(
+            clinic_id=booking.clinic_id, 
+            patient_ic=patient.ic_passport_number, 
+            doctor_ic=doc_ic, 
+            appt_type=mapped_appt_type, 
+            total_stages=total_stages, 
+            general_notes=booking.details.get('general_notes')  
+        )
+        db.add(new_appt)
+        db.flush() 
+        
+        start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
+        
+        if mapped_appt_type == 'multi-stage' and v_model:
+            db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+            schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
+            base_date = start_time
+            current_calc_time = start_time
+            prev_stage_id = None
+            
+            for i in range(start_dose_num, v_model.total_doses + 1):
+                stage_name = f"Dose {i}"
+                if i > start_dose_num:
+                    sched = next((s for s in schedules if s.dose_number == i), None)
+                    interval = sched.interval_description if sched else "1 month"
+                    if not interval or not interval.strip():
+                        continue 
+                    
+                    if "dose 1" in interval.lower():
+                        current_calc_time = calculate_future_date(base_date, interval)
+                    else:
+                        current_calc_time = calculate_future_date(current_calc_time, interval)
+                    
+                if current_calc_time:
+                    stage = models.ApptStage(appointment_id=new_appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
+                    db.add(stage)
+                    db.flush()
+                    prev_stage_id = stage.id 
+                
+            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
+                if start_dose_num == v_model.total_doses + 1:
+                    current_calc_time = start_time
+                else:
+                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
+                    interval = sched.interval_description if sched else "6 month"
+                    if not interval or not interval.strip():
+                        current_calc_time = None
+                    else:
+                        current_calc_time = calculate_future_date(current_calc_time, interval)
+                    
+                if current_calc_time:
+                    stage = models.ApptStage(appointment_id=new_appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
+                    db.add(stage)
+                    db.flush()
+        else:
+            if booking.service_type == 'Vaccine' and v_model:
+                db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+            elif booking.service_type == 'Blood Test':
+                for t_name in items_list:
+                    bt = db.query(models.BloodTest).filter_by(name=t_name, clinic_id=booking.clinic_id).first()
+                    if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
+                    
+            stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
+            db.add(stage)
+            
+        db.commit()
+        return {"status": "success"}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/update-appointment")
+def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
+    try:
+        appt = db.query(models.Appointment).filter(models.Appointment.id == booking.appt_id).first()
+        if not appt: raise HTTPException(status_code=404)
+        
+        db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
+        db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
+        db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
+        
+        doc_ic = booking.details.get('assigned_doctor_id')
+        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
+        appt.doctor_ic = doc_ic
+        
+        appt.general_notes = booking.details.get('general_notes') 
+        
+        service = booking.service_type
+        items_list = booking.details.get('items', [])
+        dose_val = str(booking.details.get('dose', 'Single Dose'))
+        
+        mapped_appt_type = 'single-visit'
+        total_stages = 1
+        start_dose_num = 1
+        v_model = None
+        
+        if service == 'Vaccine':
+            if items_list:
+                v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
+                if v_model:
+                    total_stages = v_model.total_doses + (1 if v_model.has_booster else 0)
+                    if dose_val.startswith("Dose "):
+                        try: start_dose_num = int(dose_val.split(" ")[1])
+                        except: pass
+                    elif dose_val == "Booster":
+                        start_dose_num = v_model.total_doses + 1
+                        
+                    if (total_stages - start_dose_num + 1) > 1:
+                        mapped_appt_type = 'multi-stage'
+                
+        appt.appt_type = mapped_appt_type
+        appt.total_stages = total_stages
+        
+        start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
+        status_val = booking.status
+        
+        if mapped_appt_type == 'multi-stage' and v_model:
+            db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+            schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
+            base_date = start_time
+            current_calc_time = start_time
+            prev_stage_id = None
+            
+            for i in range(start_dose_num, v_model.total_doses + 1):
+                stage_name = f"Dose {i}"
+                if i > start_dose_num:
+                    sched = next((s for s in schedules if s.dose_number == i), None)
+                    interval = sched.interval_description if sched else "1 month"
+                    if not interval or not interval.strip():
+                        continue 
+                        
+                    if "dose 1" in interval.lower():
+                        current_calc_time = calculate_future_date(base_date, interval)
+                    else:
+                        current_calc_time = calculate_future_date(current_calc_time, interval)
+                    
+                if current_calc_time:
+                    final_status = status_val if i == start_dose_num else "scheduled"
+                    stage = models.ApptStage(appointment_id=appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    if final_status == 'canceled':
+                        stage.cancel_reason = booking.cancel_reason
+                    db.add(stage)
+                    db.flush()
+                    prev_stage_id = stage.id
+                
+            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
+                if start_dose_num == v_model.total_doses + 1:
+                    current_calc_time = start_time
+                else:
+                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
+                    interval = sched.interval_description if sched else "6 month"
+                    if not interval or not interval.strip():
+                        current_calc_time = None
+                    else:
+                        current_calc_time = calculate_future_date(current_calc_time, interval)
+                    
+                if current_calc_time:
+                    final_status = status_val if start_dose_num == v_model.total_doses + 1 else "scheduled"
+                    stage = models.ApptStage(appointment_id=appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    if final_status == 'canceled':
+                        stage.cancel_reason = booking.cancel_reason
+                    db.add(stage)
+                    db.flush()
+        else:
+            if service == 'Vaccine' and items_list and v_model:
+                db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+            elif service == 'Blood Test' and items_list:
+                for t_name in items_list:
+                    bt = db.query(models.BloodTest).filter_by(name=t_name).first()
+                    if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
+                    
+            new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time, status=status_val)
+            if status_val == 'canceled':
+                new_stage.cancel_reason = booking.cancel_reason
+            db.add(new_stage)
+            
+        db.commit()
+        return {"status": "success"}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
-    # Safely merge patients natively registered to the clinic AND patients who have visited for appointments
     registered_patients = db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id).all()
-    
     appt_patient_ics = db.query(models.Appointment.patient_ic).filter(models.Appointment.clinic_id == clinic_id).distinct().all()
     ic_list = [ic[0] for ic in appt_patient_ics]
     
@@ -1073,13 +1289,18 @@ def admin_update_patient(ic: str, data: PatientUpdate, db: Session = Depends(get
     if p:
         try:
             if data.ic_passport_number and data.ic_passport_number.upper() != ic.upper():
-                p.ic_passport_number = data.ic_passport_number.upper()
+                db.execute(models.Patient.__table__.update().where(models.Patient.ic_passport_number == ic).values(ic_passport_number=data.ic_passport_number.upper()))
+                ic = data.ic_passport_number.upper()
+            
             p.name = data.name.upper()
             p.phone = data.phone
             p.gender = data.gender.upper()
             p.nationality = data.nationality.upper()
             p.address = data.address.upper() if data.address else None
             db.commit()
+        except HTTPException:
+            db.rollback()
+            raise
         except Exception as e:
             db.rollback()
             raise HTTPException(status_code=400, detail=f"Update failed: {e}")
@@ -1501,10 +1722,9 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
 
 @app.get("/admin/doctors-all/{clinic_id}")
 def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
-    results = db.query(models.Doctor, models.DoctorClinicAvailability).filter(
-        models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic,
-        models.DoctorClinicAvailability.clinic_id == clinic_id
-    ).all()
+    results = db.query(models.Doctor, models.DoctorClinicAvailability).join(
+        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
+    ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).all()
     
     doc_map = {}
     for doc, avail in results:
