@@ -296,6 +296,7 @@ def normalize_vaccine_type(db: Session, given_type: str):
     if not given_type: return "Other"
     given_lower = given_type.lower().strip()
     existing_types = db.query(models.Vaccine.type).distinct().all()
+    
     for (t,) in existing_types:
         if t:
             t_lower = t.lower().strip()
@@ -401,13 +402,14 @@ def check_email_for_clinics(req: CheckEmailReq, db: Session = Depends(get_db)):
         
     user = db.query(models.User).filter(models.User.email == req.email).first()
     if not user:
-        return []
+        raise HTTPException(status_code=404, detail="No user found in the database. Please re-enter your email.")
         
     staff_records = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').all()
+    
+    if not staff_records: 
+        return [{"id": "dev", "name": "Developer Console"}]
+        
     clinic_ids = [s.clinic_id for s in staff_records]
-    
-    if not clinic_ids: return []
-    
     clinics = db.query(models.Clinic).filter(models.Clinic.id.in_(clinic_ids)).all()
     return [{"id": str(c.id), "name": c.name} for c in clinics]
 
@@ -429,8 +431,35 @@ def admin_login(data: LoginReq, db: Session = Depends(get_db)):
 
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=404, detail="No user found in the database. Please re-enter your email.")
         
+    if data.clinic_id == 'dev':
+        staff_check = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').first()
+        if staff_check:
+             raise HTTPException(status_code=403, detail="Account is mapped to a clinic, invalid developer login.")
+             
+        if data.password.startswith("tmp_") and (user.password_hash == data.password or verify_password(data.password, user.password_hash)):
+            return {"status": "requires_reset", "email": data.email}
+        
+        if user.password_hash == data.password or verify_password(data.password, user.password_hash):
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            access_token = create_access_token(
+                data={"sub": user.ic_passport_number, "role": "developer", "clinic_id": "dev"}, 
+                expires_delta=access_token_expires
+            )
+            return {
+                "status": "success", 
+                "token": access_token,
+                "user": {
+                    "ic": user.ic_passport_number,
+                    "name": user.name,
+                    "role": "developer",
+                    "permissions": "ALL",
+                    "clinic_id": "dev"
+                }
+            }
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
     staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.clinic_id == data.clinic_id, models.ClinicStaff.status == 'active').first()
     
     if not staff:
@@ -464,23 +493,32 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
     user = db.query(models.User).filter(models.User.email == data.email).first()
     if not user: raise HTTPException(status_code=404, detail="User not found")
     
-    staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').first()
-    if not staff: raise HTTPException(status_code=403, detail="Account is disabled")
+    if data.clinic_id == 'dev':
+        staff_check = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.status == 'active').first()
+        if staff_check: raise HTTPException(status_code=403, detail="Account is mapped to a clinic, invalid developer login.")
+        
+        if user.password_hash == data.temp_password or verify_password(data.temp_password, user.password_hash):
+            user.password_hash = get_password_hash(data.new_password)
+            db.commit()
+            access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            access_token = create_access_token(
+                data={"sub": user.ic_passport_number, "role": "developer", "clinic_id": "dev"}, 
+                expires_delta=access_token_expires
+            )
+            return {
+                "status": "success", 
+                "token": access_token,
+                "user": { "ic": user.ic_passport_number, "name": user.name, "role": "developer", "permissions": "ALL", "clinic_id": "dev" }
+            }
+        raise HTTPException(status_code=401, detail="Invalid temporary password")
+
+    staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.clinic_id == data.clinic_id, models.ClinicStaff.status == 'active').first()
+    if not staff: raise HTTPException(status_code=403, detail="Account is disabled or not mapped to this clinic")
     
     if user.password_hash == data.temp_password or verify_password(data.temp_password, user.password_hash):
         user.password_hash = get_password_hash(data.new_password)
         db.commit()
         
-        if data.clinic_id == 'dev':
-             return {
-                "status": "success", 
-                "token": "dev-token",
-                "user": { "ic": "dev", "name": "AICAS Developer", "role": "developer", "permissions": "ALL", "clinic_id": "dev" }
-            }
-            
-        staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == user.ic_passport_number, models.ClinicStaff.clinic_id == data.clinic_id, models.ClinicStaff.status == 'active').first()
-        if not staff: raise HTTPException(status_code=403, detail="Account is disabled or not mapped to this clinic")
-
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
             data={"sub": user.ic_passport_number, "role": staff.role, "clinic_id": str(staff.clinic_id)}, 
@@ -778,7 +816,9 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/admin/clinics/{clinic_id}")
-def delete_clinic(clinic_id: str, db: Session = Depends(get_db)):
+def delete_clinic(clinic_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != 'developer':
+        raise HTTPException(status_code=403, detail="Not authorized")
     db.query(models.Clinic).filter(models.Clinic.id == clinic_id).delete()
     db.commit()
     return {"status": "success"}
@@ -1372,7 +1412,6 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
 
 @app.get("/admin/doctors-all/{clinic_id}")
 def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
-    # To fix the 500 missing column error and display correctly, map from Availability Table.
     results = db.query(models.Doctor, models.DoctorClinicAvailability).join(
         models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
     ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).all()
@@ -1380,16 +1419,22 @@ def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
     doc_map = {}
     for doc, avail in results:
         if doc.ic_passport_number not in doc_map:
-            computed_status = 'resigned' if avail.resign_reason else avail.status
             doc_map[doc.ic_passport_number] = {
                 "ic_passport_number": doc.ic_passport_number,
                 "name": doc.name,
                 "gender": doc.gender,
                 "specialization": doc.specialization,
-                "status": computed_status,
+                "status": avail.status,
                 "resign_reason": avail.resign_reason
             }
     return list(doc_map.values())
+
+@app.get("/doctors/{clinic_id}")
+def get_doctors(clinic_id: str, db: Session = Depends(get_db)):
+    doctors = db.query(models.Doctor).join(
+        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
+    ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).distinct().all()
+    return doctors
 
 @app.post("/admin/doctors")
 def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
@@ -1410,7 +1455,6 @@ def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
         existing.specialization = data.specialization
         db.flush()
         
-    # Check if doctor is already linked to clinic
     link = db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=data.ic, clinic_id=data.clinic_id, day_of_week='none').first()
     db_status = 'inactive' if data.status == 'resigned' else (data.status or 'active')
     db_reason = data.resign_reason if data.status == 'resigned' else None

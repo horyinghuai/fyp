@@ -142,7 +142,7 @@ export default function PatientsPage() {
   };
 
   const handleDelete = async (ic: string) => {
-    if(confirm("Are you sure you want to delete this patient?")) {
+    if(window.confirm("Are you sure you want to delete this patient? Deleting this patient will also delete all records of this patient also.")) {
       await fetch(`http://127.0.0.1:8000/admin/patients/${ic}`, { method: 'DELETE' }); loadData();
     }
   };

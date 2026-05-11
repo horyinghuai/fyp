@@ -199,6 +199,8 @@ export default function DoctorsPage() {
             return setAvailError("This time slot clashes with an existing schedule for this day.");
         }
 
+        if (!window.confirm("Are you sure you want to save this schedule slot?")) return;
+
         const token = localStorage.getItem('aicas_token');
         try {
             const res = await fetch(`http://127.0.0.1:8000/admin/doctors/${availForm.ic}/availability`, {
@@ -216,6 +218,8 @@ export default function DoctorsPage() {
     };
 
     const handleDeleteAvail = async (day: string, time: string) => {
+        if (!window.confirm("Are you sure you want to delete this specific row of schedule?")) return;
+        
         const token = localStorage.getItem('aicas_token');
         try {
             await fetch(`http://127.0.0.1:8000/admin/doctors/${availForm.ic}/availability/${clinicId}/${day}/${time}`, {
@@ -436,7 +440,7 @@ export default function DoctorsPage() {
                                     <input type="time" required value={availForm.end} onChange={e => setAvailForm({...availForm, end: e.target.value})} className="p-2.5 border border-indigo-200 rounded-xl outline-none font-bold text-indigo-900 bg-white" />
                                 </div>
                                 <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-2.5 rounded-xl hover:bg-indigo-700 transition shadow-sm">
-                                    Add Schedule block
+                                    Save Schedule
                                 </button>
                             </form>
 
