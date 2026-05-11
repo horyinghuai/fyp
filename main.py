@@ -66,20 +66,22 @@ def get_current_user(authorization: str = Header(None), db: Session = Depends(ge
         user = db.query(models.User).filter(models.User.ic_passport_number == ic).first()
         if user is None: raise HTTPException(status_code=401, detail="User not found")
         
-        staff = db.query(models.ClinicStaff).filter_by(ic_passport_number=ic, clinic_id=clinic_id).first()
-        if not staff and payload.get("role") != 'developer':
-            raise HTTPException(status_code=403, detail="Account is not mapped to this clinic")
-            
-        if staff:
-            user.role = staff.role
-            user.clinic_id = staff.clinic_id
-            user.permissions = staff.permissions
-            user.status = staff.status
-        else:
+        # FIX: Intercept "dev" logins before hitting the UUID strict columns
+        if clinic_id == "dev" and payload.get("role") == "developer":
             user.role = 'developer'
-            user.clinic_id = clinic_id
+            user.clinic_id = 'dev'
             user.status = 'active'
             user.permissions = 'ALL'
+            return user
+            
+        staff = db.query(models.ClinicStaff).filter_by(ic_passport_number=ic, clinic_id=clinic_id).first()
+        if not staff:
+            raise HTTPException(status_code=403, detail="Account is not mapped to this clinic")
+            
+        user.role = staff.role
+        user.clinic_id = staff.clinic_id
+        user.permissions = staff.permissions
+        user.status = staff.status
 
         if user.status != 'active': raise HTTPException(status_code=403, detail="Account is not active")
         return user
@@ -296,7 +298,6 @@ def normalize_vaccine_type(db: Session, given_type: str):
     if not given_type: return "Other"
     given_lower = given_type.lower().strip()
     existing_types = db.query(models.Vaccine.type).distinct().all()
-    
     for (t,) in existing_types:
         if t:
             t_lower = t.lower().strip()
@@ -1203,6 +1204,23 @@ def delete_vaccine(v_id: int, clinic_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
+@app.get("/vaccines/{clinic_id}")
+def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
+    vacs = db.query(models.VaccineClinic).filter_by(clinic_id=clinic_id).all()
+    res = []
+    for vc in vacs:
+        v = db.query(models.Vaccine).filter_by(id=vc.vaccine_id).first()
+        if v:
+            scheds = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v.id).all()
+            res.append({
+                "id": v.id, "name": v.name, "type": v.type, "price": float(vc.price),
+                "total_doses": v.total_doses, "has_booster": v.has_booster, "target_gender": v.target_gender,
+                "stock_quantity": vc.stock_quantity,
+                "low_stock_threshold": vc.low_stock_threshold,
+                "schedules": [{"dose_number": s.dose_number, "interval_description": s.interval_description} for s in scheds]
+            })
+    return res
+
 @app.post("/admin/blood-tests")
 def create_bt(data: BloodTestCreate, db: Session = Depends(get_db)):
     try:
@@ -1240,6 +1258,33 @@ def delete_bt(bt_id: int, db: Session = Depends(get_db)):
     db.query(models.BloodTest).filter_by(id=bt_id).delete()
     db.commit()
     return {"status": "success"}
+
+@app.get("/blood-tests/{clinic_id}/{t_type}")
+def get_blood_tests_by_type(clinic_id: str, t_type: str, db: Session = Depends(get_db)):
+    tests = db.query(models.BloodTest).filter(models.BloodTest.clinic_id == clinic_id, models.BloodTest.test_type == t_type).all()
+    res = []
+    for t in tests:
+        test_dict = {
+            "id": t.id, 
+            "name": t.name, 
+            "description": t.description, 
+            "price": float(t.price), 
+            "target_gender": t.target_gender, 
+            "test_type": t.test_type,
+            "component_ids": []
+        }
+        if t_type == "package":
+            components = db.query(models.BloodTestComponent).filter(models.BloodTestComponent.package_id == t.id).all()
+            included_names = []
+            comp_ids = []
+            for comp in components:
+                comp_ids.append(comp.test_id)
+                s_test = db.query(models.BloodTest).filter(models.BloodTest.id == comp.test_id).first()
+                if s_test: included_names.append(s_test.name)
+            test_dict["included_tests"] = included_names
+            test_dict["component_ids"] = comp_ids
+        res.append(test_dict)
+    return res
 
 @app.post("/admin/auto-replies")
 def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db)):
@@ -1412,9 +1457,10 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
 
 @app.get("/admin/doctors-all/{clinic_id}")
 def get_all_doctors(clinic_id: str, db: Session = Depends(get_db)):
-    results = db.query(models.Doctor, models.DoctorClinicAvailability).join(
-        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
-    ).filter(models.DoctorClinicAvailability.clinic_id == clinic_id).all()
+    results = db.query(models.Doctor, models.DoctorClinicAvailability).filter(
+        models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic,
+        models.DoctorClinicAvailability.clinic_id == clinic_id
+    ).all()
     
     doc_map = {}
     for doc, avail in results:

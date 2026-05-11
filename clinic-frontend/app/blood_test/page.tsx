@@ -24,10 +24,17 @@ export default function BloodTestsPage() {
         fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/package`),
         fetch(`http://127.0.0.1:8000/blood-tests/${CLINIC_ID}/single`)
       ]);
-      setPackages(await pkgRes.json());
-      setSingles(await sglRes.json());
+      
+      const pkgData = await pkgRes.json();
+      const sglData = await sglRes.json();
+      
+      setPackages(Array.isArray(pkgData) ? pkgData : []);
+      setSingles(Array.isArray(sglData) ? sglData : []);
+      
       setIsLoading(false);
     } catch (e) {
+      setPackages([]); 
+      setSingles([]);
       setIsLoading(false);
     }
   };
@@ -123,7 +130,7 @@ export default function BloodTestsPage() {
       <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">1. Packages</h2>
       <div className="grid grid-cols-2 gap-4 mb-12">
         {packages.map(p => (
-          <div key={p.id} className="bg-white rounded-xl p-6 shadow-sm border-t-4 border-emerald-500 flex flex-col">
+          <div key={p.id} className="bg-white rounded-xl p-6 shadow-sm border-t-4 border-emerald-50 flex flex-col">
             <div className="flex justify-between mb-2">
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase">Package Name</label>

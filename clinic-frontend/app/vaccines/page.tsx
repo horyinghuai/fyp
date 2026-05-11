@@ -40,10 +40,21 @@ export default function VaccinesPage() {
           fetch(`http://127.0.0.1:8000/vaccines/${CLINIC_ID}`), 
           fetch(`http://127.0.0.1:8000/admin/global-vaccines`) 
       ]);
-      setVaccines(await resClinic.json()); 
-      setGlobalVaccines(await resGlobal.json());
-      setIsLoading(false); setError(false);
-    } catch (e) { setIsLoading(false); setError(true); }
+      
+      const clinicData = await resClinic.json();
+      const globalData = await resGlobal.json();
+      
+      setVaccines(Array.isArray(clinicData) ? clinicData : []); 
+      setGlobalVaccines(Array.isArray(globalData) ? globalData : []);
+      
+      setIsLoading(false); 
+      setError(false);
+    } catch (e) { 
+      setVaccines([]);
+      setGlobalVaccines([]);
+      setIsLoading(false); 
+      setError(true); 
+    }
   };
 
   const handleAIAutoFill = async (queryToSearch: string) => {
