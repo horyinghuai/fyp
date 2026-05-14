@@ -1052,6 +1052,90 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
     db.commit()
     return {"status": "success"}
 
+@app.post("/available-dates")
+def get_available_dates(req: DateRequest, db: Session = Depends(get_db)):
+    valid_dates = []
+    today = datetime.now().date()
+    for i in range(14):
+        d = today + timedelta(days=i)
+        doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
+        if doc_slots: valid_dates.append(d.strftime("%Y-%m-%d"))
+    return valid_dates
+
+@app.post("/available-times")
+def get_available_times(req: TimeRequest, db: Session = Depends(get_db)):
+    d_obj = datetime.strptime(req.date, "%Y-%m-%d").date()
+    doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d_obj, req.duration, req.doctor_pref)
+    if not doc_slots: return {"error": "No slots available"}
+    all_times = set()
+    for ds in doc_slots:
+        for s in ds['slots']: all_times.add(s.strftime("%H:%M:%S"))
+    sorted_times = sorted(list(all_times))
+    return {"times": sorted_times, "doctor_name": "Pending Selection"}
+
+@app.post("/check-availability")
+def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
+    try: req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
+    except: return {"is_valid": False, "reason": "Invalid format.", "suggestions": []}
+    
+    date_obj = req_dt.date()
+    now = datetime.now()
+    
+    if req.doctor_pref and req.doctor_pref.upper() not in ["ANY", "NONE", "MALE", "FEMALE"]:
+        matched_docs = db.query(models.Doctor).join(
+            models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
+        ).filter(
+            models.DoctorClinicAvailability.clinic_id == req.clinic_id,
+            models.Doctor.name.ilike(f"%{req.doctor_pref}%")
+        ).distinct().all()
+        
+        if len(matched_docs) == 0:
+            return {"is_valid": False, "reason": f"No doctor matching '{req.doctor_pref}' was found in the system.", "suggestions": []}
+        elif len(matched_docs) > 1:
+            exact_match = [d for d in matched_docs if d.name.upper() == req.doctor_pref.upper()]
+            if len(exact_match) == 1:
+                req.doctor_pref = exact_match[0].name
+            else:
+                names = ", ".join([d.name for d in matched_docs])
+                return {"is_valid": False, "reason": f"Multiple doctors match '{req.doctor_pref}': {names}. Please clarify your preference.", "suggestions": []}
+        else:
+            req.doctor_pref = matched_docs[0].name
+
+    def find_nearest_3_slots(start_date):
+        sugs_set = set()
+        for i in range(7):
+            d = start_date + timedelta(days=i)
+            if d < now.date(): continue
+            d_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
+            for ds in d_slots:
+                for s in ds['slots']:
+                    if s > now:
+                        sugs_set.add(s.strftime("%Y-%m-%d %H:%M:%S"))
+                        if len(sugs_set) >= 3: return sorted(list(sugs_set))
+            if len(sugs_set) >= 3: return sorted(list(sugs_set))
+        return sorted(list(sugs_set))
+        
+    if req_dt < now: return {"is_valid": False, "reason": "You cannot book an appointment in the past.", "suggestions": find_nearest_3_slots(now.date())}
+    
+    doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, date_obj, req.duration, req.doctor_pref)
+    
+    available_docs_for_this_slot = []
+    for ds in doc_slots:
+        if req_dt in ds['slots']: available_docs_for_this_slot.append(ds)
+        
+    if available_docs_for_this_slot:
+        max_free = max(ds['free_count'] for ds in available_docs_for_this_slot)
+        best_docs = [ds for ds in available_docs_for_this_slot if ds['free_count'] == max_free]
+        chosen = random.choice(best_docs)
+        return {"is_valid": True, "reason": "Slot available.", "doctor_id": str(chosen['doc'].ic_passport_number), "doctor_name": chosen['doc'].name, "suggestions": []}
+    else:
+        date_has_slots = any(len(ds['slots']) > 0 for doc in doc_slots for ds in [doc])
+        if date_has_slots:
+            reason = f"Date {date_obj.strftime('%Y-%m-%d')} is available, but the selected time {req_dt.strftime('%H:%M')} is unavailable."
+        else:
+            reason = f"The specific date and time selected ({req_dt.strftime('%Y-%m-%d %H:%M')}) is unavailable."
+        return {"is_valid": False, "reason": reason, "suggestions": find_nearest_3_slots(date_obj)}
+    
 @app.post("/book-appointment")
 def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     try:
