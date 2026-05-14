@@ -8,7 +8,7 @@ import datetime as dt
 import logging
 import difflib
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, 
     CallbackQueryHandler, ConversationHandler, MessageHandler, filters, InlineQueryHandler
@@ -52,6 +52,18 @@ COUNTRIES_LIST = [
     "UKRAINE", "UNITED ARAB EMIRATES", "UNITED KINGDOM", "UNITED STATES", "URUGUAY", "UZBEKISTAN", "VANUATU", 
     "VATICAN CITY", "VENEZUELA", "VIETNAM", "YEMEN", "ZAMBIA", "ZIMBABWE"
 ]
+
+def get_country_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            ["Singapore", "Indonesia", "Thailand"], 
+            ["China", "India", "Bangladesh"], 
+            ["United Kingdom", "United States", "Australia"]
+        ],
+        resize_keyboard=True, 
+        one_time_keyboard=True, 
+        input_field_placeholder="Type or select country"
+    )
 
 ocr_reader = None
 def get_ocr_reader():
@@ -414,6 +426,7 @@ async def handle_ic_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['address'] = address.upper()
     context.user_data['gender'] = gender.upper()
     context.user_data['nationality'] = nationality.upper()
+    context.user_data['mykad_uploaded'] = True # <--- ADD THIS LINE
 
     await update.message.reply_text(f"✅ MyKad Scanned successfully!\nPlease enter your phone number:")
     return MAN_PHONE
@@ -467,7 +480,8 @@ async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(f"Gender set to: {context.user_data['gender']}\nPlease enter your phone number:")
             return MAN_PHONE
         else:
-            await update.callback_query.edit_message_text(f"Gender set to: {context.user_data['gender']}\nPlease enter your Country of Nationality:")
+            await update.callback_query.message.reply_text(f"Gender set to: {context.user_data['gender']}\nPlease enter your Country of Nationality or select from the keyboard:", reply_markup=get_country_keyboard())
+            await update.callback_query.message.delete() # Replaces inline keyboard with reply keyboard
             return MAN_NAT
 
     raw_gender = clean_bot_username(update.message.text).upper()
@@ -491,10 +505,10 @@ async def man_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
     
     if context.user_data.get('is_malaysian'):
-        await update.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your phone number:")
+        await update.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your phone number:", reply_markup=ReplyKeyboardRemove())
         return MAN_PHONE
     else:
-        await update.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality:")
+        await update.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality or select from the keyboard:", reply_markup=get_country_keyboard())
         return MAN_NAT
 
 async def man_gender_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -509,12 +523,13 @@ async def man_gender_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.edit_message_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your phone number:")
             return MAN_PHONE
         else:
-            await query.edit_message_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality:")
+            await query.message.reply_text(f"Gender set to {context.user_data['gender']}.\nPlease enter your Country of Nationality or select from the keyboard:", reply_markup=get_country_keyboard())
+            await query.message.delete()
             return MAN_NAT
     else:
-        btns = [[InlineKeyboardButton("Male", callback_data="gend_MALE"), InlineKeyboardButton("Female", callback_data="gend_FEMALE")]]
-        await query.edit_message_text("Please select or enter your Gender:", reply_markup=InlineKeyboardMarkup(btns))
-        return MAN_GENDER
+            await query.message.reply_text("Please enter your Country of Nationality again:", reply_markup=get_country_keyboard())
+            await query.message.delete()
+            return MAN_NAT
 
 async def man_nat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_nat = clean_bot_username(update.message.text).upper()
@@ -523,7 +538,7 @@ async def man_nat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['nationality'] = raw_nat
         if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
         
-        await update.message.reply_text(f"Nationality saved as {raw_nat}.\n\nPlease enter your phone number (starting with '+' and country code):", parse_mode="Markdown")
+        await update.message.reply_text(f"Nationality saved as {raw_nat}.\n\nPlease enter your phone number (starting with '+' and country code):", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
         return MAN_PHONE
         
     matches = difflib.get_close_matches(raw_nat, COUNTRIES_LIST, n=1, cutoff=0.4)
@@ -573,6 +588,9 @@ async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['phone'] = phone_input
 
     if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
+    
+    if context.user_data.get('is_malaysian') and context.user_data.get('mykad_uploaded'):
+        return await show_profile_summary(update, context)
     
     await update.message.reply_text("Please enter your Home Address:")
     return MAN_ADDRESS
@@ -733,7 +751,7 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = clean_bot_username(update.message.text)
     if reason:
-        reason = reason[0].upper() + reason[1:]
+        reason = reason.title() # Capitalizes Each Word
     context.user_data['general_notes'] = reason
     
     if context.user_data.get('is_editing'):
@@ -1260,6 +1278,7 @@ async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("Change Vaccine/Test Details", callback_data="editbook_details")],
         [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
         [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
+        [InlineKeyboardButton("🔙 Cancel Modify (Keep Details)", callback_data="editbook_abort_edit")], # <--- ADD THIS LINE
         [InlineKeyboardButton("❌ Cancel Draft Booking", callback_data="editbook_cancel")]
     ]
     await query.edit_message_text("What would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
@@ -1284,6 +1303,10 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
     choice = query.data.replace("editbook_", "")
     
     context.user_data['is_editing'] = True
+
+    if choice == "abort_edit":
+        context.user_data['is_editing'] = False
+        return await show_booking_summary(update, context)
     
     if choice == "cancel":
         await query.edit_message_text("Draft Booking abandoned.")
