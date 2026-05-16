@@ -1981,6 +1981,15 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
         res.append({ "appt_id": str(appt.id), "service": service, "details": details_block, "date": stage.scheduled_time.strftime("%Y-%m-%d"), "time": stage.scheduled_time.strftime("%H:%M:%S"), "doctor_name": doc.name if doc else "ANY" })
     return res
 
+@app.get("/patient-clinics/{telegram_id}")
+def get_patient_clinics(telegram_id: int, db: Session = Depends(get_db)):
+    patients = db.query(models.Patient).filter(models.Patient.telegram_id == telegram_id).all()
+    if not patients:
+        return []
+    clinic_ids = list(set([p.clinic_id for p in patients]))
+    clinics = db.query(models.Clinic).filter(models.Clinic.id.in_(clinic_ids)).all()
+    return [{"id": str(c.id), "name": c.name} for c in clinics]
+
 @app.post("/register-patient")
 def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
     try:

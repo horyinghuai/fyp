@@ -177,9 +177,23 @@ export default function DeveloperPage() {
                       } else {
                           setStatusMsg({ type: 'error', text: 'Action cancelled. Please use the original email address for this user IC.' });
                       }
-                  } else {
-                      setStatusMsg({ type: 'error', text: err.detail || 'Save failed.' });
-                  }
+                  // Replace this section inside handleSaveClinic:
+                } else {
+                    const err = await res.json();
+                    if (err.detail === "EMAIL_MISMATCH" || err.detail?.includes("EMAIL_MISMATCH")) {
+                        if (window.confirm("The IC number entered is currently linked to a DIFFERENT email address in another clinic. Do you want to overwrite their email globally to the new one you provided? (This will reset their password)")) {
+                            submitPayload(true);
+                        } else {
+                            // --- NEW RESTORATION LOGIC ---
+                            setStatusMsg({ type: 'error', text: 'Action cancelled. Original email restored.' });
+                            const originalClinic = clinics.find(c => c.id === isEditing);
+                            if (originalClinic) openForm(originalClinic);
+                            // -----------------------------
+                        }
+                    } else {
+                        setStatusMsg({ type: 'error', text: err.detail || 'Save failed.' });
+                    }
+                }
               }
           } catch (err) { setStatusMsg({ type: 'error', text: 'Server connection error.' }); }
           setIsSubmitting(false);

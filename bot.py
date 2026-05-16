@@ -110,7 +110,7 @@ def get_ocr_reader():
         ocr_reader = easyocr.Reader(['en', 'ms'])
     return ocr_reader
 
-NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON, BASIC_CONFIRM, MAN_GENDER_CONFIRM, OTHERS_REASON = range(29)
+START_CLINIC_SELECT, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON, BASIC_CONFIRM, MAN_GENDER_CONFIRM, OTHERS_REASON = range(30)
 
 async def generate_date_picker(active_cid, service, doctor_pref, is_editing=False):
     duration = 15 if service == 'Vaccine' else 30
@@ -311,13 +311,37 @@ async def execute_cancellation(message, context, reason):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
     context.user_data['is_editing'] = False 
-    
+    telegram_id = update.effective_user.id
+
+    if not context.args or len(context.args) == 0:
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(f"{API_BASE}/patient-clinics/{telegram_id}", timeout=5.0)
+                if res.status_code == 200:
+                    clinics = res.json()
+                    if len(clinics) > 1 and 'active_clinic_id' not in context.user_data:
+                        btns = [[InlineKeyboardButton(c['name'], callback_data=f"startclinic_{c['id']}")] for c in clinics]
+                        msg = "Welcome back! You are registered at multiple clinics.\n\nPlease select which clinic you want to book at today:"
+                        if update.message: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+                        else: await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+                        return START_CLINIC_SELECT
+            except Exception as e:
+                logger.error(f"Error fetching patient clinics: {e}")
+
     if context.args and len(context.args) > 0:
-        active_clinic = context.args[0]
-        context.user_data['active_clinic_id'] = active_clinic
+        context.user_data['active_clinic_id'] = context.args[0]
     elif 'active_clinic_id' not in context.user_data:
         context.user_data['active_clinic_id'] = DEFAULT_CLINIC_ID
         
+    return await proceed_with_start(update, context)
+
+async def handle_start_clinic_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['active_clinic_id'] = query.data.replace("startclinic_", "")
+    return await proceed_with_start(update, context, query=True)
+
+async def proceed_with_start(update, context, query=False):
     clinic_name = "our Clinic"
     active_cid = context.user_data['active_clinic_id']
     
@@ -326,20 +350,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 res = await client.get(f"{API_BASE}/clinic/{active_cid}", timeout=3.0)
                 if res.status_code == 200: clinic_name = res.json().get('name', 'our Clinic')
-            except Exception as e: 
-                logger.error(f"Could not fetch clinic name, using default. Error: {e}")
+            except Exception as e: pass
             
     context.user_data['clinic_name'] = clinic_name
     
-    if update.message: await update.message.reply_text(f"Welcome to {clinic_name}!")
-    else: await update.callback_query.message.reply_text(f"Welcome to {clinic_name}!")
-
-    btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")],
-            [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
-    msg = "To get started, please select your nationality:"
+    msg = f"Welcome to {clinic_name}!\nTo get started, please select your nationality:"
+    btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")], [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
     
-    if update.message: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    if query: await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    elif update.message: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     else: await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    
     return NAT_CHOICE
 
 async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -674,19 +695,24 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Which detail would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
         return EDIT_PROFILE_MENU
 
-    await query.edit_message_text("✅ Profile confirmed. Saving to database...")
-    
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(f"{API_BASE}/register-patient", json={
-                "clinic_id": active_cid, "name": context.user_data['name'].upper(), "ic_passport_number": context.user_data['ic'].upper(), 
-                "phone": context.user_data['phone'], "telegram_id": update.effective_user.id,
-                "address": context.user_data.get('address', '').upper(), "gender": context.user_data.get('gender', '').upper(), "nationality": context.user_data.get('nationality', '').upper() 
-            }, timeout=5.0)
-        except Exception as e:
-            logger.error(f"Error registering patient: {e}")
-        
-    return await show_main_services(query.message, context)
+        await query.edit_message_text("✅ Profile confirmed. Saving to database...")
+            
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(f"{API_BASE}/register-patient", json={
+                    "clinic_id": active_cid, 
+                    "name": (context.user_data.get('name') or '').upper(), 
+                    "ic_passport_number": (context.user_data.get('ic') or '').upper(), 
+                    "phone": context.user_data.get('phone'), 
+                    "telegram_id": update.effective_user.id,
+                    "address": (context.user_data.get('address') or '').upper(), 
+                    "gender": (context.user_data.get('gender') or '').upper(), 
+                    "nationality": (context.user_data.get('nationality') or '').upper() 
+                }, timeout=5.0)
+            except Exception as e:
+                logger.error(f"Error registering patient: {e}")
+                
+        return await show_main_services(query.message, context)
 
 async def handle_profile_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1361,8 +1387,14 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data['selected_items'] = []
             return await show_blood_tests(update, context, "package")
         else:
-            await query.edit_message_text("Please type your reason for the visit (e.g., 'Fever and cough'):")
-            return OTHERS_REASON 
+            prev_reason = context.user_data.get('general_notes', '')
+            btns = [
+                [InlineKeyboardButton("✏️ Tap here to Edit", switch_inline_query_current_chat=prev_reason)],
+                [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")]
+            ]
+            msg = f"Your current reason is:\n\n*{prev_reason}*\n\nTo modify, click the edit button below, then send the updated reason."
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+            return OTHERS_REASON
     elif choice == "doctor":
         context.user_data['old_doctor_pref'] = context.user_data.get('doctor_pref', 'ANY')
         return await show_doctor_preference(update, context)
@@ -1474,6 +1506,7 @@ if __name__ == '__main__':
     conv = ConversationHandler(
         entry_points=[CommandHandler('start', start), CommandHandler('cancel', cancel_command)],
         states={
+            START_CLINIC_SELECT: [CallbackQueryHandler(handle_start_clinic_select, pattern="^startclinic_")],
             NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],
             MY_METHOD_CHOICE: [CallbackQueryHandler(my_method_logic, pattern="^meth_")],
             UPLOAD_IC: [MessageHandler(filters.PHOTO, handle_ic_photo)],
