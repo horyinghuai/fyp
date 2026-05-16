@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react'; // Add useRef
+import { Camera, RefreshCw, CheckCircle2 } from 'lucide-react'; // Add icons
 
 const COUNTRIES = [
   "Malaysia", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia", "Australia", 
@@ -39,6 +40,11 @@ export default function PatientsPage() {
   const [isMalaysian, setIsMalaysian] = useState(true);
   const [isMyKadUploaded, setIsMyKadUploaded] = useState(false);
   const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
 
   useEffect(() => { 
       const userStr = localStorage.getItem('aicas_user');
@@ -198,6 +204,57 @@ export default function PatientsPage() {
 
   if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
 
+  const startCamera = async () => {
+      setIsScanning(true);
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+          if (videoRef.current) videoRef.current.srcObject = stream;
+      } catch(e) {
+          alert("Camera access denied. Please allow camera permissions in your browser.");
+          setIsScanning(false);
+      }
+  };
+
+  const captureAndScan = async () => {
+      if (!videoRef.current || !canvasRef.current) return;
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      setOcrLoading(true);
+      canvas.toBlob(async (blob) => {
+          if(!blob) return;
+          const form = new FormData();
+          form.append("file", blob, "mykad.jpg");
+          
+          const stream = video.srcObject as MediaStream;
+          stream?.getTracks().forEach(t => t.stop());
+          setIsScanning(false);
+          
+          try {
+             const res = await fetch("http://127.0.0.1:8000/admin/ocr-mykad", { method: 'POST', body: form });
+             const data = await res.json();
+             if(data.success && data.data.ic) {
+                 setFormData({
+                     ...formData,
+                     ic: data.data.ic,
+                     name: data.data.name,
+                     address: data.data.address,
+                     gender: data.data.gender,
+                     nationality: 'MALAYSIA'
+                 });
+                 alert("MyKad scanned successfully! Confidence validation passed.");
+             } else {
+                 alert("Failed to read MyKad cleanly. Please try again or type manually.");
+             }
+          } catch(e) { alert("OCR Failed due to network connection."); }
+          setOcrLoading(false);
+      }, 'image/jpeg');
+  };
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="flex justify-between items-center mb-8">
@@ -253,14 +310,24 @@ export default function PatientsPage() {
 
             {isMalaysian && (
                 <div className="mb-4">
-                    <label className="block text-sm font-bold text-slate-700 mb-1">Upload MyKad (OCR)</label>
-                    <input type="file" accept="image/*" onChange={(e) => {
-                        if (e.target.files && e.target.files[0]) {
-                            alert("MyKad scanned successfully! Information extracted.");
-                            setFormData({...formData, address: "OCR EXTRACTED ADDRESS, MALAYSIA"});
-                            setIsMyKadUploaded(true);
-                        }
-                    }} className="w-full p-2 border rounded-lg text-sm bg-blue-50 text-blue-700" />
+                    <label className="block text-sm font-bold text-slate-700 mb-2">MyKad Auto-Fill (OCR)</label>
+                    
+                    {!isScanning ? (
+                        <button onClick={startCamera} type="button" className="w-full flex items-center justify-center gap-2 p-3 bg-blue-50 border border-blue-200 text-blue-700 font-bold rounded-lg hover:bg-blue-100 transition">
+                            {ocrLoading ? <RefreshCw size={20} className="animate-spin" /> : <Camera size={20} />}
+                            {ocrLoading ? "Analyzing ID..." : "Open Camera to Scan MyKad"}
+                        </button>
+                    ) : (
+                        <div className="relative rounded-lg overflow-hidden border-2 border-blue-500 bg-black">
+                            <video ref={videoRef} autoPlay playsInline className="w-full h-48 object-cover" />
+                            <canvas ref={canvasRef} className="hidden" />
+                            <div className="absolute inset-0 border-4 border-dashed border-white/50 m-4 rounded pointer-events-none" />
+                            <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-2">
+                                <button type="button" onClick={captureAndScan} className="px-6 py-2 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700">Capture & Scan</button>
+                                <button type="button" onClick={() => { setIsScanning(false); const stream = videoRef.current?.srcObject as MediaStream; stream?.getTracks().forEach(t => t.stop()); }} className="px-4 py-2 bg-slate-800/80 text-white font-bold rounded-full">Cancel</button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
 

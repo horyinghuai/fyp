@@ -1990,6 +1990,87 @@ def get_patient_clinics(telegram_id: int, db: Session = Depends(get_db)):
     clinics = db.query(models.Clinic).filter(models.Clinic.id.in_(clinic_ids)).all()
     return [{"id": str(c.id), "name": c.name} for c in clinics]
 
+import base64
+from fastapi import UploadFile, File
+
+@app.post("/admin/ocr-mykad")
+async def process_mykad_ocr(file: UploadFile = File(...)):
+    content = await file.read()
+    encoded_image = base64.b64encode(content).decode('utf-8')
+    api_key = os.getenv("GOOGLE_VISION_API_KEY")
+    
+    extracted_text = ""
+    # 1. Google Cloud Vision API Integration (Prioritized)
+    if api_key:
+        async with httpx.AsyncClient() as client:
+            payload = {
+                "requests": [{
+                    "image": {"content": encoded_image},
+                    "features": [{"type": "TEXT_DETECTION"}]
+                }]
+            }
+            res = await client.post(f"https://vision.googleapis.com/v1/images:annotate?key={api_key}", json=payload)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("responses") and "textAnnotations" in data["responses"][0]:
+                    extracted_text = data["responses"][0]["textAnnotations"][0]["description"]
+    # 2. EasyOCR Fallback (If GCP key is missing)
+    else:
+        import easyocr
+        import tempfile
+        reader = easyocr.Reader(['en', 'ms'])
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
+            tf.write(content)
+            tf_path = tf.name
+        results = reader.readtext(tf_path)
+        extracted_text = "\n".join([text for _, text, _ in results])
+        os.remove(tf_path)
+
+    # 3. Regex Extraction Logic for Malaysian IC
+    lines = [line.strip() for line in extracted_text.split('\n') if line.strip()]
+    ic_num, name, address, gender = "", "", "", "MALE"
+    ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
+    
+    ic_index = -1
+    for i, line in enumerate(lines):
+        match = ic_pattern.search(line)
+        if match:
+            raw_ic = match.group(0)
+            if len(raw_ic) == 12 and "-" not in raw_ic:
+                ic_num = f"{raw_ic[:6]}-{raw_ic[6:8]}-{raw_ic[8:]}"
+            else:
+                ic_num = raw_ic
+            ic_index = i
+            last_digit = int(ic_num[-1])
+            gender = "FEMALE" if last_digit % 2 == 0 else "MALE"
+            break
+            
+    if ic_index != -1:
+        potential_name_lines = []
+        for i in range(ic_index + 1, min(ic_index + 4, len(lines))):
+            text = lines[i]
+            if re.search(r'\d', text) or any(sw in text.upper() for sw in ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA"]):
+                continue
+            potential_name_lines.append(re.sub(r'[^A-Z\s]', '', text.upper()).strip())
+        if potential_name_lines:
+            name = potential_name_lines[0]
+            
+        address_lines = []
+        for i in range(ic_index + 1, len(lines)):
+            text = lines[i]
+            if any(sw in text.upper() for sw in ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", name]): continue
+            address_lines.append(text)
+            if re.search(r'\d{5}', text): break
+        address = ", ".join(address_lines)
+        
+    return {
+        "success": True,
+        "data": {
+            "ic": ic_num, "name": name, "address": address.upper(),
+            "gender": gender, "nationality": "MALAYSIA"
+        }
+    }
+
 @app.post("/register-patient")
 def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
     try:

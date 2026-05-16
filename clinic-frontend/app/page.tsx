@@ -6,6 +6,11 @@ import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle, FileText, Search } from 'lucide-react';
 
+const toTitleCase = (str: string) => {
+    if (!str) return '';
+    return str.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+};
+
 const localizer = momentLocalizer(moment);
 
 export default function AdminDashboard() {
@@ -256,6 +261,11 @@ export default function AdminDashboard() {
         }
 
         if(!window.confirm("Are you sure this details are correct?")) return;
+
+        let formattedReason = editForm.reason;
+        if (editForm.service === "Others") {
+            formattedReason = toTitleCase(formattedReason);
+        }
 
         if(isNewBooking) {
             let finalIc = editForm.patient_ic;
@@ -829,13 +839,27 @@ export default function AdminDashboard() {
 
             <div className="px-6 py-4 bg-slate-50 flex justify-between gap-3 border-t border-slate-100">
               {isEditingEvent ? (
-                 <button onClick={() => {
-                    if(isNewBooking) { setSelectedEvent(null); setIsNewBooking(false); }
-                    else setIsEditingEvent(false);
-                 }} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium">Cancel Edit</button>
-              ) : (
-                 <button onClick={() => setCancelModalVisible(true)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Cancel Booking</button>
-              )}
+                      <button onClick={() => {
+                          if(isNewBooking) { 
+                              setSelectedEvent(null); 
+                              setIsNewBooking(false); 
+                          } else {
+                              // Restore the original unedited data including patient_ic
+                              setEditForm({
+                                  patient_ic: selectedEvent.patient_ic || '', // <--- Added missing property
+                                  service: selectedEvent.service,
+                                  items: selectedEvent.items || [],
+                                  dose: selectedEvent.dose || '',
+                                  doctor_ic: selectedEvent.doctor_ic || '',
+                                  status: selectedEvent.status,
+                                  reason: selectedEvent.reason || ''
+                              });
+                              setIsEditingEvent(false);
+                          }
+                      }} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300">Cancel Modify</button>
+                  ) : (
+                      <button onClick={() => setCancelModalVisible(true)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Cancel Booking</button>
+                  )}
               
               {isEditingEvent ? (
                 <button onClick={handleUpdateOrAddEvent} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium">{isNewBooking ? "Create Booking" : "Save Changes"}</button>
