@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react';
 import { Syringe, Sparkles, AlertTriangle } from 'lucide-react';
 
-// Helper Function for Title Case Enforcement
 const capitalizeFirstLetter = (str: string) => {
     if (!str) return '';
     return str.replace(/\b\w/g, l => l.toUpperCase());
@@ -46,6 +45,13 @@ export default function VaccinesPage() {
           fetch(`http://127.0.0.1:8000/vaccines/${cid}`), 
           fetch(`http://127.0.0.1:8000/admin/global-vaccines`) 
       ]);
+      
+      if (resClinic.status === 401 || resGlobal.status === 401) {
+          localStorage.removeItem('aicas_token');
+          localStorage.removeItem('aicas_user');
+          window.location.href = '/login';
+          return;
+      }
       
       const clinicData = await resClinic.json();
       const globalData = await resGlobal.json();
@@ -158,13 +164,21 @@ export default function VaccinesPage() {
 
     const isEditing = !!editingVac;
     const url = isEditing ? `http://127.0.0.1:8000/admin/vaccines/${editingVac.id}` : `http://127.0.0.1:8000/admin/vaccines`;
+    const token = localStorage.getItem('aicas_token');
     
     try {
         const response = await fetch(url, { 
             method: isEditing ? 'PUT' : 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, 
             body: JSON.stringify({ clinic_id: clinicId, ...payload }) 
         });
+        
+        if (response.status === 401) {
+            localStorage.removeItem('aicas_token');
+            localStorage.removeItem('aicas_user');
+            window.location.href = '/login';
+            return;
+        }
         
         if (!response.ok) {
             const err = await response.json();
@@ -180,7 +194,9 @@ export default function VaccinesPage() {
 
   const handleDelete = async (id: number) => {
     if(confirm("Remove this vaccine from clinic offerings?")) {
-      await fetch(`http://127.0.0.1:8000/admin/vaccines/${id}/${clinicId}`, { method: 'DELETE' }); loadData(clinicId);
+      const token = localStorage.getItem('aicas_token');
+      await fetch(`http://127.0.0.1:8000/admin/vaccines/${id}/${clinicId}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } }); 
+      loadData(clinicId);
     }
   };
 
@@ -245,6 +261,12 @@ export default function VaccinesPage() {
         <div><h1 className="text-3xl font-bold text-slate-800">💉 Vaccine Inventory</h1></div>
         <button onClick={() => openModal()} className="px-4 py-2 bg-purple-600 text-white rounded-lg font-bold shadow-md">+ Add Vaccine</button>
       </div>
+
+      {Object.keys(groupedVaccines).length === 0 && !isLoading && (
+          <div className="bg-white p-10 rounded-2xl shadow-sm border border-slate-100 text-center text-slate-500 font-medium">
+              [No vaccine found]
+          </div>
+      )}
 
       {Object.keys(groupedVaccines).map(type => (
         <div key={type} className="mb-10">
@@ -428,7 +450,7 @@ export default function VaccinesPage() {
               
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200">Cancel</button>
+              <button onClick={() => { setShowModal(false); loadData(clinicId); }} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200">Cancel</button>
               <button onClick={handleSave} className="px-4 py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700">Save Data</button>
             </div>
           </div>

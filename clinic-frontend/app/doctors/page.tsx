@@ -15,7 +15,6 @@ export default function DoctorsPage() {
         status: 'active', resign_reason: '', custom_resign_reason: '', is_my: true
     });
     
-    // Checkbox specializations logic
     const PRESET_SPECIALIZATIONS = ["General Practitioner", "Pediatrician", "Internal Medicine", "Dermatologist", "Cardiologist", "Gynecologist", "Orthopedic"];
     const [selectedSpecs, setSelectedSpecs] = useState<string[]>([]);
     const [isOthersSpec, setIsOthersSpec] = useState(false);
@@ -44,6 +43,12 @@ export default function DoctorsPage() {
             const res = await fetch(`http://127.0.0.1:8000/admin/doctors-all/${cid}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
+            if (res.status === 401) {
+                localStorage.removeItem('aicas_token');
+                localStorage.removeItem('aicas_user');
+                window.location.href = '/login';
+                return;
+            }
             if (res.ok) setDoctors(await res.json());
         } catch (err) {}
         setIsLoading(false);
@@ -149,6 +154,10 @@ export default function DoctorsPage() {
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify(payload)
             });
+            if (res.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
             if (res.ok) {
                 setIsEditing(null);
                 fetchDoctors(clinicId);
@@ -330,7 +339,7 @@ export default function DoctorsPage() {
                         )}
 
                         <div className="pt-6 border-t flex justify-end gap-3">
-                            <button type="button" onClick={() => setIsEditing(null)} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition">Cancel</button>
+                            <button type="button" onClick={() => { setIsEditing(null); fetchDoctors(clinicId); }} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition">Cancel</button>
                             <button type="submit" className="bg-blue-600 text-white font-bold px-10 py-3 rounded-xl shadow-lg hover:bg-blue-700 transition">
                                 {isEditing === 'new' ? "Register Doctor" : "Save Changes"}
                             </button>
@@ -346,6 +355,11 @@ export default function DoctorsPage() {
                         <ActivitySquare size={20} className="text-blue-600"/> Active Doctors
                     </h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {activeDocs.length === 0 && !isLoading && (
+                            <div className="bg-white p-10 rounded-2xl shadow-sm border border-slate-100 text-center text-slate-500 font-medium col-span-1 md:col-span-2">
+                                [No doctor found]
+                            </div>
+                        )}
                         {activeDocs.map(d => (
                             <div key={d.ic_passport_number} className="bg-white p-5 border border-slate-200 rounded-2xl shadow-sm flex flex-col justify-between hover:shadow-md transition">
                                 <div className="flex items-start gap-4 mb-4">

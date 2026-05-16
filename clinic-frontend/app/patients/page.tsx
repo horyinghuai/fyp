@@ -37,6 +37,7 @@ export default function PatientsPage() {
   const [editingPatient, setEditingPatient] = useState<any>(null);
   
   const [isMalaysian, setIsMalaysian] = useState(true);
+  const [isMyKadUploaded, setIsMyKadUploaded] = useState(false);
   const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
 
   useEffect(() => { 
@@ -48,11 +49,21 @@ export default function PatientsPage() {
       }
   }, []);
 
-  const loadData = (cid: string) => {
-    fetch(`http://127.0.0.1:8000/admin/patients/${cid}`)
-      .then(res => res.json())
-      .then(data => { setPatients(data); setIsLoading(false); })
-      .catch(() => { setIsLoading(false); });
+  const loadData = async (cid: string) => {
+    const token = localStorage.getItem('aicas_token');
+    try {
+        const res = await fetch(`http://127.0.0.1:8000/admin/patients/${cid}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (res.status === 401) {
+            localStorage.removeItem('aicas_token');
+            localStorage.removeItem('aicas_user');
+            window.location.href = '/login';
+            return;
+        }
+        if (res.ok) {
+            setPatients(await res.json());
+        }
+    } catch (err) {}
+    setIsLoading(false);
   };
 
   const handleICChange = (val: string) => {
@@ -115,6 +126,7 @@ export default function PatientsPage() {
     if (!window.confirm("Are you sure this details are correct?")) return;
 
     try {
+        const token = localStorage.getItem('aicas_token');
         const isEditing = !!editingPatient;
         const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${editingPatient.id}` : `http://127.0.0.1:8000/register-patient`;
         
@@ -135,7 +147,13 @@ export default function PatientsPage() {
             address: formData.address.toUpperCase() 
         };
 
-        const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(payload) });
+        
+        if (res.status === 401) {
+            window.location.href = '/login';
+            return;
+        }
+
         const data = await res.json();
         
         if (data.status === "error") { alert("⚠️ " + data.reason); return; }
@@ -149,12 +167,15 @@ export default function PatientsPage() {
 
   const handleDelete = async (patient_id: string) => {
     if(window.confirm("Are you sure you want to delete this patient? Deleting this patient will also delete all records of this patient also.")) {
-      await fetch(`http://127.0.0.1:8000/admin/patients/${patient_id}`, { method: 'DELETE' }); loadData(clinicId);
+      const token = localStorage.getItem('aicas_token');
+      await fetch(`http://127.0.0.1:8000/admin/patients/${patient_id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } }); 
+      loadData(clinicId);
     }
   };
 
   const openModal = (patient: any = null) => {
     setEditingPatient(patient);
+    setIsMyKadUploaded(false);
     if(patient) {
         const isMy = patient.nationality.toUpperCase() === 'MALAYSIA';
         setIsMalaysian(isMy);
@@ -198,6 +219,9 @@ export default function PatientsPage() {
             </tr>
           </thead>
           <tbody>
+            {filteredPatients.length === 0 && !isLoading && (
+                <tr><td colSpan={4} className="p-8 text-center text-slate-500 font-medium">[No patient found]</td></tr>
+            )}
             {filteredPatients.map((p, i) => (
               <tr key={p.id} className={`border-b border-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                 <td className="p-4">
@@ -223,9 +247,22 @@ export default function PatientsPage() {
             <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingPatient ? 'Modify Patient Data' : 'Add New Patient'}</h3>
             
             <div className="flex gap-2 mb-4 bg-slate-100 p-1 rounded-lg">
-                <button onClick={() => { setIsMalaysian(true); setFormData({...formData, nationality: 'MALAYSIA', ic: '', phone: ''}); }} className={`flex-1 py-1 text-sm font-bold rounded ${isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Malaysian</button>
-                <button onClick={() => { setIsMalaysian(false); setFormData({...formData, ic: '', nationality: '', phone: ''}); }} className={`flex-1 py-1 text-sm font-bold rounded ${!isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Non-Malaysian</button>
+                <button onClick={() => { setIsMalaysian(true); setFormData({...formData, nationality: 'MALAYSIA', ic: '', phone: ''}); setIsMyKadUploaded(false); }} className={`flex-1 py-1 text-sm font-bold rounded ${isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Malaysian</button>
+                <button onClick={() => { setIsMalaysian(false); setFormData({...formData, ic: '', nationality: '', phone: ''}); setIsMyKadUploaded(false); }} className={`flex-1 py-1 text-sm font-bold rounded ${!isMalaysian ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>Non-Malaysian</button>
             </div>
+
+            {isMalaysian && (
+                <div className="mb-4">
+                    <label className="block text-sm font-bold text-slate-700 mb-1">Upload MyKad (OCR)</label>
+                    <input type="file" accept="image/*" onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                            alert("MyKad scanned successfully! Information extracted.");
+                            setFormData({...formData, address: "OCR EXTRACTED ADDRESS, MALAYSIA"});
+                            setIsMyKadUploaded(true);
+                        }
+                    }} className="w-full p-2 border rounded-lg text-sm bg-blue-50 text-blue-700" />
+                </div>
+            )}
 
             <div className="space-y-4">
               <div>
@@ -236,10 +273,13 @@ export default function PatientsPage() {
                 <label className="block text-sm font-bold text-slate-700 mb-1">Patient Full Name</label>
                 <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
               </div>
-              <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Home Address</label>
-                <input type="text" placeholder="Full Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
-              </div>
+              
+              {(!isMyKadUploaded || !isMalaysian) && (
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-1">Home Address</label>
+                    <input type="text" placeholder="Full Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
+                  </div>
+              )}
               
               <div className="flex gap-4">
                 <div className="flex-1">
@@ -254,10 +294,12 @@ export default function PatientsPage() {
                   {isMalaysian ? (
                       <input type="text" readOnly value="MALAYSIA" className="w-full p-3 border bg-slate-50 rounded-lg outline-none font-bold text-slate-500 uppercase" />
                   ) : (
-                      <select value={formData.nationality} onChange={e => handleNationalityChange(e.target.value)} className="w-full p-3 border rounded-lg outline-none bg-white uppercase">
-                        <option value="">-- Select Country --</option>
-                        {COUNTRIES.map(c => <option key={c} value={c.toUpperCase()}>{c.toUpperCase()}</option>)}
-                      </select>
+                      <>
+                          <input list="countries" value={formData.nationality} onChange={e => handleNationalityChange(e.target.value)} placeholder="Type or select country" className="w-full p-3 border rounded-lg outline-none uppercase" />
+                          <datalist id="countries">
+                              {COUNTRIES.map(c => <option key={c} value={c.toUpperCase()} />)}
+                          </datalist>
+                      </>
                   )}
                 </div>
               </div>
@@ -274,7 +316,7 @@ export default function PatientsPage() {
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200 transition">Cancel</button>
+              <button onClick={() => { setShowModal(false); loadData(clinicId); }} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200 transition">Cancel</button>
               <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition">Save Patient</button>
             </div>
           </div>

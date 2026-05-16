@@ -7,9 +7,9 @@ export default function StaffPage() {
     const [staff, setStaff] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [currentUserRole, setCurrentUserRole] = useState('');
+    const [clinicId, setClinicId] = useState('');
     const [isEditing, setIsEditing] = useState<string | null>(null);
 
-    // Initialized with 6 exact permissions
     const [form, setForm] = useState({
         ic: '', name: '', email: '', is_my: true,
         permissions: { APPOINTMENT_MANAGEMENT: false, BLOOD_TEST_MANAGEMENT: false, VACCINE_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, PATIENT_MANAGEMENT: false, CHAT_SUPPORT: false },
@@ -25,12 +25,22 @@ export default function StaffPage() {
         const token = localStorage.getItem('aicas_token');
         const userStr = localStorage.getItem('aicas_user');
         if (userStr) {
-            setCurrentUserRole(JSON.parse(userStr).role);
+            const userObj = JSON.parse(userStr);
+            setCurrentUserRole(userObj.role);
+            setClinicId(userObj.clinic_id);
         }
         try {
             const res = await fetch('http://127.0.0.1:8000/admin/users', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
+            
+            if (res.status === 401) {
+                localStorage.removeItem('aicas_token');
+                localStorage.removeItem('aicas_user');
+                window.location.href = '/login';
+                return;
+            }
+            
             if (res.ok) setStaff(await res.json());
         } catch (err) {}
         setIsLoading(false);
@@ -124,10 +134,17 @@ export default function StaffPage() {
                         status: form.status,
                         permissions: permissionsStr,
                         resign_reason: finalResignReason,
-                        clinic_id: 'default',
+                        clinic_id: clinicId,
                         force_email_update: isForced
                     })
                 });
+
+                if (res.status === 401) {
+                    localStorage.removeItem('aicas_token');
+                    localStorage.removeItem('aicas_user');
+                    window.location.href = '/login';
+                    return;
+                }
 
                 if (res.ok) {
                     const data = await res.json();
@@ -273,7 +290,7 @@ export default function StaffPage() {
                             )}
 
                             <div className="pt-6 border-t flex justify-end gap-3">
-                                <button type="button" onClick={() => setIsEditing(null)} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition">Cancel</button>
+                                <button type="button" onClick={() => { setIsEditing(null); fetchStaff(); }} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200 transition">Cancel</button>
                                 <button type="submit" className="bg-blue-600 text-white font-bold px-10 py-3 rounded-xl shadow-lg hover:bg-blue-700 transition">
                                     {isEditing === 'new' ? "Register Staff Member" : "Save Changes"}
                                 </button>
@@ -330,7 +347,7 @@ export default function StaffPage() {
                                 </div>
                             </div>
                         ))}
-                        {activeStaff.length === 0 && <p className="text-center text-slate-400 py-10 bg-white rounded-2xl border border-slate-200">No active staff found.</p>}
+                        {activeStaff.length === 0 && <p className="text-center text-slate-500 py-10 bg-white rounded-2xl border border-slate-200 font-medium">[No staff found]</p>}
                     </div>
                 </div>
 

@@ -26,10 +26,18 @@ export default function BloodTestsPage() {
 
   const loadData = async (cid: string) => {
     try {
+      const token = localStorage.getItem('aicas_token');
       const [pkgRes, sglRes] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/package`),
-        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/single`)
+        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/package`, { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/single`, { headers: { 'Authorization': `Bearer ${token}` } })
       ]);
+      
+      if (pkgRes.status === 401 || sglRes.status === 401) {
+          localStorage.removeItem('aicas_token');
+          localStorage.removeItem('aicas_user');
+          window.location.href = '/login';
+          return;
+      }
       
       const pkgData = await pkgRes.json();
       const sglData = await sglRes.json();
@@ -68,6 +76,7 @@ export default function BloodTestsPage() {
     };
 
     try {
+      const token = localStorage.getItem('aicas_token');
       const isEditing = !!editingBt;
       const url = isEditing 
         ? `http://127.0.0.1:8000/admin/blood-tests/${editingBt.id}` 
@@ -75,9 +84,14 @@ export default function BloodTestsPage() {
       
       const res = await fetch(url, {
         method: isEditing ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(payload)
       });
+      
+      if (res.status === 401) {
+          window.location.href = '/login';
+          return;
+      }
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ detail: 'Unknown server error' }));
@@ -93,7 +107,8 @@ export default function BloodTestsPage() {
 
   const handleDelete = async (id: number) => {
     if (confirm("Delete this Blood Test? This cannot be undone.")) {
-      await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { method: 'DELETE' });
+      const token = localStorage.getItem('aicas_token');
+      await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
       loadData(clinicId);
     }
   };
@@ -135,6 +150,11 @@ export default function BloodTestsPage() {
 
       <h2 className="font-bold text-2xl text-slate-800 border-b-2 border-slate-200 pb-2 mb-6">1. Packages</h2>
       <div className="grid grid-cols-2 gap-4 mb-12">
+        {packages.length === 0 && (
+            <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-100 text-center text-slate-500 font-medium col-span-2">
+                [No blood test found]
+            </div>
+        )}
         {packages.map(p => (
           <div key={p.id} className="bg-white rounded-xl p-6 shadow-sm border-t-4 border-emerald-50 flex flex-col">
             <div className="flex justify-between mb-2">
@@ -190,6 +210,9 @@ export default function BloodTestsPage() {
             </tr>
           </thead>
           <tbody>
+            {singles.length === 0 && (
+                <tr><td colSpan={5} className="p-8 text-center text-slate-500 font-medium">[No blood test found]</td></tr>
+            )}
             {singles.map((s, i) => (
               <tr key={s.id} className={`border-b border-slate-50 hover:bg-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                 <td className="p-4 font-bold text-slate-800">{s.name}</td>
@@ -306,7 +329,7 @@ export default function BloodTestsPage() {
               )}
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
-              <button onClick={() => setShowModal(false)} className="px-4 py-2 bg-slate-100 rounded-lg font-medium hover:bg-slate-200">
+              <button onClick={() => { setShowModal(false); loadData(clinicId); }} className="px-4 py-2 bg-slate-100 rounded-lg font-medium hover:bg-slate-200">
                 Cancel
               </button>
               <button onClick={handleSave} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700">

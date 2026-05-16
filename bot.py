@@ -54,14 +54,51 @@ COUNTRIES_LIST = [
 ]
 
 def get_country_keyboard():
+    countries = [
+        "MALAYSIA", "AFGHANISTAN", "ALBANIA", "ALGERIA", "ANDORRA", "ANGOLA",
+        "ARGENTINA", "ARMENIA", "AUSTRALIA", "AUSTRIA", "AZERBAIJAN", "BAHAMAS",
+        "BAHRAIN", "BANGLADESH", "BARBADOS", "BELARUS", "BELGIUM", "BELIZE",
+        "BENIN", "BHUTAN", "BOLIVIA", "BOSNIA AND HERZEGOVINA", "BOTSWANA",
+        "BRAZIL", "BRUNEI", "BULGARIA", "BURKINA FASO", "BURUNDI", "CAMBODIA",
+        "CAMEROON", "CANADA", "CENTRAL AFRICAN REPUBLIC", "CHAD", "CHILE",
+        "CHINA", "COLOMBIA", "COMOROS", "COSTA RICA", "CROATIA", "CUBA",
+        "CYPRUS", "CZECH REPUBLIC", "DENMARK", "DJIBOUTI", "DOMINICAN REPUBLIC",
+        "EAST TIMOR", "ECUADOR", "EGYPT", "EL SALVADOR", "EQUATORIAL GUINEA",
+        "ERITREA", "ESTONIA", "ETHIOPIA", "FIJI", "FINLAND", "FRANCE",
+        "GABON", "GAMBIA", "GEORGIA", "GERMANY", "GHANA", "GREECE",
+        "GRENADA", "GUATEMALA", "GUINEA", "GUYANA", "HAITI", "HONDURAS",
+        "HUNGARY", "ICELAND", "INDIA", "INDONESIA", "IRAN", "IRAQ",
+        "IRELAND", "ISRAEL", "ITALY", "JAMAICA", "JAPAN", "JORDAN",
+        "KAZAKHSTAN", "KENYA", "KIRIBATI", "KUWAIT", "KYRGYZSTAN", "LAOS",
+        "LATVIA", "LEBANON", "LESOTHO", "LIBERIA", "LIBYA", "LIECHTENSTEIN",
+        "LITHUANIA", "LUXEMBOURG", "MACEDONIA", "MADAGASCAR", "MALAWI",
+        "MALDIVES", "MALI", "MALTA", "MAURITANIA", "MAURITIUS", "MEXICO",
+        "MICRONESIA", "MOLDOVA", "MONACO", "MONGOLIA", "MONTENEGRO",
+        "MOROCCO", "MOZAMBIQUE", "MYANMAR", "NAMIBIA", "NAURU", "NEPAL",
+        "NETHERLANDS", "NEW ZEALAND", "NICARAGUA", "NIGER", "NIGERIA",
+        "NORWAY", "OMAN", "PAKISTAN", "PALAU", "PALESTINE", "PANAMA",
+        "PAPUA NEW GUINEA", "PARAGUAY", "PERU", "PHILIPPINES", "POLAND",
+        "PORTUGAL", "QATAR", "ROMANIA", "RUSSIA", "RWANDA",
+        "SAINT KITTS AND NEVIS", "SAINT LUCIA", "SAINT VINCENT", "SAMOA",
+        "SAN MARINO", "SAO TOME", "SAUDI ARABIA", "SENEGAL", "SERBIA",
+        "SEYCHELLES", "SIERRA LEONE", "SINGAPORE", "SLOVAKIA", "SLOVENIA",
+        "SOLOMON ISLANDS", "SOMALIA", "SOUTH AFRICA", "SOUTH KOREA", "SPAIN",
+        "SRI LANKA", "SUDAN", "SURINAME", "SWAZILAND", "SWEDEN",
+        "SWITZERLAND", "SYRIA", "TAIWAN", "TAJIKISTAN", "TANZANIA",
+        "THAILAND", "TOGO", "TONGA", "TRINIDAD AND TOBAGO", "TUNISIA",
+        "TURKEY", "TURKMENISTAN", "TUVALU", "UGANDA", "UKRAINE",
+        "UNITED ARAB EMIRATES", "UNITED KINGDOM", "UNITED STATES",
+        "URUGUAY", "UZBEKISTAN", "VANUATU", "VATICAN CITY", "VENEZUELA",
+        "VIETNAM", "YEMEN", "ZAMBIA", "ZIMBABWE"
+    ]
+
+    # Split countries into rows of 3 buttons each
+    keyboard = [countries[i:i + 3] for i in range(0, len(countries), 3)]
+
     return ReplyKeyboardMarkup(
-        [
-            ["Singapore", "Indonesia", "Thailand"], 
-            ["China", "India", "Bangladesh"], 
-            ["United Kingdom", "United States", "Australia"]
-        ],
-        resize_keyboard=True, 
-        one_time_keyboard=True, 
+        keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=True,
         input_field_placeholder="Type or select country"
     )
 

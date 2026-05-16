@@ -23,6 +23,12 @@ export default function DeveloperPage() {
           const res = await fetch('http://127.0.0.1:8000/admin/clinics', {
               headers: { 'Authorization': `Bearer ${token}` }
           });
+          if (res.status === 401) {
+              localStorage.removeItem('aicas_token');
+              localStorage.removeItem('aicas_user');
+              window.location.href = '/login';
+              return;
+          }
           if (res.ok) setClinics(await res.json());
       } catch (err) {}
       setIsLoading(false);
@@ -33,16 +39,22 @@ export default function DeveloperPage() {
   const validateEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
   const formatAndValidatePhone = (phone: string) => {
-      if(!phone) return null;
-      let cleaned = phone.replace(/\s+/g, '');
-      if (cleaned.startsWith('0')) cleaned = '+6' + cleaned;
-      const phoneRegex = /^\+60\d{1,2}-?\d{7,8}$/;
-      if (!phoneRegex.test(cleaned) && !phoneRegex.test(cleaned.replace('-', ''))) return null;
-      if (!cleaned.includes('-')) {
-          if (cleaned.startsWith('+6011') || cleaned.startsWith('+6015')) cleaned = cleaned.substring(0, 5) + '-' + cleaned.substring(5);
-          else cleaned = cleaned.substring(0, 4) + '-' + cleaned.substring(4);
+      if (!phone) return null;
+      let cleaned = phone.replace(/[\s-]/g, '');
+      
+      if (cleaned.startsWith('+60')) cleaned = cleaned.substring(3);
+      else if (cleaned.startsWith('60')) cleaned = cleaned.substring(2);
+      else if (cleaned.startsWith('0')) cleaned = cleaned.substring(1);
+      
+      if (!/^\d{8,10}$/.test(cleaned)) return null;
+
+      if (cleaned.startsWith('11') || cleaned.startsWith('15')) {
+          return `+60${cleaned.substring(0, 2)}-${cleaned.substring(2)}`;
+      } else if (cleaned.startsWith('1')) {
+          return `+60${cleaned.substring(0, 2)}-${cleaned.substring(2)}`;
+      } else {
+          return `+60${cleaned.substring(0, 1)}-${cleaned.substring(1)}`;
       }
-      return cleaned;
   };
 
   const formatIC = (ic: string) => {
@@ -92,7 +104,7 @@ export default function DeveloperPage() {
 
       if (devForm.contact_number) {
           const formattedPhone = formatAndValidatePhone(devForm.contact_number);
-          if (!formattedPhone) return setStatusMsg({ type: 'error', text: 'Invalid Clinic Phone Format. Must be +60X-XXXXXXX or 0X-XXXXXXX.' });
+          if (!formattedPhone) return setStatusMsg({ type: 'error', text: 'Invalid Clinic Phone Format. Must be valid Malaysian layout.' });
           devForm.contact_number = formattedPhone;
       }
 
@@ -135,6 +147,13 @@ export default function DeveloperPage() {
                   body: JSON.stringify(payload)
               });
               
+              if (res.status === 401) {
+                  localStorage.removeItem('aicas_token');
+                  localStorage.removeItem('aicas_user');
+                  window.location.href = '/login';
+                  return;
+              }
+
               if (res.ok) {
                   const data = await res.json();
                   fetchClinics();
@@ -173,7 +192,11 @@ export default function DeveloperPage() {
       if(!window.confirm("Are you sure you want to permanently delete this clinic and ALL associated data?")) return;
       const token = localStorage.getItem('aicas_token');
       try {
-          await fetch(`http://127.0.0.1:8000/admin/clinics/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+          const res = await fetch(`http://127.0.0.1:8000/admin/clinics/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+          if (res.status === 401) {
+              window.location.href = '/login';
+              return;
+          }
           fetchClinics();
       } catch (err) { alert("Server error"); }
   };
@@ -202,7 +225,7 @@ export default function DeveloperPage() {
                     <div className="grid grid-cols-2 gap-4">
                         <input type="text" placeholder="Clinic Name *" required value={devForm.clinic_name} onChange={e => setDevForm({...devForm, clinic_name: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
                         <input type="text" placeholder="Registration Number" value={devForm.registration_number} onChange={e => setDevForm({...devForm, registration_number: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
-                        <input type="text" placeholder="Contact Number (e.g. 012-3456789)" value={devForm.contact_number} onChange={e => setDevForm({...devForm, contact_number: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
+                        <input type="text" placeholder="Contact Number (e.g. +6012-3456789)" value={devForm.contact_number} onChange={e => setDevForm({...devForm, contact_number: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
                         <input type="text" placeholder="Full Address" value={devForm.address} onChange={e => setDevForm({...devForm, address: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
                     </div>
                 </div>
@@ -244,7 +267,7 @@ export default function DeveloperPage() {
                 </div>
 
                 <div className="pt-6 border-t flex justify-end gap-3">
-                    <button type="button" onClick={() => setIsEditing(null)} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200">Cancel</button>
+                    <button type="button" onClick={() => { setIsEditing(null); fetchClinics(); }} className="px-8 py-3 bg-slate-100 text-slate-700 font-bold rounded-xl hover:bg-slate-200">Cancel</button>
                     <button type="submit" disabled={isSubmitting} className="bg-slate-900 text-white font-bold px-10 py-3 rounded-xl shadow-lg hover:bg-slate-800 transition disabled:opacity-50">
                         {isSubmitting ? "Processing..." : "Save Clinic Data"}
                     </button>
