@@ -102,6 +102,12 @@ export default function DeveloperPage() {
       e.preventDefault();
       setStatusMsg({ type: '', text: '' });
 
+      // 1. Individual constraint checks
+      if (!devForm.clinic_name) return setStatusMsg({ type: 'error', text: 'Clinic Name is required.' });
+      if (!devForm.admin_ic) return setStatusMsg({ type: 'error', text: 'Primary Admin IC/Passport is required.' });
+      if (!devForm.admin_name) return setStatusMsg({ type: 'error', text: 'Primary Admin Name is required.' });
+      if (!devForm.admin_email) return setStatusMsg({ type: 'error', text: 'Primary Admin Email is required.' });
+
       if (devForm.contact_number) {
           const formattedPhone = formatAndValidatePhone(devForm.contact_number);
           if (!formattedPhone) return setStatusMsg({ type: 'error', text: 'Invalid Clinic Phone Format. Must be valid Malaysian layout.' });

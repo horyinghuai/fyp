@@ -814,7 +814,8 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = clean_bot_username(update.message.text)
     if reason:
-        reason = reason.title() # Capitalizes Each Word
+        # Sentence case (Capitalize first letter, lowercase the rest, remove trailing dots)
+        reason = reason.capitalize().rstrip('.')
     context.user_data['general_notes'] = reason
     
     if context.user_data.get('is_editing'):

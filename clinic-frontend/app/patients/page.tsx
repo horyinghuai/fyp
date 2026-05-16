@@ -98,9 +98,9 @@ export default function PatientsPage() {
   };
 
   const handleSave = async () => {
-    if (!formData.ic || !formData.name || !formData.phone) {
-        alert("⚠️ IC/Passport, Name, and Phone are required fields."); return;
-    }
+    if (!formData.ic) return alert("⚠️ IC / Passport Number is required.");
+    if (!formData.name) return alert("⚠️ Patient Name is required.");
+    if (!formData.phone) return alert("⚠️ Phone Number is required.");
 
     let finalPhone = formData.phone.trim();
     

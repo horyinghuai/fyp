@@ -95,6 +95,12 @@ export default function StaffPage() {
 
     const handleSave = async (e: React.FormEvent) => {
         e.preventDefault();
+        setStatusMsg({ type: '', text: '' });
+
+        // 1. Individual constraint checks
+        if (!form.ic) return setStatusMsg({ type: 'error', text: 'IC / Passport Number is required.' });
+        if (!form.name) return setStatusMsg({ type: 'error', text: 'Staff Name is required.' });
+        if (!form.email) return setStatusMsg({ type: 'error', text: 'Login Email is required.' });
         
         let finalIC = form.ic.toUpperCase();
         if (form.is_my) {

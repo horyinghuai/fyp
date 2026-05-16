@@ -1992,33 +1992,48 @@ def get_patient_clinics(telegram_id: int, db: Session = Depends(get_db)):
 
 import base64
 from fastapi import UploadFile, File
+import warnings
+
+# Suppress PyTorch DataLoader warning for EasyOCR
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.utils.data")
 
 @app.post("/admin/ocr-mykad")
 async def process_mykad_ocr(file: UploadFile = File(...)):
     content = await file.read()
     encoded_image = base64.b64encode(content).decode('utf-8')
     api_key = os.getenv("GOOGLE_VISION_API_KEY")
+    json_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     
     extracted_text = ""
-    # 1. Google Cloud Vision API Integration (Prioritized)
-    if api_key:
-        async with httpx.AsyncClient() as client:
-            payload = {
-                "requests": [{
-                    "image": {"content": encoded_image},
-                    "features": [{"type": "TEXT_DETECTION"}]
-                }]
-            }
-            res = await client.post(f"https://vision.googleapis.com/v1/images:annotate?key={api_key}", json=payload)
-            if res.status_code == 200:
-                data = res.json()
-                if data.get("responses") and "textAnnotations" in data["responses"][0]:
-                    extracted_text = data["responses"][0]["textAnnotations"][0]["description"]
-    # 2. EasyOCR Fallback (If GCP key is missing)
-    else:
+    # 1. Google Cloud Vision API Integration (JSON Credentials OR API Key)
+    if json_creds or api_key:
+        try:
+            # If using pip install google-cloud-vision and JSON file
+            from google.cloud import vision
+            client = vision.ImageAnnotatorClient()
+            image = vision.Image(content=content)
+            response = client.text_detection(image=image)
+            if response.text_annotations:
+                extracted_text = response.text_annotations[0].description
+        except ImportError:
+            # Fallback to REST API if library isn't installed but key is present
+            async with httpx.AsyncClient() as client:
+                payload = {
+                    "requests": [{
+                        "image": {"content": encoded_image},
+                        "features": [{"type": "TEXT_DETECTION"}]
+                    }]
+                }
+                res = await client.post(f"https://vision.googleapis.com/v1/images:annotate?key={api_key}", json=payload)
+                if res.status_code == 200:
+                    data = res.json()
+                    if data.get("responses") and "textAnnotations" in data["responses"][0]:
+                        extracted_text = data["responses"][0]["textAnnotations"][0]["description"]
+    # 2. EasyOCR Fallback (If GCP fails or missing)
+    if not extracted_text:
         import easyocr
         import tempfile
-        reader = easyocr.Reader(['en', 'ms'])
+        reader = easyocr.Reader(['en', 'ms'], gpu=False) # Suppresses CUDA warning by forcing CPU
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
             tf.write(content)
             tf_path = tf.name
