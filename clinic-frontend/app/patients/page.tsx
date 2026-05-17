@@ -94,9 +94,29 @@ export default function PatientsPage() {
       canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
       
       canvas.toBlob((blob) => {
-          if (blob) handleOcrFileResponse(blob);
-          const stream = video.srcObject as MediaStream;
-          stream?.getTracks().forEach(t => t.stop());
+          if (!blob) return;
+          setOcrProcessing(true);
+          const form = new FormData();
+          form.append("file", blob, "mykad.jpg");
+          
+          fetch("http://127.0.0.1:8000/admin/ocr-mykad", { method: 'POST', body: form })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success && data.data.ic) {
+                    // Turn OFF camera ONLY on success
+                    const stream = video.srcObject as MediaStream;
+                    stream?.getTracks().forEach(t => t.stop());
+                    
+                    setFormData({...formData, ic: data.data.ic, name: data.data.name, address: data.data.address, gender: data.data.gender, nationality: 'MALAYSIA'});
+                    setIsMyKadUploaded(true);
+                    setOcrMode('none');
+                    alert("MyKad scanned successfully!");
+                } else {
+                    alert("Failed to read MyKad cleanly. Please adjust lighting and tap Capture again.");
+                }
+            })
+            .catch(e => alert("OCR Failed due to network connection."))
+            .finally(() => setOcrProcessing(false));
       }, 'image/jpeg');
   };
 
@@ -152,18 +172,25 @@ export default function PatientsPage() {
     if (!formData.name) return alert("⚠️ Patient Name is required.");
     if (!formData.phone) return alert("⚠️ Phone Number is required.");
 
+    // STRICT PHONE FORMATTING LOGIC
     let finalPhone = formData.phone.trim();
-    if (!finalPhone.includes('+')) {
-        const malaysianPattern = /^0\d{1,2}-?\d{7,8}$/;
-        if (malaysianPattern.test(finalPhone)) {
-            let clean = finalPhone.replace(/-/g, '');
-            finalPhone = (clean.startsWith('011') || clean.startsWith('015')) 
-                ? `+60${clean.substring(1, 3)}-${clean.substring(3)}` 
-                : `+60${clean.substring(1, 2)}-${clean.substring(2)}`;
-        } else {
-            return alert("Invalid phone number format. Please recheck.");
-        }
+    const phoneRegex = /^(\+60|0|60)?\d{2,3}-?\d{7,8}$/;
+    
+    if (!phoneRegex.test(finalPhone)) {
+        return alert("Invalid phone format! Please enter as +60XX-XXXXXXXX or XXX-XXXXXXXX.");
     }
+    
+    let cleanDigits = finalPhone.replace(/[^\d]/g, '');
+    if (cleanDigits.startsWith('60')) cleanDigits = cleanDigits.substring(2);
+    else if (cleanDigits.startsWith('0')) cleanDigits = cleanDigits.substring(1);
+
+    if (cleanDigits.length < 8 || cleanDigits.length > 10) {
+        return alert("Invalid phone length. Please check the numbers.");
+    }
+
+    let prefix = cleanDigits.startsWith('11') || cleanDigits.startsWith('15') ? cleanDigits.substring(0, 3) : cleanDigits.substring(0, 2);
+    let suffix = cleanDigits.startsWith('11') || cleanDigits.startsWith('15') ? cleanDigits.substring(3) : cleanDigits.substring(2);
+    finalPhone = `+60${prefix}-${suffix}`;
 
     if (isMalaysian) {
         const cleanIC = formData.ic.replace(/[^0-9]/g, '');
@@ -171,7 +198,7 @@ export default function PatientsPage() {
     }
 
     if (!window.confirm("Are you sure this details are correct?")) return;
-
+    
     try {
         const token = localStorage.getItem('aicas_token');
         const isEditing = !!editingPatient;
@@ -330,12 +357,10 @@ export default function PatientsPage() {
                 <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
               </div>
               
-              {(!isMyKadUploaded || !isMalaysian) && (
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-1">Home Address</label>
-                    <input type="text" placeholder="Full Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
-                  </div>
-              )}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Home Address</label>
+                <input type="text" placeholder="Full Address" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
+              </div>
               
               <div className="flex gap-4">
                 <div className="flex-1">

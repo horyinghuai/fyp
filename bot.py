@@ -712,7 +712,7 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
             except Exception as e:
                 logger.error(f"Error registering patient: {e}")
                 
-        return await show_main_services(query.message, context)
+        return await show_main_services(update, context)
 
 async def handle_profile_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

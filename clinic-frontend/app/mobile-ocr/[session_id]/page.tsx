@@ -37,11 +37,17 @@ export default function MobileOcrPage() {
         <div className="h-screen bg-slate-900 flex flex-col items-center justify-center p-6">
             <h1 className="text-white text-2xl font-bold mb-6">AICAS Secure Scanner</h1>
             
-            <label className={`bg-blue-600 text-white px-8 py-5 rounded-full font-bold shadow-lg flex items-center gap-3 cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
+            <label className={`relative overflow-hidden bg-blue-600 text-white px-8 py-5 rounded-full font-bold shadow-lg flex items-center gap-3 cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
                 {uploading ? <UploadCloud size={24} className="animate-bounce" /> : <Camera size={24} />}
                 {uploading ? "Analyzing Image..." : "Tap to Open Camera"}
-                {/* 'capture="environment"' forces the phone's native camera app to open safely */}
-                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleMobileCapture} />
+                {/* Ensure the input fills the button but is invisible, preventing browser security blocks */}
+                <input 
+                    type="file" 
+                    accept="image/*" 
+                    capture="environment" 
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
+                    onChange={handleMobileCapture} 
+                />
             </label>
             
             <p className="text-slate-400 mt-6 text-sm text-center">Place your MyKad on a flat, well-lit surface before taking the photo.</p>
