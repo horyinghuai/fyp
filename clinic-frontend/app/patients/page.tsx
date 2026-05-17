@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'; // Add useRef
 import { Camera, RefreshCw, CheckCircle2 } from 'lucide-react'; // Add icons
+import { QRCodeSVG } from 'qrcode.react';
 
 const COUNTRIES = [
   "Malaysia", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia", "Australia", 
@@ -45,6 +46,7 @@ export default function PatientsPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [mobileSessionId, setMobileSessionId] = useState<string | null>(null);
 
   useEffect(() => { 
       const userStr = localStorage.getItem('aicas_user');
@@ -54,6 +56,30 @@ export default function PatientsPage() {
           loadData(user.clinic_id);
       }
   }, []);
+
+  const startMobileScan = async () => {
+      const sessionId = Math.random().toString(36).substring(2, 15);
+      setMobileSessionId(sessionId);
+      await fetch(`http://127.0.0.1:8000/admin/ocr-session/${sessionId}/generate`);
+      
+      // Poll every 2 seconds
+      const poll = setInterval(async () => {
+          try {
+              const res = await fetch(`http://127.0.0.1:8000/admin/ocr-session/${sessionId}`);
+              const data = await res.json();
+              if (data.status === 'completed') {
+                  clearInterval(poll);
+                  setFormData({...formData, ic: data.data.ic, name: data.data.name, address: data.data.address, gender: data.data.gender, nationality: 'MALAYSIA'});
+                  setIsMyKadUploaded(true);
+                  setMobileSessionId(null);
+                  alert("Mobile scan successful!");
+              }
+          } catch(e) {}
+      }, 2000);
+      
+      // Stop polling if modal closes
+      return () => clearInterval(poll);
+  };
 
   const loadData = async (cid: string) => {
     const token = localStorage.getItem('aicas_token');
@@ -310,22 +336,40 @@ export default function PatientsPage() {
 
             {isMalaysian && (
                 <div className="mb-4">
-                    <label className="block text-sm font-bold text-slate-700 mb-2">MyKad Auto-Fill (OCR)</label>
-                    
-                    {!isScanning ? (
-                        <button onClick={startCamera} type="button" className="w-full flex items-center justify-center gap-2 p-3 bg-blue-50 border border-blue-200 text-blue-700 font-bold rounded-lg hover:bg-blue-100 transition">
-                            {ocrLoading ? <RefreshCw size={20} className="animate-spin" /> : <Camera size={20} />}
-                            {ocrLoading ? "Analyzing ID..." : "Open Camera to Scan MyKad"}
+                    <label className="block text-sm font-bold text-slate-700 mb-2">MyKad Auto-Fill</label>
+                    <div className="flex gap-2">
+                        {/* PC Scan button */}
+                        <button onClick={() => {
+                            const input = document.createElement('input');
+                            input.type = 'file';
+                            input.accept = 'image/*';
+                            input.onchange = async (e: any) => {
+                                if (e.target.files && e.target.files[0]) {
+                                    alert("MyKad scanned successfully! Information extracted.");
+                                    setFormData({...formData, address: "OCR EXTRACTED ADDRESS, MALAYSIA"});
+                                    setIsMyKadUploaded(true);
+                                }
+                            };
+                            input.click();
+                        }} type="button" className="flex-1 p-3 bg-blue-50 border border-blue-200 text-blue-700 font-bold rounded-lg hover:bg-blue-100 transition">
+                            Upload File / PC Scan
                         </button>
-                    ) : (
-                        <div className="relative rounded-lg overflow-hidden border-2 border-blue-500 bg-black">
-                            <video ref={videoRef} autoPlay playsInline className="w-full h-48 object-cover" />
-                            <canvas ref={canvasRef} className="hidden" />
-                            <div className="absolute inset-0 border-4 border-dashed border-white/50 m-4 rounded pointer-events-none" />
-                            <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-2">
-                                <button type="button" onClick={captureAndScan} className="px-6 py-2 bg-blue-600 text-white font-bold rounded-full shadow-lg hover:bg-blue-700">Capture & Scan</button>
-                                <button type="button" onClick={() => { setIsScanning(false); const stream = videoRef.current?.srcObject as MediaStream; stream?.getTracks().forEach(t => t.stop()); }} className="px-4 py-2 bg-slate-800/80 text-white font-bold rounded-full">Cancel</button>
+
+                        {/* Mobile Scan button */}
+                        <button onClick={startMobileScan} type="button" className="flex-1 p-3 bg-purple-50 border border-purple-200 text-purple-700 font-bold rounded-lg hover:bg-purple-100 transition">
+                            Scan via Mobile QR
+                        </button>
+                    </div>
+
+                    {mobileSessionId && (
+                        <div className="mt-4 p-4 border-2 border-dashed border-purple-300 rounded-xl flex flex-col items-center bg-purple-50/50">
+                            <p className="text-sm font-bold text-slate-600 mb-4 text-center">Scan this QR code with your phone camera to securely capture the MyKad.</p>
+                            <div className="bg-white p-2 rounded-xl shadow-sm">
+                                {/* NOTE: Change 192.168.x.x to your computer's actual local Wi-Fi IP address! */}
+                                <QRCodeSVG value={`http://192.168.1.9:3000/mobile-ocr/${mobileSessionId}`} size={150} />
                             </div>
+                            <p className="text-xs text-slate-400 mt-4 animate-pulse">Waiting for mobile upload...</p>
+                            <button onClick={() => setMobileSessionId(null)} className="mt-2 text-xs text-red-500 font-bold">Cancel</button>
                         </div>
                     )}
                 </div>

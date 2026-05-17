@@ -1704,10 +1704,14 @@ async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
     if channel == 'telegram' and token and target_telegram_id:
         async with httpx.AsyncClient() as client:
             try:
-                await client.post(
+                res = await client.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={"chat_id": target_telegram_id, "text": f"👨‍⚕️ *Clinic Admin:*\n{req.reply_text}", "parse_mode": "Markdown"}
                 )
+                if res.status_code == 200:
+                    data = res.json()
+                    new_msg.telegram_message_id = data['result']['message_id']
+                    db.commit()
             except Exception as e:
                 print(f"Failed to send telegram message: {e}")
     elif channel == 'sms' and target_phone:
@@ -1742,6 +1746,56 @@ async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
             print("WARNING: Mocean API keys missing. Fallback to print.")
                 
     return {"status": "success", "channel": channel}
+
+class MarkReadReq(BaseModel):
+    chat_key: str
+    clinic_id: str
+
+class EditMsgReq(BaseModel):
+    new_text: str
+
+@app.get("/admin/chat-history/{clinic_id}")
+def get_chat_history(clinic_id: str, db: Session = Depends(get_db)):
+    msgs = db.query(models.ChatMessage).filter(models.ChatMessage.clinic_id == clinic_id).order_by(models.ChatMessage.created_at.asc()).all()
+    return msgs
+
+@app.put("/admin/chat-read")
+def mark_chat_read(req: MarkReadReq, db: Session = Depends(get_db)):
+    query = db.query(models.ChatMessage).filter(models.ChatMessage.clinic_id == req.clinic_id, models.ChatMessage.status == 'unread')
+    if req.chat_key.startswith("TG-"):
+        query = query.filter(models.ChatMessage.telegram_id == int(req.chat_key.replace("TG-", "")))
+    elif req.chat_key.startswith("SMS-"):
+        query = query.filter(models.ChatMessage.phone == req.chat_key.replace("SMS-", ""))
+    query.update({"status": "replied"}, synchronize_session=False)
+    db.commit()
+    return {"status": "success"}
+
+@app.put("/admin/chat-reply/{msg_id}")
+async def edit_chat_reply(msg_id: int, req: EditMsgReq, db: Session = Depends(get_db)):
+    msg = db.query(models.ChatMessage).filter_by(id=msg_id).first()
+    if not msg: raise HTTPException(status_code=404)
+    msg.reply = req.new_text
+    db.commit()
+    if msg.channel == 'telegram' and msg.telegram_message_id:
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/editMessageText",
+                json={"chat_id": msg.telegram_id, "message_id": msg.telegram_message_id, "text": f"👨‍⚕️ *Clinic Admin (Edited):*\n{req.new_text}", "parse_mode": "Markdown"}
+            )
+    return {"status": "success"}
+
+@app.delete("/admin/chat-reply/{msg_id}")
+async def delete_chat_reply(msg_id: int, db: Session = Depends(get_db)):
+    msg = db.query(models.ChatMessage).filter_by(id=msg_id).first()
+    if not msg: raise HTTPException(status_code=404)
+    if msg.channel == 'telegram' and msg.telegram_message_id:
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        async with httpx.AsyncClient() as client:
+            await client.post(f"https://api.telegram.org/bot{token}/deleteMessage", json={"chat_id": msg.telegram_id, "message_id": msg.telegram_message_id})
+    db.delete(msg)
+    db.commit()
+    return {"status": "success"}
 
 @app.post("/ai-extract")
 async def ai_extract(req: TextExtractRequest):
@@ -2085,6 +2139,32 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
             "gender": gender, "nationality": "MALAYSIA"
         }
     }
+
+# Store temporary OCR sessions { session_id: { "status": "pending" | "completed", "data": null } }
+ocr_sessions = {}
+
+@app.get("/admin/ocr-session/{session_id}/generate")
+def generate_ocr_session(session_id: str):
+    ocr_sessions[session_id] = {"status": "pending", "data": None}
+    return {"status": "success"}
+
+@app.get("/admin/ocr-session/{session_id}")
+def check_ocr_session(session_id: str):
+    session = ocr_sessions.get(session_id)
+    if not session: raise HTTPException(status_code=404)
+    if session["status"] == "completed":
+        data = session["data"]
+        del ocr_sessions[session_id] # Clean up
+        return {"status": "completed", "data": data}
+    return {"status": "pending"}
+
+@app.post("/admin/ocr-session/{session_id}/upload")
+async def upload_mobile_ocr(session_id: str, file: UploadFile = File(...)):
+    if session_id not in ocr_sessions: raise HTTPException(status_code=404)
+    # Process it using your existing logic
+    result = await process_mykad_ocr(file) 
+    ocr_sessions[session_id] = {"status": "completed", "data": result["data"]}
+    return {"status": "success"}
 
 @app.post("/register-patient")
 def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
