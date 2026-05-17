@@ -24,21 +24,27 @@ async def fetch_local_llm(prompt: str) -> str:
 
 async def fetch_gemini(prompt: str) -> str:
     if not GEMINI_API_KEY:
-        await asyncio.sleep(9999) 
+        await asyncio.sleep(9999)
         return ""
     async with httpx.AsyncClient() as client:
-        url = furl = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # ← Use a valid model name (gemini-2.0-flash or gemini-1.5-flash)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
-            "contents": [{"parts": [{"text": prompt}]}], 
+            "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.0,
                 "responseMimeType": "application/json"
             }
         }
-        res = await client.post(url, json=payload, timeout=30.0)
-        res.raise_for_status()
-        data = res.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        try:
+            res = await client.post(url, json=payload, timeout=30.0)
+            res.raise_for_status()
+            data = res.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except httpx.HTTPStatusError as e:
+            print(f"[Gemini Error] Status: {e.response.status_code}")
+            print(f"[Gemini Error] Response body: {e.response.text}")
+            raise
 
 async def run_llm_race(prompt: str) -> str:
     task_local = asyncio.create_task(fetch_local_llm(prompt), name="Local_LLM")
