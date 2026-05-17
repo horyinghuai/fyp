@@ -213,7 +213,14 @@ export default function PatientsPage() {
         };
 
         const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(payload) });
+        
         if (res.status === 401) return window.location.href = '/login';
+        
+        // INTERCEPT THE DUPLICATE ERROR HERE
+        if (res.status === 409) {
+            const errData = await res.json();
+            return alert("⚠️ " + errData.detail); 
+        }
         
         const data = await res.json();
         if (data.status === "error") return alert("⚠️ " + data.reason);

@@ -2203,19 +2203,27 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
         ).first()
         
         if existing:
-            existing.name = data_dict['name']
-            existing.phone = data_dict['phone']
-            if 'address' in data_dict: existing.address = data_dict['address']
-            if 'gender' in data_dict: existing.gender = data_dict['gender']
-            if 'nationality' in data_dict: existing.nationality = data_dict['nationality']
-            if data_dict.get('telegram_id'): existing.telegram_id = data_dict['telegram_id']
-            db.commit()
-            return {"status": "success", "message": "Patient updated globally"}
+            # If the Telegram bot is doing this, we silently update their profile
+            if data_dict.get('telegram_id'):
+                existing.name = data_dict['name']
+                existing.phone = data_dict['phone']
+                if 'address' in data_dict: existing.address = data_dict['address']
+                if 'gender' in data_dict: existing.gender = data_dict['gender']
+                if 'nationality' in data_dict: existing.nationality = data_dict['nationality']
+                existing.telegram_id = data_dict['telegram_id']
+                db.commit()
+                return {"status": "success", "message": "Patient updated via Bot"}
+            else:
+                # If an Admin is doing this via the website, block the duplicate
+                raise HTTPException(status_code=409, detail="This IC/Passport has already been registered in the system.")
         
         new_patient = models.Patient(**data_dict)
         db.add(new_patient)
         db.commit()
         return {"status": "success"}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))

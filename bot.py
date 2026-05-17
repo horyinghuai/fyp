@@ -308,6 +308,20 @@ async def execute_cancellation(message, context, reason):
     await message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
     return FINAL_HELP
 
+async def log_chat_to_db(clinic_id, tg_id, user_msg=None, bot_reply=None):
+    """Silently logs chats to the database for the Admin UI"""
+    active_cid = clinic_id if clinic_id else DEFAULT_CLINIC_ID
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(f"{API_BASE}/log-chat", json={
+                "clinic_id": str(active_cid),
+                "telegram_id": int(tg_id),
+                "message": user_msg,
+                "reply": bot_reply,
+                "status": "unread" if user_msg else "replied"
+            }, timeout=2.0)
+        except: pass
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
     context.user_data['is_editing'] = False 
@@ -695,24 +709,27 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Which detail would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
         return EDIT_PROFILE_MENU
 
-        await query.edit_message_text("✅ Profile confirmed. Saving to database...")
+    # FIXED INDENTATION - This now executes when "prof_yes" is clicked
+    bot_reply = "✅ Profile confirmed. Saving to database..."
+    await query.edit_message_text(bot_reply)
+    await log_chat_to_db(active_cid, update.effective_user.id, bot_reply=bot_reply)
+        
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(f"{API_BASE}/register-patient", json={
+                "clinic_id": active_cid, 
+                "name": (context.user_data.get('name') or '').upper(), 
+                "ic_passport_number": (context.user_data.get('ic') or '').upper(), 
+                "phone": context.user_data.get('phone'), 
+                "telegram_id": update.effective_user.id,
+                "address": (context.user_data.get('address') or '').upper(), 
+                "gender": (context.user_data.get('gender') or '').upper(), 
+                "nationality": (context.user_data.get('nationality') or '').upper() 
+            }, timeout=5.0)
+        except Exception as e:
+            logger.error(f"Error registering patient: {e}")
             
-        async with httpx.AsyncClient() as client:
-            try:
-                await client.post(f"{API_BASE}/register-patient", json={
-                    "clinic_id": active_cid, 
-                    "name": (context.user_data.get('name') or '').upper(), 
-                    "ic_passport_number": (context.user_data.get('ic') or '').upper(), 
-                    "phone": context.user_data.get('phone'), 
-                    "telegram_id": update.effective_user.id,
-                    "address": (context.user_data.get('address') or '').upper(), 
-                    "gender": (context.user_data.get('gender') or '').upper(), 
-                    "nationality": (context.user_data.get('nationality') or '').upper() 
-                }, timeout=5.0)
-            except Exception as e:
-                logger.error(f"Error registering patient: {e}")
-                
-        return await show_main_services(update, context)
+    return await show_main_services(update, context) # Fixed query.message to update
 
 async def handle_profile_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1474,6 +1491,10 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text: return
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
+    # 1. Log the user's message to the database
+    await log_chat_to_db(active_cid, update.effective_user.id, user_msg=text)
+    
+    # 2. Forward to AI/Admin
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/ask-admin", json={
@@ -1481,7 +1502,12 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "telegram_id": update.effective_user.id, 
                 "message": text
             }, timeout=5.0)
-            await update.message.reply_text("✅ Your message has been sent to the clinic admin. They will reply shortly.")
+            bot_reply = "✅ Your message has been sent to the clinic admin. They will reply shortly."
+            await update.message.reply_text(bot_reply)
+            
+            # 3. Log the Bot's reply to the database
+            await log_chat_to_db(active_cid, update.effective_user.id, bot_reply=bot_reply)
+            
         except Exception as e:
             logger.error(f"Error sending general message: {e}")
             await update.message.reply_text("⚠️ Could not send message to admin at this time.")
