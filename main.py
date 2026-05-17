@@ -2051,6 +2051,27 @@ import warnings
 # Suppress PyTorch DataLoader warning for EasyOCR
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.utils.data")
 
+class LogChatReq(BaseModel):
+    clinic_id: str
+    telegram_id: Optional[int] = None
+    phone: Optional[str] = None
+    channel: str = "telegram"
+    message: Optional[str] = None
+    reply: Optional[str] = None
+    status: str = "unread"
+    telegram_message_id: Optional[int] = None
+
+@app.post("/log-chat")
+def log_chat_endpoint(req: LogChatReq, db: Session = Depends(get_db)):
+    try:
+        new_chat = models.ChatMessage(**req.dict())
+        db.add(new_chat)
+        db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    
 @app.post("/admin/ocr-mykad")
 async def process_mykad_ocr(file: UploadFile = File(...)):
     content = await file.read()

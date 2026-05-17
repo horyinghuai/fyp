@@ -1,74 +1,50 @@
 "use client";
 
-import { useRef, useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Camera, UploadCloud } from 'lucide-react';
 import { useParams } from 'next/navigation';
 
 export default function MobileOcrPage() {
     const params = useParams();
     const sessionId = params.session_id;
-    
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const canvasRef = useRef<HTMLCanvasElement>(null);
-    const [isScanning, setIsScanning] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [success, setSuccess] = useState(false);
 
-    const startCamera = async () => {
-        setIsScanning(true);
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-            if (videoRef.current) videoRef.current.srcObject = stream;
-        } catch(e) {
-            alert("Camera access denied.");
-        }
-    };
-
-    const captureAndUpload = () => {
-        if (!videoRef.current || !canvasRef.current) return;
-        const video = videoRef.current;
-        const canvas = canvasRef.current;
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const handleMobileCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!e.target.files || e.target.files.length === 0) return;
+        const file = e.target.files[0];
         
         setUploading(true);
-        canvas.toBlob(async (blob) => {
-            if(!blob) return;
-            const form = new FormData();
-            form.append("file", blob, "mykad.jpg");
-            
-            // Stop Camera
-            const stream = video.srcObject as MediaStream;
-            stream?.getTracks().forEach(t => t.stop());
-            
-            try {
-                // IMPORTANT: Must point to your machine's LOCAL IP Address here as well
-                const res = await fetch(`http://192.168.1.9:8000/admin/ocr-session/${sessionId}/upload`, { method: 'POST', body: form });
-                if (res.ok) setSuccess(true);
-            } catch(e) { alert("Upload Failed."); }
-            setUploading(false);
-        }, 'image/jpeg');
+        const form = new FormData();
+        form.append("file", file, "mykad-mobile.jpg");
+        
+        try {
+            // Using 192.168.1.9 based on your prompt
+            const res = await fetch(`http://192.168.1.9:8000/admin/ocr-session/${sessionId}/upload`, { 
+                method: 'POST', body: form 
+            });
+            if (res.ok) setSuccess(true);
+            else alert("Failed to process image.");
+        } catch(err) { 
+            alert("Network error. Make sure your phone and laptop are connected to the exact same Wi-Fi."); 
+        }
+        setUploading(false);
     };
 
-    if (success) return <div className="h-screen flex items-center justify-center font-bold text-emerald-600 text-xl text-center px-6">Upload Complete! You can close this window and look at your computer.</div>;
+    if (success) return <div className="h-screen flex items-center justify-center font-bold text-emerald-600 text-xl text-center px-6">Scan Complete! You can close this window and look at your computer screen.</div>;
 
     return (
         <div className="h-screen bg-slate-900 flex flex-col items-center justify-center p-6">
-            <h1 className="text-white text-2xl font-bold mb-6">AICAS MyKad Scanner</h1>
-            {!isScanning ? (
-                <button onClick={startCamera} className="bg-blue-600 text-white px-8 py-4 rounded-full font-bold shadow-lg flex items-center gap-3">
-                    <Camera size={24} /> Tap to Open Camera
-                </button>
-            ) : (
-                <div className="w-full max-w-sm flex flex-col items-center">
-                    <video ref={videoRef} autoPlay playsInline className="w-full rounded-2xl border-4 border-blue-500 mb-6" />
-                    <canvas ref={canvasRef} className="hidden" />
-                    <button onClick={captureAndUpload} disabled={uploading} className="bg-emerald-500 text-white w-full py-4 rounded-full font-bold shadow-lg flex justify-center items-center gap-2">
-                        {uploading ? "Uploading..." : <><UploadCloud size={24}/> Capture & Send</>}
-                    </button>
-                </div>
-            )}
+            <h1 className="text-white text-2xl font-bold mb-6">AICAS Secure Scanner</h1>
+            
+            <label className={`bg-blue-600 text-white px-8 py-5 rounded-full font-bold shadow-lg flex items-center gap-3 cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
+                {uploading ? <UploadCloud size={24} className="animate-bounce" /> : <Camera size={24} />}
+                {uploading ? "Analyzing Image..." : "Tap to Open Camera"}
+                {/* 'capture="environment"' forces the phone's native camera app to open safely */}
+                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleMobileCapture} />
+            </label>
+            
+            <p className="text-slate-400 mt-6 text-sm text-center">Place your MyKad on a flat, well-lit surface before taking the photo.</p>
         </div>
     );
 }

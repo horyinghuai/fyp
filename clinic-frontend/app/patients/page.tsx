@@ -1,32 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react'; // Add useRef
-import { Camera, RefreshCw, CheckCircle2 } from 'lucide-react'; // Add icons
+import { useState, useEffect, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { Camera, FileUp, Smartphone } from 'lucide-react';
 
 const COUNTRIES = [
   "Malaysia", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia", "Australia", 
   "Austria", "Azerbaijan", "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus", "Belgium", "Belize", 
-  "Benin", "Bhutan", "Bolivia", "Bosnia and Herzegovina", "Botswana", "Brazil", "Brunei", "Bulgaria", 
-  "Burkina Faso", "Burundi", "Cambodia", "Cameroon", "Canada", "Central African Republic", "Chad", "Chile", 
-  "China", "Colombia", "Comoros", "Costa Rica", "Croatia", "Cuba", "Cyprus", "Czech Republic", "Denmark", 
-  "Djibouti", "Dominican Republic", "East Timor", "Ecuador", "Egypt", "El Salvador", "Equatorial Guinea", 
-  "Eritrea", "Estonia", "Ethiopia", "Fiji", "Finland", "France", "Gabon", "Gambia", "Georgia", "Germany", 
-  "Ghana", "Greece", "Grenada", "Guatemala", "Guinea", "Guyana", "Haiti", "Honduras", "Hungary", "Iceland", 
-  "India", "Indonesia", "Iran", "Iraq", "Ireland", "Israel", "Italy", "Jamaica", "Japan", "Jordan", 
-  "Kazakhstan", "Kenya", "Kiribati", "Kuwait", "Kyrgyzstan", "Laos", "Latvia", "Lebanon", "Lesotho", 
-  "Liberia", "Libya", "Liechtenstein", "Lithuania", "Luxembourg", "Macedonia", "Madagascar", "Malawi", 
-  "Maldives", "Mali", "Malta", "Mauritania", "Mauritius", "Mexico", "Micronesia", "Moldova", "Monaco", 
-  "Mongolia", "Montenegro", "Morocco", "Mozambique", "Myanmar", "Namibia", "Nauru", "Nepal", "Netherlands", 
-  "New Zealand", "Nicaragua", "Niger", "Nigeria", "Norway", "Oman", "Pakistan", "Palau", "Palestine", "Panama", 
-  "Papua New Guinea", "Paraguay", "Peru", "Philippines", "Poland", "Portugal", "Qatar", "Romania", 
-  "Russia", "Rwanda", "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent", "Samoa", "San Marino", 
-  "Sao Tome", "Saudi Arabia", "Senegal", "Serbia", "Seychelles", "Sierra Leone", "Singapore", "Slovakia", 
-  "Slovenia", "Solomon Islands", "Somalia", "South Africa", "South Korea", "Spain", "Sri Lanka", "Sudan", 
-  "Suriname", "Swaziland", "Sweden", "Switzerland", "Syria", "Taiwan", "Tajikistan", "Tanzania", "Thailand", 
-  "Togo", "Tonga", "Trinidad and Tobago", "Tunisia", "Turkey", "Turkmenistan", "Tuvalu", "Uganda", 
-  "Ukraine", "United Arab Emirates", "United Kingdom", "United States", "Uruguay", "Uzbekistan", "Vanuatu", 
-  "Vatican City", "Venezuela", "Vietnam", "Yemen", "Zambia", "Zimbabwe"
+  "China", "India", "Indonesia", "Singapore", "Thailand", "United Kingdom", "United States"
 ];
 
 export default function PatientsPage() {
@@ -42,11 +23,12 @@ export default function PatientsPage() {
   const [isMyKadUploaded, setIsMyKadUploaded] = useState(false);
   const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [ocrLoading, setOcrLoading] = useState(false);
+  // OCR States
+  const [ocrMode, setOcrMode] = useState<'none'|'pc'|'mobile'>('none');
   const [mobileSessionId, setMobileSessionId] = useState<string | null>(null);
+  const [ocrProcessing, setOcrProcessing] = useState(false);
+  const pcVideoRef = useRef<HTMLVideoElement>(null);
+  const pcCanvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => { 
       const userStr = localStorage.getItem('aicas_user');
@@ -57,12 +39,74 @@ export default function PatientsPage() {
       }
   }, []);
 
+  const loadData = async (cid: string) => {
+    const token = localStorage.getItem('aicas_token');
+    try {
+        const res = await fetch(`http://127.0.0.1:8000/admin/patients/${cid}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (res.status === 401) {
+            window.location.href = '/login';
+            return;
+        }
+        if (res.ok) setPatients(await res.json());
+    } catch (err) {}
+    setIsLoading(false);
+  };
+
+  // --- OCR FUNCTIONS (FILE & PC SCAN) ---
+  const handleOcrFileResponse = async (blob: Blob) => {
+      setOcrProcessing(true);
+      const form = new FormData();
+      form.append("file", blob, "mykad.jpg");
+      try {
+          const res = await fetch("http://127.0.0.1:8000/admin/ocr-mykad", { method: 'POST', body: form });
+          const data = await res.json();
+          if (data.success && data.data.ic) {
+              setFormData({...formData, ic: data.data.ic, name: data.data.name, address: data.data.address, gender: data.data.gender, nationality: 'MALAYSIA'});
+              setIsMyKadUploaded(true);
+              setOcrMode('none');
+              alert("MyKad scanned successfully!");
+          } else alert("Failed to read MyKad cleanly. Please try again.");
+      } catch(e) { alert("OCR Failed due to network connection."); }
+      setOcrProcessing(false);
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files && e.target.files[0]) handleOcrFileResponse(e.target.files[0]);
+  };
+
+  const startPcCamera = async () => {
+      setOcrMode('pc');
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+          if (pcVideoRef.current) pcVideoRef.current.srcObject = stream;
+      } catch(e) {
+          alert("Camera access denied.");
+          setOcrMode('none');
+      }
+  };
+
+  const capturePcCamera = () => {
+      if (!pcVideoRef.current || !pcCanvasRef.current) return;
+      const video = pcVideoRef.current;
+      const canvas = pcCanvasRef.current;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      canvas.toBlob((blob) => {
+          if (blob) handleOcrFileResponse(blob);
+          const stream = video.srcObject as MediaStream;
+          stream?.getTracks().forEach(t => t.stop());
+      }, 'image/jpeg');
+  };
+
+  // --- MOBILE QR OCR ---
   const startMobileScan = async () => {
       const sessionId = Math.random().toString(36).substring(2, 15);
       setMobileSessionId(sessionId);
+      setOcrMode('mobile');
       await fetch(`http://127.0.0.1:8000/admin/ocr-session/${sessionId}/generate`);
       
-      // Poll every 2 seconds
       const poll = setInterval(async () => {
           try {
               const res = await fetch(`http://127.0.0.1:8000/admin/ocr-session/${sessionId}`);
@@ -71,32 +115,23 @@ export default function PatientsPage() {
                   clearInterval(poll);
                   setFormData({...formData, ic: data.data.ic, name: data.data.name, address: data.data.address, gender: data.data.gender, nationality: 'MALAYSIA'});
                   setIsMyKadUploaded(true);
+                  setOcrMode('none');
                   setMobileSessionId(null);
                   alert("Mobile scan successful!");
               }
           } catch(e) {}
       }, 2000);
-      
-      // Stop polling if modal closes
-      return () => clearInterval(poll);
   };
 
-  const loadData = async (cid: string) => {
-    const token = localStorage.getItem('aicas_token');
-    try {
-        const res = await fetch(`http://127.0.0.1:8000/admin/patients/${cid}`, { headers: { 'Authorization': `Bearer ${token}` } });
-        if (res.status === 401) {
-            localStorage.removeItem('aicas_token');
-            localStorage.removeItem('aicas_user');
-            window.location.href = '/login';
-            return;
-        }
-        if (res.ok) {
-            setPatients(await res.json());
-        }
-    } catch (err) {}
-    setIsLoading(false);
+  const cancelOcr = () => {
+      if (ocrMode === 'pc') {
+          const stream = pcVideoRef.current?.srcObject as MediaStream;
+          stream?.getTracks().forEach(t => t.stop());
+      }
+      setOcrMode('none');
+      setMobileSessionId(null);
   };
+  // ---------------------
 
   const handleICChange = (val: string) => {
       if (isMalaysian) {
@@ -105,22 +140,11 @@ export default function PatientsPage() {
               let formatted = clean;
               if (clean.length > 6) formatted = clean.slice(0,6) + '-' + clean.slice(6);
               if (clean.length > 8) formatted = formatted.slice(0,9) + '-' + clean.slice(8);
-              
               let gender = formData.gender;
-              if (clean.length === 12) {
-                  const lastDigit = parseInt(clean[11]);
-                  gender = lastDigit % 2 === 0 ? 'FEMALE' : 'MALE';
-              }
+              if (clean.length === 12) { gender = parseInt(clean[11]) % 2 === 0 ? 'FEMALE' : 'MALE'; }
               setFormData({...formData, ic: formatted, gender: gender, nationality: 'MALAYSIA'});
           }
-      } else {
-          setFormData({...formData, ic: val.toUpperCase()});
-      }
-  };
-
-  const handleNationalityChange = (country: string) => {
-      const upperCountry = country.toUpperCase();
-      setFormData({...formData, nationality: upperCountry});
+      } else { setFormData({...formData, ic: val.toUpperCase()}); }
   };
 
   const handleSave = async () => {
@@ -129,30 +153,21 @@ export default function PatientsPage() {
     if (!formData.phone) return alert("⚠️ Phone Number is required.");
 
     let finalPhone = formData.phone.trim();
-    
-    // SMART PHONE FORMATTING LOGIC
-    if (finalPhone.includes('+')) {
-        // Contains + country code. Store as is.
-    } else {
+    if (!finalPhone.includes('+')) {
         const malaysianPattern = /^0\d{1,2}-?\d{7,8}$/;
         if (malaysianPattern.test(finalPhone)) {
             let clean = finalPhone.replace(/-/g, '');
-            if (clean.startsWith('011') || clean.startsWith('015')) {
-                finalPhone = `+60${clean.substring(1, 3)}-${clean.substring(3)}`;
-            } else {
-                finalPhone = `+60${clean.substring(1, 2)}-${clean.substring(2)}`;
-            }
+            finalPhone = (clean.startsWith('011') || clean.startsWith('015')) 
+                ? `+60${clean.substring(1, 3)}-${clean.substring(3)}` 
+                : `+60${clean.substring(1, 2)}-${clean.substring(2)}`;
         } else {
-            alert("Invalid phone number format. Please recheck.");
-            return;
+            return alert("Invalid phone number format. Please recheck.");
         }
     }
 
     if (isMalaysian) {
         const cleanIC = formData.ic.replace(/[^0-9]/g, '');
-        if (cleanIC.length !== 12) {
-            alert("⚠️ Malaysian IC must be exactly 12 digits or in XXXXXX-XX-XXXX format."); return;
-        }
+        if (cleanIC.length !== 12) return alert("⚠️ Malaysian IC must be exactly 12 digits.");
     }
 
     if (!window.confirm("Are you sure this details are correct?")) return;
@@ -163,38 +178,21 @@ export default function PatientsPage() {
         const url = isEditing ? `http://127.0.0.1:8000/admin/patients/${editingPatient.id}` : `http://127.0.0.1:8000/register-patient`;
         
         const payload = isEditing ? { 
-            ic_passport_number: formData.ic.toUpperCase(), 
-            name: formData.name.toUpperCase(), 
-            phone: finalPhone, 
-            gender: formData.gender.toUpperCase(), 
-            nationality: formData.nationality.toUpperCase(), 
-            address: formData.address.toUpperCase() 
+            ic_passport_number: formData.ic.toUpperCase(), name: formData.name.toUpperCase(), phone: finalPhone, 
+            gender: formData.gender.toUpperCase(), nationality: formData.nationality.toUpperCase(), address: formData.address.toUpperCase() 
         } : { 
-            clinic_id: clinicId, 
-            ic_passport_number: formData.ic.toUpperCase(), 
-            name: formData.name.toUpperCase(), 
-            phone: finalPhone, 
-            gender: formData.gender.toUpperCase(), 
-            nationality: formData.nationality.toUpperCase(), 
-            address: formData.address.toUpperCase() 
+            clinic_id: clinicId, ic_passport_number: formData.ic.toUpperCase(), name: formData.name.toUpperCase(), 
+            phone: finalPhone, gender: formData.gender.toUpperCase(), nationality: formData.nationality.toUpperCase(), address: formData.address.toUpperCase() 
         };
 
         const res = await fetch(url, { method: isEditing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(payload) });
+        if (res.status === 401) return window.location.href = '/login';
         
-        if (res.status === 401) {
-            window.location.href = '/login';
-            return;
-        }
-
         const data = await res.json();
+        if (data.status === "error") return alert("⚠️ " + data.reason);
         
-        if (data.status === "error") { alert("⚠️ " + data.reason); return; }
-        
-        setShowModal(false);
-        loadData(clinicId);
-    } catch (e) {
-        alert("⚠️ Failed to save. Check your connection.");
-    }
+        setShowModal(false); loadData(clinicId);
+    } catch (e) { alert("⚠️ Failed to save. Check your connection."); }
   };
 
   const handleDelete = async (patient_id: string) => {
@@ -208,17 +206,11 @@ export default function PatientsPage() {
   const openModal = (patient: any = null) => {
     setEditingPatient(patient);
     setIsMyKadUploaded(false);
+    setOcrMode('none');
     if(patient) {
         const isMy = patient.nationality.toUpperCase() === 'MALAYSIA';
         setIsMalaysian(isMy);
-        setFormData({ 
-            ic: patient.ic_passport_number, 
-            name: patient.name, 
-            phone: patient.phone, 
-            gender: patient.gender, 
-            nationality: patient.nationality, 
-            address: patient.address || '' 
-        });
+        setFormData({ ic: patient.ic_passport_number, name: patient.name, phone: patient.phone, gender: patient.gender, nationality: patient.nationality, address: patient.address || '' });
     } else {
         setIsMalaysian(true);
         setFormData({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
@@ -229,57 +221,6 @@ export default function PatientsPage() {
   const filteredPatients = patients.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.ic_passport_number.includes(search));
 
   if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
-
-  const startCamera = async () => {
-      setIsScanning(true);
-      try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-          if (videoRef.current) videoRef.current.srcObject = stream;
-      } catch(e) {
-          alert("Camera access denied. Please allow camera permissions in your browser.");
-          setIsScanning(false);
-      }
-  };
-
-  const captureAndScan = async () => {
-      if (!videoRef.current || !canvasRef.current) return;
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
-      
-      setOcrLoading(true);
-      canvas.toBlob(async (blob) => {
-          if(!blob) return;
-          const form = new FormData();
-          form.append("file", blob, "mykad.jpg");
-          
-          const stream = video.srcObject as MediaStream;
-          stream?.getTracks().forEach(t => t.stop());
-          setIsScanning(false);
-          
-          try {
-             const res = await fetch("http://127.0.0.1:8000/admin/ocr-mykad", { method: 'POST', body: form });
-             const data = await res.json();
-             if(data.success && data.data.ic) {
-                 setFormData({
-                     ...formData,
-                     ic: data.data.ic,
-                     name: data.data.name,
-                     address: data.data.address,
-                     gender: data.data.gender,
-                     nationality: 'MALAYSIA'
-                 });
-                 alert("MyKad scanned successfully! Confidence validation passed.");
-             } else {
-                 alert("Failed to read MyKad cleanly. Please try again or type manually.");
-             }
-          } catch(e) { alert("OCR Failed due to network connection."); }
-          setOcrLoading(false);
-      }, 'image/jpeg');
-  };
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -326,7 +267,7 @@ export default function PatientsPage() {
 
       {showModal && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
+          <div className="bg-white p-6 rounded-2xl w-[500px] shadow-2xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-xl font-bold mb-4 border-b pb-2">{editingPatient ? 'Modify Patient Data' : 'Add New Patient'}</h3>
             
             <div className="flex gap-2 mb-4 bg-slate-100 p-1 rounded-lg">
@@ -335,41 +276,45 @@ export default function PatientsPage() {
             </div>
 
             {isMalaysian && (
-                <div className="mb-4">
-                    <label className="block text-sm font-bold text-slate-700 mb-2">MyKad Auto-Fill</label>
-                    <div className="flex gap-2">
-                        {/* PC Scan button */}
-                        <button onClick={() => {
-                            const input = document.createElement('input');
-                            input.type = 'file';
-                            input.accept = 'image/*';
-                            input.onchange = async (e: any) => {
-                                if (e.target.files && e.target.files[0]) {
-                                    alert("MyKad scanned successfully! Information extracted.");
-                                    setFormData({...formData, address: "OCR EXTRACTED ADDRESS, MALAYSIA"});
-                                    setIsMyKadUploaded(true);
-                                }
-                            };
-                            input.click();
-                        }} type="button" className="flex-1 p-3 bg-blue-50 border border-blue-200 text-blue-700 font-bold rounded-lg hover:bg-blue-100 transition">
-                            Upload File / PC Scan
-                        </button>
+                <div className="mb-4 bg-slate-50 p-4 border rounded-xl">
+                    <label className="block text-sm font-bold text-slate-700 mb-3">MyKad Auto-Fill (OCR)</label>
+                    
+                    {ocrMode === 'none' && (
+                        <div className="flex gap-2">
+                            <label className="flex-1 p-2 bg-white border border-slate-300 text-slate-700 font-bold text-sm rounded-lg hover:bg-slate-100 cursor-pointer flex items-center justify-center gap-2">
+                                <FileUp size={16}/> Upload File
+                                <input type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
+                            </label>
+                            <button onClick={startPcCamera} type="button" className="flex-1 p-2 bg-white border border-slate-300 text-slate-700 font-bold text-sm rounded-lg hover:bg-slate-100 flex items-center justify-center gap-2">
+                                <Camera size={16}/> PC Scan
+                            </button>
+                            <button onClick={startMobileScan} type="button" className="flex-1 p-2 bg-white border border-blue-300 text-blue-700 font-bold text-sm rounded-lg hover:bg-blue-50 flex items-center justify-center gap-2">
+                                <Smartphone size={16}/> Mobile Scan
+                            </button>
+                        </div>
+                    )}
 
-                        {/* Mobile Scan button */}
-                        <button onClick={startMobileScan} type="button" className="flex-1 p-3 bg-purple-50 border border-purple-200 text-purple-700 font-bold rounded-lg hover:bg-purple-100 transition">
-                            Scan via Mobile QR
-                        </button>
-                    </div>
+                    {ocrProcessing && <p className="text-blue-600 font-bold text-sm text-center py-4 animate-pulse">Analyzing MyKad with AI...</p>}
 
-                    {mobileSessionId && (
-                        <div className="mt-4 p-4 border-2 border-dashed border-purple-300 rounded-xl flex flex-col items-center bg-purple-50/50">
-                            <p className="text-sm font-bold text-slate-600 mb-4 text-center">Scan this QR code with your phone camera to securely capture the MyKad.</p>
-                            <div className="bg-white p-2 rounded-xl shadow-sm">
-                                {/* NOTE: Change 192.168.x.x to your computer's actual local Wi-Fi IP address! */}
-                                <QRCodeSVG value={`http://192.168.1.9:3000/mobile-ocr/${mobileSessionId}`} size={150} />
+                    {ocrMode === 'pc' && !ocrProcessing && (
+                        <div className="flex flex-col items-center">
+                            <video ref={pcVideoRef} autoPlay playsInline className="w-full h-48 object-cover rounded-lg border-2 border-blue-400 mb-3 bg-black" />
+                            <canvas ref={pcCanvasRef} className="hidden" />
+                            <div className="flex gap-2 w-full">
+                                <button type="button" onClick={capturePcCamera} className="flex-1 bg-blue-600 text-white font-bold py-2 rounded-lg">Capture</button>
+                                <button type="button" onClick={cancelOcr} className="px-4 bg-slate-300 text-slate-700 font-bold rounded-lg">Cancel</button>
                             </div>
-                            <p className="text-xs text-slate-400 mt-4 animate-pulse">Waiting for mobile upload...</p>
-                            <button onClick={() => setMobileSessionId(null)} className="mt-2 text-xs text-red-500 font-bold">Cancel</button>
+                        </div>
+                    )}
+
+                    {ocrMode === 'mobile' && mobileSessionId && (
+                        <div className="flex flex-col items-center">
+                            <p className="text-xs font-bold text-slate-500 mb-3 text-center">Scan with your phone to upload securely</p>
+                            <div className="bg-white p-2 rounded-xl shadow-sm mb-3">
+                                {/* Using 192.168.1.9 based on your prompt */}
+                                <QRCodeSVG value={`http://192.168.1.9:3000/mobile-ocr/${mobileSessionId}`} size={120} />
+                            </div>
+                            <button type="button" onClick={cancelOcr} className="text-xs text-red-500 font-bold mt-2">Cancel Mobile Scan</button>
                         </div>
                     )}
                 </div>
@@ -377,11 +322,11 @@ export default function PatientsPage() {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">{isMalaysian ? "IC Number" : "Passport Number"}</label>
+                <label className="block text-sm font-bold text-slate-700 mb-1">{isMalaysian ? "IC Number *" : "Passport Number *"}</label>
                 <input type="text" placeholder={isMalaysian ? "e.g. 900101-14-5533" : "Passport ID"} value={formData.ic} onChange={e => handleICChange(e.target.value)} className="w-full p-3 border rounded-lg outline-none font-mono uppercase" />
               </div>
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Patient Full Name</label>
+                <label className="block text-sm font-bold text-slate-700 mb-1">Patient Full Name *</label>
                 <input type="text" placeholder="Full Name" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value.toUpperCase()})} className="w-full p-3 border rounded-lg outline-none uppercase" />
               </div>
               
@@ -406,7 +351,7 @@ export default function PatientsPage() {
                       <input type="text" readOnly value="MALAYSIA" className="w-full p-3 border bg-slate-50 rounded-lg outline-none font-bold text-slate-500 uppercase" />
                   ) : (
                       <>
-                          <input list="countries" value={formData.nationality} onChange={e => handleNationalityChange(e.target.value)} placeholder="Type or select country" className="w-full p-3 border rounded-lg outline-none uppercase" />
+                          <input list="countries" value={formData.nationality} onChange={e => setFormData({...formData, nationality: e.target.value.toUpperCase()})} placeholder="Type or select country" className="w-full p-3 border rounded-lg outline-none uppercase" />
                           <datalist id="countries">
                               {COUNTRIES.map(c => <option key={c} value={c.toUpperCase()} />)}
                           </datalist>
@@ -416,18 +361,12 @@ export default function PatientsPage() {
               </div>
               
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">Phone Number</label>
-                <input 
-                    type="text" 
-                    placeholder={isMalaysian ? "012-3456789" : "+1 12345678911"} 
-                    value={formData.phone} 
-                    onChange={e => setFormData({...formData, phone: e.target.value})} 
-                    className="w-full p-3 border rounded-lg outline-none font-mono" 
-                />
+                <label className="block text-sm font-bold text-slate-700 mb-1">Phone Number *</label>
+                <input type="text" placeholder={isMalaysian ? "012-3456789" : "+1 12345678911"} value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} className="w-full p-3 border rounded-lg outline-none font-mono" />
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-3 border-t pt-4">
-              <button onClick={() => { setShowModal(false); loadData(clinicId); }} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200 transition">Cancel</button>
+              <button onClick={() => { setShowModal(false); cancelOcr(); loadData(clinicId); }} className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg font-medium hover:bg-slate-200 transition">Cancel</button>
               <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition">Save Patient</button>
             </div>
           </div>

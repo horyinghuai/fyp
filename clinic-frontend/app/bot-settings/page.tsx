@@ -141,7 +141,7 @@ export default function BotRepliesPage() {
   };
 
   const handleDeleteMsg = async (msgId: number) => {
-      if (!window.confirm("Are you sure you want to delete this message from the database and Telegram?")) return;
+      if (!window.confirm("Are you sure you want to delete this message?")) return;
       const token = localStorage.getItem('aicas_token');
       try {
           await fetch(`http://127.0.0.1:8000/admin/chat-reply/${msgId}`, { method: "DELETE", headers: { 'Authorization': `Bearer ${token}` } });
