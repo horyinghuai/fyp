@@ -272,6 +272,20 @@ class AdminChatReply(BaseModel):
     question: str
     answer: str
 
+class ChatTemplateCreate(BaseModel):
+    clinic_id: str
+    title: str
+    message: str
+
+class NewChatReq(BaseModel):
+    clinic_id: str
+    phone: str
+    message: str
+
+class PassToBotReq(BaseModel):
+    clinic_id: str
+    telegram_id: int
+
 # --- Helper Functions ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
@@ -2041,7 +2055,103 @@ def log_chat_endpoint(req: LogChatReq, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
+# --- TEMPLATE MODULE ---
+@app.get("/admin/chat-templates/{clinic_id}")
+def get_chat_templates(clinic_id: str, db: Session = Depends(get_db)):
+    return db.query(models.ChatTemplate).filter_by(clinic_id=clinic_id).all()
+
+@app.post("/admin/chat-templates")
+def create_chat_template(data: ChatTemplateCreate, db: Session = Depends(get_db)):
+    tpl = models.ChatTemplate(clinic_id=data.clinic_id, title=data.title, message=data.message)
+    db.add(tpl)
+    db.commit()
+    return {"status": "success", "id": tpl.id}
+
+@app.put("/admin/chat-templates/{tpl_id}")
+def update_chat_template(tpl_id: int, data: ChatTemplateCreate, db: Session = Depends(get_db)):
+    tpl = db.query(models.ChatTemplate).filter_by(id=tpl_id).first()
+    if tpl:
+        tpl.title = data.title
+        tpl.message = data.message
+        db.commit()
+    return {"status": "success"}
+
+@app.delete("/admin/chat-templates/{tpl_id}")
+def delete_chat_template(tpl_id: int, db: Session = Depends(get_db)):
+    db.query(models.ChatTemplate).filter_by(id=tpl_id).delete()
+    db.commit()
+    return {"status": "success"}
+
+# --- NEW CHAT / SMS LOGIC ---
+@app.post("/admin/new-chat")
+async def new_chat(req: NewChatReq, db: Session = Depends(get_db)):
+    # Check if this phone number already exists in DB and has a telegram ID
+    existing = db.query(models.ChatMessage).filter(
+        models.ChatMessage.clinic_id == req.clinic_id,
+        models.ChatMessage.phone == req.phone
+    ).order_by(models.ChatMessage.created_at.desc()).first()
+
+    telegram_id = existing.telegram_id if existing and existing.telegram_id else None
+    channel = 'telegram' if telegram_id else 'sms'
+    final_message = req.message
+
+    if channel == 'sms':
+        bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot") # Change to your actual bot handle
+        final_message += f"\n\n[You can also contact us on Telegram: https://t.me/{bot_username}]"
+
+    new_msg = models.ChatMessage(
+        clinic_id=req.clinic_id,
+        phone=req.phone,
+        telegram_id=telegram_id,
+        channel=channel,
+        message=None,
+        reply=final_message,
+        status='replied'
+    )
+    db.add(new_msg)
+    db.commit()
+    db.refresh(new_msg)
+
+    if channel == 'telegram':
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        async with httpx.AsyncClient() as client:
+            res = await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": telegram_id, "text": f"👨‍⚕️ *Clinic Admin:*\n{final_message}", "parse_mode": "Markdown"}
+            )
+            if res.status_code == 200:
+                data = res.json()
+                new_msg.telegram_message_id = data['result']['message_id']
+                db.commit()
+    # Note: For actual SMS sending, integrate Twilio/MessageBird API here.
+
+    return {"status": "success", "channel": channel, "telegram_id": telegram_id, "phone": req.phone}
+
+# --- PASS TO BOT ---
+@app.post("/admin/pass-to-bot")
+async def pass_to_bot(req: PassToBotReq, db: Session = Depends(get_db)):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "Yes", "callback_data": "help_yes"}, {"text": "No, I'm done", "callback_data": "help_no"}]
+        ]
+    }
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": req.telegram_id, "text": "Is there anything else I can help you with?", "reply_markup": keyboard}
+        )
     
+    # Log this action so the admin sees the chat is handed back
+    new_msg = models.ChatMessage(
+        clinic_id=req.clinic_id, telegram_id=req.telegram_id, channel='telegram',
+        message=None, reply="[Passed back to Bot: 'Is there anything else I can help you with?']", status='replied'
+    )
+    db.add(new_msg)
+    db.commit()
+    return {"status": "success"}
+
 @app.post("/admin/ocr-mykad")
 async def process_mykad_ocr(file: UploadFile = File(...)):
     content = await file.read()

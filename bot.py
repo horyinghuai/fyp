@@ -1501,6 +1501,10 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
 async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    # Reset live chat flag since the bot is taking over again
+    context.user_data['is_live_chat'] = False
+    
     if query.data == "help_yes":
         return await start(update, context) 
     else:
@@ -1516,9 +1520,7 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not text: return
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
-    # (User message is automatically captured by log_all_incoming)
-    
-    # 1. Forward to AI/Admin to alert them
+    # Forward to AI/Admin to alert them
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/ask-admin", json={
@@ -1526,10 +1528,12 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "telegram_id": update.effective_user.id, 
                 "message": text
             }, timeout=5.0)
-            bot_reply = "✅ Your message has been sent to the clinic admin. They will reply shortly."
             
-            # 2. Reply to User (This automatically logs to the DB via our patch!)
-            await update.message.reply_text(bot_reply)
+            # ONLY send auto-reply once per "Admin Session"
+            if not context.user_data.get('is_live_chat'):
+                context.user_data['is_live_chat'] = True
+                bot_reply = "✅ Your message has been sent to the clinic admin. They will reply shortly."
+                await update.message.reply_text(bot_reply)
             
         except Exception as e:
             logger.error(f"Error sending general message: {e}")
@@ -1554,7 +1558,11 @@ if __name__ == '__main__':
     app.add_error_handler(error_handler)
     
     conv = ConversationHandler(
-        entry_points=[CommandHandler('start', start), CommandHandler('cancel', cancel_command)],
+        entry_points=[
+            CommandHandler('start', start), 
+            CommandHandler('cancel', cancel_command),
+            CallbackQueryHandler(final_help_logic, pattern="^help_") # <--- ADD THIS LINE
+        ],
         states={
             START_CLINIC_SELECT: [CallbackQueryHandler(handle_start_clinic_select, pattern="^startclinic_")],
             NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],

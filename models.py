@@ -170,3 +170,10 @@ class BloodTestComponent(Base):
     __tablename__ = "blood_test_components"
     package_id = Column(Integer, ForeignKey("blood_tests.id", ondelete="CASCADE"), primary_key=True)
     test_id = Column(Integer, ForeignKey("blood_tests.id", ondelete="CASCADE"), primary_key=True)
+
+class ChatTemplate(Base):
+    __tablename__ = "chat_templates"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(100), nullable=False)
+    message = Column(String, nullable=False)
