@@ -28,6 +28,29 @@ async def log_chat_to_db(clinic_id, tg_id, user_msg=None, bot_reply=None, msg_id
             }, timeout=3.0)
         except: pass
 
+from telegram import Message, CallbackQuery
+
+# Monkey-patch reply_text to log all new bot messages
+_original_reply_text = Message.reply_text
+async def _patched_reply_text(self, *args, **kwargs):
+    msg = await _original_reply_text(self, *args, **kwargs)
+    text = kwargs.get('text') or (args[0] if args else "")
+    if text:
+        await log_chat_to_db(None, self.chat.id, bot_reply=text, msg_id=msg.message_id if msg else None)
+    return msg
+Message.reply_text = _patched_reply_text
+
+# Monkey-patch edit_message_text to log all inline keyboard edits/replies
+_original_edit_message_text = CallbackQuery.edit_message_text
+async def _patched_edit_message_text(self, *args, **kwargs):
+    msg = await _original_edit_message_text(self, *args, **kwargs)
+    text = kwargs.get('text') or (args[0] if args else "")
+    if text:
+        tg_id = self.message.chat.id if self.message else self.from_user.id
+        await log_chat_to_db(None, tg_id, bot_reply=text)
+    return msg
+CallbackQuery.edit_message_text = _patched_edit_message_text
+
 async def log_all_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Background task: Catches EVERY text the user types (like 'IPOH' or their IC) and logs it."""
     if update.message and update.message.text:
@@ -329,20 +352,6 @@ async def execute_cancellation(message, context, reason):
     btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
     await message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
     return FINAL_HELP
-
-async def log_chat_to_db(clinic_id, tg_id, user_msg=None, bot_reply=None):
-    """Silently logs chats to the database for the Admin UI"""
-    active_cid = clinic_id if clinic_id else DEFAULT_CLINIC_ID
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(f"{API_BASE}/log-chat", json={
-                "clinic_id": str(active_cid),
-                "telegram_id": int(tg_id),
-                "message": user_msg,
-                "reply": bot_reply,
-                "status": "unread" if user_msg else "replied"
-            }, timeout=2.0)
-        except: pass
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
@@ -1500,15 +1509,16 @@ async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"Thank you for using {clinic_name}. Have a great day!")
         return ConversationHandler.END
 
+# --- bot.py ---
+
 async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = clean_bot_username(update.message.text)
     if not text: return
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
-    # 1. Log the user's message to the database
-    await log_chat_to_db(active_cid, update.effective_user.id, user_msg=text)
+    # (User message is automatically captured by log_all_incoming)
     
-    # 2. Forward to AI/Admin
+    # 1. Forward to AI/Admin to alert them
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/ask-admin", json={
@@ -1517,10 +1527,9 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "message": text
             }, timeout=5.0)
             bot_reply = "✅ Your message has been sent to the clinic admin. They will reply shortly."
-            await update.message.reply_text(bot_reply)
             
-            # 3. Log the Bot's reply to the database
-            await log_chat_to_db(active_cid, update.effective_user.id, bot_reply=bot_reply)
+            # 2. Reply to User (This automatically logs to the DB via our patch!)
+            await update.message.reply_text(bot_reply)
             
         except Exception as e:
             logger.error(f"Error sending general message: {e}")

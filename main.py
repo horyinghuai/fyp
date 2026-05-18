@@ -1640,18 +1640,9 @@ def admin_add_chatbot_reply(data: AdminChatReply, db: Session = Depends(get_db))
 
 @app.post("/ask-admin")
 def ask_admin(msg: ChatMessageModel, db: Session = Depends(get_db)):
-    patient = db.query(models.Patient).filter_by(telegram_id=msg.telegram_id, clinic_id=msg.clinic_id).first()
-    phone = patient.phone if patient else None
-    new_msg = models.ChatMessage(
-        clinic_id=msg.clinic_id, 
-        telegram_id=msg.telegram_id, 
-        phone=phone,
-        channel='telegram',
-        message=msg.message, 
-        status="unread"
-    )
-    db.add(new_msg)
-    db.commit()
+    # REMOVED the duplicate DB insert. 
+    # 'log_all_incoming' in bot.py inherently saves all user text via /log-chat.
+    # This prevents the exact duplicate entries you are seeing.
     return {"status": "success"}
 
 @app.get("/admin/chat-pending-count/{clinic_id}")
@@ -2027,13 +2018,23 @@ class LogChatReq(BaseModel):
 @app.post("/log-chat")
 def log_chat_endpoint(req: LogChatReq, db: Session = Depends(get_db)):
     try:
-        # Prevent 400 Error by validating the clinic_id UUID format
         try:
             uuid.UUID(req.clinic_id)
         except (ValueError, TypeError):
             req.clinic_id = "c1111111-1111-1111-1111-111111111111" 
 
+        # Automatically fetch phone number if missing to prevent duplicate rows without phone
+        if req.telegram_id and not req.phone:
+            patient = db.query(models.Patient).filter_by(telegram_id=req.telegram_id, clinic_id=req.clinic_id).first()
+            if patient:
+                req.phone = patient.phone
+
         new_chat = models.ChatMessage(**req.dict(exclude_unset=True))
+        
+        # Explicitly assign it if we fetched it above
+        if req.phone:
+            new_chat.phone = req.phone
+            
         db.add(new_chat)
         db.commit()
         return {"status": "success"}
