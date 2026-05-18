@@ -1659,93 +1659,42 @@ def get_pending_chat_count(clinic_id: str, db: Session = Depends(get_db)):
     count = db.query(models.ChatMessage).filter_by(clinic_id=clinic_id, status='unread').count()
     return {"count": count}
 
+class ChatReplyReq(BaseModel):
+    clinic_id: str
+    reply_text: str
+    telegram_id: Optional[int] = None
+    phone: Optional[str] = None
+
 @app.post("/admin/chat-reply")
-async def admin_chat_reply(req: AdminReplyReq, db: Session = Depends(get_db)):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    bot_username = os.getenv("TELEGRAM_BOT_USERNAME", "AICAS_chatbot")
-    
-    target_telegram_id = req.telegram_id
-    target_phone = req.phone
-    channel = 'telegram'
-    
-    if req.msg_id:
-        msg = db.query(models.ChatMessage).filter_by(id=req.msg_id).first()
-        if not msg: raise HTTPException(status_code=404)
-        msg.reply = req.reply_text
-        msg.status = 'replied'
-        target_telegram_id = msg.telegram_id
-        target_phone = msg.phone
-        channel = msg.channel or 'telegram'
-    elif req.phone:
-        patient = db.query(models.Patient).filter_by(phone=req.phone, clinic_id=req.clinic_id).first()
-        if patient and patient.telegram_id:
-            target_telegram_id = patient.telegram_id
-            target_phone = patient.phone
-            channel = 'telegram'
-        else:
-            channel = 'sms'
-            target_phone = req.phone
-            
-        new_msg = models.ChatMessage(
-            clinic_id=req.clinic_id, 
-            telegram_id=target_telegram_id, 
-            phone=target_phone,
-            channel=channel,
-            message="[Admin Initiated Chat]", 
-            reply=req.reply_text, 
-            status='replied'
-        )
-        db.add(new_msg)
-        
-        db.query(models.ChatMessage).filter_by(phone=target_phone, status='unread').update({"status": "replied"})
-
+async def reply_chat(req: ChatReplyReq, db: Session = Depends(get_db)):
+    # 1. Save Admin's message to DB immediately (leaving 'message' blank forces it to the right side)
+    new_msg = models.ChatMessage(
+        clinic_id=req.clinic_id,
+        telegram_id=req.telegram_id,
+        phone=req.phone,
+        channel='telegram' if req.telegram_id else 'sms',
+        message=None,         
+        reply=req.reply_text, 
+        status='replied'
+    )
+    db.add(new_msg)
     db.commit()
-
-    if channel == 'telegram' and token and target_telegram_id:
+    db.refresh(new_msg)
+    
+    # 2. Forward to Telegram User
+    if req.telegram_id:
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
         async with httpx.AsyncClient() as client:
-            try:
-                res = await client.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": target_telegram_id, "text": f"👨‍⚕️ *Clinic Admin:*\n{req.reply_text}", "parse_mode": "Markdown"}
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    new_msg.telegram_message_id = data['result']['message_id']
-                    db.commit()
-            except Exception as e:
-                print(f"Failed to send telegram message: {e}")
-    elif channel == 'sms' and target_phone:
-        sms_content = (
-            f"Clinic Admin: {req.reply_text}\n\n"
-            f"Reply via SMS or use our Telegram Bot for a better experience: https://t.me/{bot_username}"
-        )
-        mocean_api_key = os.getenv("MOCEAN_API_KEY")
-        mocean_api_secret = os.getenv("MOCEAN_API_SECRET")
-        
-        if mocean_api_key and mocean_api_secret:
-            try:
-                async with httpx.AsyncClient() as client:
-                    await client.post(
-                        "https://rest.moceanapi.com/rest/2/sms",
-                        data={
-                            "mocean-api-key": mocean_api_key,
-                            "mocean-api-secret": mocean_api_secret,
-                            "mocean-to": target_phone,
-                            "mocean-from": "Clinic", 
-                            "mocean-text": sms_content
-                        }
-                    )
-                print(f"Mocean SMS Sent to {target_phone}")
-            except Exception as e:
-                print(f"Failed to send Mocean SMS: {e}")
-        else:
-            print("========== SMS DELIVERY ==========")
-            print(f"TO: {target_phone}")
-            print(f"MESSAGE:\n{sms_content}")
-            print("==================================")
-            print("WARNING: Mocean API keys missing. Fallback to print.")
+            res = await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": req.telegram_id, "text": f"👨‍⚕️ *Clinic Admin:*\n{req.reply_text}", "parse_mode": "Markdown"}
+            )
+            if res.status_code == 200:
+                data = res.json()
+                new_msg.telegram_message_id = data['result']['message_id']
+                db.commit()
                 
-    return {"status": "success", "channel": channel}
+    return {"status": "success"}
 
 class MarkReadReq(BaseModel):
     chat_key: str
@@ -2061,10 +2010,30 @@ class LogChatReq(BaseModel):
     status: str = "unread"
     telegram_message_id: Optional[int] = None
 
+import uuid
+from typing import Optional
+from pydantic import BaseModel
+
+class LogChatReq(BaseModel):
+    clinic_id: str
+    telegram_id: Optional[int] = None
+    phone: Optional[str] = None
+    channel: str = "telegram"
+    message: Optional[str] = None
+    reply: Optional[str] = None
+    status: str = "unread"
+    telegram_message_id: Optional[int] = None
+
 @app.post("/log-chat")
 def log_chat_endpoint(req: LogChatReq, db: Session = Depends(get_db)):
     try:
-        new_chat = models.ChatMessage(**req.dict())
+        # Prevent 400 Error by validating the clinic_id UUID format
+        try:
+            uuid.UUID(req.clinic_id)
+        except (ValueError, TypeError):
+            req.clinic_id = "c1111111-1111-1111-1111-111111111111" 
+
+        new_chat = models.ChatMessage(**req.dict(exclude_unset=True))
         db.add(new_chat)
         db.commit()
         return {"status": "success"}

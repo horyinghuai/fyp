@@ -115,6 +115,7 @@ class ChatMessage(Base):
     channel = Column(String(20), default='telegram')
     message = Column(String)
     reply = Column(String, nullable=True)
+    telegram_message_id = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     status = Column(String(20), default='unread')
 

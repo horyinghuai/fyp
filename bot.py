@@ -14,6 +14,28 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, MessageHandler, filters, InlineQueryHandler
 )
 
+async def log_chat_to_db(clinic_id, tg_id, user_msg=None, bot_reply=None, msg_id=None):
+    active_cid = clinic_id if clinic_id else DEFAULT_CLINIC_ID
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(f"{API_BASE}/log-chat", json={
+                "clinic_id": str(active_cid),
+                "telegram_id": int(tg_id),
+                "message": user_msg,
+                "reply": bot_reply,
+                "telegram_message_id": msg_id,
+                "status": "unread" if user_msg else "replied"
+            }, timeout=3.0)
+        except: pass
+
+async def log_all_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Background task: Catches EVERY text the user types (like 'IPOH' or their IC) and logs it."""
+    if update.message and update.message.text:
+        text = update.message.text
+        if text.startswith('/'): return
+        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+        await log_chat_to_db(active_cid, update.effective_user.id, user_msg=text, msg_id=update.message.message_id)
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -709,27 +731,19 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Which detail would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
         return EDIT_PROFILE_MENU
 
-    # FIXED INDENTATION - This now executes when "prof_yes" is clicked
-    bot_reply = "✅ Profile confirmed. Saving to database..."
-    await query.edit_message_text(bot_reply)
-    await log_chat_to_db(active_cid, update.effective_user.id, bot_reply=bot_reply)
-        
+    await query.edit_message_text("✅ Profile confirmed. Saving to database...")
+    
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/register-patient", json={
-                "clinic_id": active_cid, 
-                "name": (context.user_data.get('name') or '').upper(), 
-                "ic_passport_number": (context.user_data.get('ic') or '').upper(), 
-                "phone": context.user_data.get('phone'), 
-                "telegram_id": update.effective_user.id,
-                "address": (context.user_data.get('address') or '').upper(), 
-                "gender": (context.user_data.get('gender') or '').upper(), 
-                "nationality": (context.user_data.get('nationality') or '').upper() 
+                "clinic_id": active_cid, "name": context.user_data['name'].upper(), "ic_passport_number": context.user_data['ic'].upper(), 
+                "phone": context.user_data['phone'], "telegram_id": update.effective_user.id,
+                "address": context.user_data.get('address', '').upper(), "gender": context.user_data.get('gender', '').upper(), "nationality": context.user_data.get('nationality', '').upper() 
             }, timeout=5.0)
         except Exception as e:
             logger.error(f"Error registering patient: {e}")
-            
-    return await show_main_services(update, context) # Fixed query.message to update
+        
+    return await show_main_services(query.message, context)
 
 async def handle_profile_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1635,5 +1649,8 @@ if __name__ == '__main__':
     app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_text))
     
+    # ADD THIS LINE:
+    app.add_handler(MessageHandler(filters.TEXT, log_all_incoming), group=1)
+    
     logger.info("Bot is starting...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
