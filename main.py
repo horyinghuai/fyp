@@ -17,6 +17,53 @@ import jwt
 import bcrypt
 import uuid
 
+async def send_sms_async(to_phone: str, message: str):
+    mocean_token = os.getenv("MOCEAN_API_TOKEN")
+    plivo_auth_id = os.getenv("PLIVO_AUTH_ID")
+    plivo_auth_token = os.getenv("PLIVO_AUTH_TOKEN")
+    plivo_from = os.getenv("PLIVO_FROM_NUMBER", "AICAS")
+
+    clean_phone = to_phone.replace("+", "")
+
+    # 1. Try MoceanAPI (Main) using Bearer Token
+    if mocean_token:
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    "https://rest.moceanapi.com/rest/2/sms",
+                    headers={
+                        "Authorization": f"Bearer {mocean_token}",
+                        "Content-Type": "application/x-www-form-urlencoded"
+                    },
+                    data={
+                        "mocean-to": clean_phone,
+                        "mocean-from": "AICAS",
+                        "mocean-text": message
+                    },
+                    timeout=5.0
+                )
+                if res.status_code == 200:
+                    return True
+        except Exception as e:
+            print(f"MoceanAPI failed: {e}")
+
+    # 2. Try Plivo (Backup)
+    if plivo_auth_id and plivo_auth_token:
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    f"https://api.plivo.com/v1/Account/{plivo_auth_id}/Message/",
+                    auth=(plivo_auth_id, plivo_auth_token),
+                    json={"src": plivo_from, "dst": clean_phone, "text": message},
+                    timeout=5.0
+                )
+                if res.status_code in [200, 202]:
+                    return True
+        except Exception as e:
+            print(f"Plivo failed: {e}")
+            
+    return False
+
 # --- JWT Config ---
 SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-aicas-key-change-me")
 ALGORITHM = "HS256"
@@ -1160,7 +1207,7 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
         return {"is_valid": False, "reason": reason, "suggestions": find_nearest_3_slots(date_obj)}
     
 @app.post("/book-appointment")
-def book_appointment(booking: Booking, db: Session = Depends(get_db)):
+async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     try:
         patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == booking.ic_passport_number, models.Patient.clinic_id == booking.clinic_id).first()
         if not patient: raise HTTPException(status_code=404, detail="Patient missing")
@@ -1253,7 +1300,28 @@ def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
             db.add(stage)
             
+        # --- INSIDE book_appointment, JUST BEFORE THE RETURN ---
         db.commit()
+
+        # Send Booking Summary
+        try:
+            summary = (f"✅ Booking Confirmed at AICAS Clinic\n"
+                       f"Name: {patient.name}\n"
+                       f"Service: {booking.service_type}\n"
+                       f"Date/Time: {start_time.strftime('%Y-%m-%d %H:%M')}")
+                       
+            if booking.service_type == "Blood Test":
+                summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."
+            
+            if patient.telegram_id:
+                token = os.getenv("TELEGRAM_BOT_TOKEN")
+                async with httpx.AsyncClient() as client:
+                    await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": patient.telegram_id, "text": summary})
+            else:
+                await send_sms_async(patient.phone, summary)
+        except Exception as e:
+            print(f"Failed to send booking summary: {e}")
+
         return {"status": "success"}
     except HTTPException:
         db.rollback()
@@ -2110,28 +2178,23 @@ def delete_chat_template(tpl_id: int, db: Session = Depends(get_db)):
 # --- NEW CHAT / SMS LOGIC ---
 @app.post("/admin/new-chat")
 async def new_chat(req: NewChatReq, db: Session = Depends(get_db)):
-    # Check if this phone number already exists in DB and has a telegram ID
-    existing = db.query(models.ChatMessage).filter(
-        models.ChatMessage.clinic_id == req.clinic_id,
-        models.ChatMessage.phone == req.phone
-    ).order_by(models.ChatMessage.created_at.desc()).first()
+    # Check if this phone number exists in the Patients table
+    existing_patient = db.query(models.Patient).filter(
+        models.Patient.clinic_id == req.clinic_id,
+        models.Patient.phone == req.phone
+    ).first()
 
-    telegram_id = existing.telegram_id if existing and existing.telegram_id else None
+    telegram_id = existing_patient.telegram_id if existing_patient and existing_patient.telegram_id else None
     channel = 'telegram' if telegram_id else 'sms'
     final_message = req.message
 
     if channel == 'sms':
-        bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot") # Change to your actual bot handle
+        bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
         final_message += f"\n\n[You can also contact us on Telegram: https://t.me/{bot_username}]"
 
     new_msg = models.ChatMessage(
-        clinic_id=req.clinic_id,
-        phone=req.phone,
-        telegram_id=telegram_id,
-        channel=channel,
-        message=None,
-        reply=final_message,
-        status='replied'
+        clinic_id=req.clinic_id, phone=req.phone, telegram_id=telegram_id,
+        channel=channel, message=None, reply=final_message, status='replied'
     )
     db.add(new_msg)
     db.commit()
@@ -2145,10 +2208,11 @@ async def new_chat(req: NewChatReq, db: Session = Depends(get_db)):
                 json={"chat_id": telegram_id, "text": f"👨‍⚕️ *Clinic Admin:*\n{final_message}", "parse_mode": "Markdown"}
             )
             if res.status_code == 200:
-                data = res.json()
-                new_msg.telegram_message_id = data['result']['message_id']
+                new_msg.telegram_message_id = res.json()['result']['message_id']
                 db.commit()
-    # Note: For actual SMS sending, integrate Twilio/MessageBird API here.
+    else:
+        # Send actual SMS
+        await send_sms_async(req.phone, final_message)
 
     return {"status": "success", "channel": channel, "telegram_id": telegram_id, "phone": req.phone}
 

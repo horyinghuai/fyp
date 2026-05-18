@@ -274,34 +274,55 @@ export default function AdminDashboard() {
             let finalIc = editForm.patient_ic;
             
             if (isCreatingNewPatient) {
-                const isMY = newPatientForm.nationality.toUpperCase() === 'MALAYSIA';
-                if (isMY) {
-                    const phoneRegex = /^(\+?60|0)[1-9][0-9]{7,9}$/;
-                    if (!phoneRegex.test(newPatientForm.phone.replace(/[\s-]/g, ''))) {
-                        return alert("Invalid Malaysian phone number format.");
-                    }
-                } else {
-                    if (!newPatientForm.phone.trim().startsWith('+')) {
-                        return alert("For Non-Malaysian patients, please enter the phone number starting with a '+' sign and the respective country code.");
-                    }
-                }
-
                 if(!newPatientForm.name || !newPatientForm.ic_passport_number || !newPatientForm.phone) {
                     return alert("Please fill required patient fields.");
                 }
                 
+                const isMY = newPatientForm.nationality.toUpperCase() === 'MALAYSIA';
+                
+                // 1. Strict IC Formatting
+                let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
+                let finalFormattedIc = rawIc;
+                
+                if (isMY) {
+                    if (rawIc.length !== 12) return alert("Malaysian IC must be exactly 12 digits (e.g., XXXXXXXXXXXX or XXXXXX-XX-XXXX).");
+                    finalFormattedIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
+                }
+                
+                // 2. Strict Phone Formatting
+                let rawPhone = newPatientForm.phone.replace(/[\s-]/g, '');
+                let finalFormattedPhone = rawPhone;
+                
+                if (isMY) {
+                    if (rawPhone.startsWith('60')) rawPhone = rawPhone.substring(2);
+                    else if (rawPhone.startsWith('0')) rawPhone = rawPhone.substring(1);
+                    else if (rawPhone.startsWith('+60')) rawPhone = rawPhone.substring(3);
+                    
+                    if (!rawPhone.startsWith('1') || (rawPhone.length !== 9 && rawPhone.length !== 10)) {
+                        return alert("Invalid Malaysian phone format. Valid formats: +601X-XXXXXXXX, 01XXXXXXXX, etc.");
+                    }
+                    finalFormattedPhone = `+60${rawPhone}`;
+                } else {
+                    if (!rawPhone.startsWith('+')) return alert("Non-Malaysian phone must start with a '+' symbol (No hyphens).");
+                    finalFormattedPhone = rawPhone; 
+                }
+
                 const pRes = await fetch(`http://127.0.0.1:8000/register-patient`, {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ 
                         clinic_id: activeClinicId, telegram_id: 0, 
                         ...newPatientForm,
                         name: newPatientForm.name.toUpperCase(),
-                        ic_passport_number: newPatientForm.ic_passport_number.toUpperCase()
+                        ic_passport_number: finalFormattedIc,
+                        phone: finalFormattedPhone
                     })
                 });
+                
+                if (pRes.status === 409) return alert("This IC/Passport has already been registered in the system.");
+                
                 const pData = await pRes.json();
                 if (pData.status === 'error') return alert(pData.reason);
-                finalIc = newPatientForm.ic_passport_number.toUpperCase();
+                finalIc = finalFormattedIc;
             } else if (!finalIc) {
                 return alert("Please select a patient.");
             }
