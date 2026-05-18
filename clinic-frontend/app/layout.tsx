@@ -92,7 +92,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { name: 'Blood Tests', path: '/blood_test', icon: <Droplet size={20} />, module: 'BLOOD_TEST_MANAGEMENT' },
     { name: 'Patients', path: '/patients', icon: <Users size={20} />, module: 'PATIENT_MANAGEMENT' },
     { name: 'Doctors', path: '/doctors', icon: <Stethoscope size={20} />, module: 'DOCTOR_MANAGEMENT' },
-    { name: 'Bot Replies', path: '/bot-settings', icon: <MessageSquare size={20} />, module: 'CHAT_SUPPORT' },
+    { name: 'Bot Replies', path: '/bot-replies', icon: <MessageSquare size={20} />, module: 'CHAT_SUPPORT' },
   ];
 
   if (userSession?.role === 'primary_admin' || userSession?.role === 'temporary_admin') {
@@ -154,7 +154,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                      <div className="p-3">
                        <h4 className="font-bold text-sm text-slate-800 mb-2 border-b pb-2">Notifications</h4>
                        {pendingChatCount > 0 ? (
-                           <div onClick={() => { setShowNotifications(false); router.push('/bot-settings'); }} className="p-3 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 transition cursor-pointer shadow-sm border border-blue-100">
+                           <div onClick={() => { setShowNotifications(false); router.push('/bot-replies'); }} className="p-3 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 transition cursor-pointer shadow-sm border border-blue-100">
                                You have <span className="font-black">{pendingChatCount}</span> unread message(s) from patients waiting in Bot Replies.
                            </div>
                        ) : (
