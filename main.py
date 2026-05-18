@@ -1063,6 +1063,15 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
         if appt:
             appt.doctor_ic = data['doctor_ic'] if data['doctor_ic'] else None
 
+    if data.get('status') == 'completed' and stage.status != 'completed':
+        # Check if it's a vaccine that needs stock deduction
+        if stage.stage_name in ['Dose 1', 'Single Dose']:
+            appt_vac = db.query(models.AppointmentVaccine).filter_by(appointment_id=stage.appointment_id).first()
+            if appt_vac:
+                vc = db.query(models.VaccineClinic).join(models.Patient, models.Patient.clinic_id == models.VaccineClinic.clinic_id).join(models.Appointment, models.Appointment.patient_id == models.Patient.id).filter(models.Appointment.id == stage.appointment_id, models.VaccineClinic.vaccine_id == appt_vac.vaccine_id).first()
+                if vc and vc.stock_quantity > 0:
+                    vc.stock_quantity -= 1
+
     db.commit()
     return {"status": "success"}
 
@@ -1564,11 +1573,26 @@ def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
         v = db.query(models.Vaccine).filter_by(id=vc.vaccine_id).first()
         if v:
             scheds = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v.id).all()
+            
+            # Calculate held vaccines (Scheduled appointments for Dose 1 / Single Dose)
+            held_count = db.query(models.AppointmentVaccine).join(
+                models.ApptStage, models.AppointmentVaccine.appointment_id == models.ApptStage.appointment_id
+            ).filter(
+                models.AppointmentVaccine.vaccine_id == v.id,
+                models.ApptStage.status == 'scheduled',
+                models.ApptStage.stage_name.in_(['Dose 1', 'Single Dose'])
+            ).count()
+            
+            effective_stock = vc.stock_quantity - held_count
+            is_low_stock = effective_stock <= vc.low_stock_threshold
+
             res.append({
                 "id": v.id, "name": v.name, "type": v.type, "price": float(vc.price),
-                "total_doses": v.total_doses, "has_booster": v.has_booster, "target_gender": v.target_gender,
+                "total_doses": v.total_doses, "has_booster": v.has_booster, "target_gender": getattr(v, 'target_gender', 'ANY'),
                 "stock_quantity": vc.stock_quantity,
                 "low_stock_threshold": vc.low_stock_threshold,
+                "held_quantity": held_count,
+                "is_low_stock": is_low_stock,
                 "schedules": [{"dose_number": s.dose_number, "interval_description": s.interval_description} for s in scheds]
             })
     return res

@@ -835,7 +835,8 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 vaccines = res.json()
                 
                 user_gender = context.user_data.get('gender', 'ANY').upper()
-                filtered_vacs = [v for v in vaccines if not v.get('target_gender') or v.get('target_gender').upper() in ['ANY', user_gender]]
+                # Replace this line inside service_choice:
+                filtered_vacs = [v for v in vaccines if (not v.get('target_gender') or v.get('target_gender').upper() in ['ANY', user_gender]) and not v.get('is_low_stock')]
                 context.user_data['vaccines_list'] = filtered_vacs
                 
                 types = list(set(v.get('type', 'General').strip() for v in filtered_vacs))
@@ -1495,6 +1496,11 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
                          f"Service: {service}\nDetails: {details}{doc_text}\n")
     
     await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
+    
+    # ADD FASTING REMINDER HERE
+    if service == 'Blood Test':
+        await query.message.reply_text("⚠️ *Important Reminder:*\nKindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period.", parse_mode="Markdown")
+        
     btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
     await query.message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
     return FINAL_HELP

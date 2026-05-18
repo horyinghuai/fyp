@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Calendar, momentLocalizer, View } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
-import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle, FileText, Search } from 'lucide-react';
+import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle, FileText, Search, Bell } from 'lucide-react';
 
 const toTitleCase = (str: string) => {
     if (!str) return '';
@@ -55,6 +55,9 @@ export default function AdminDashboard() {
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<View>('week'); 
+
+  const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
+  const [showNotifications, setShowNotifications] = useState(false);
 
   useEffect(() => { 
       const userStr = localStorage.getItem('aicas_user');
@@ -418,6 +421,7 @@ export default function AdminDashboard() {
       if (e.status === 'completed' && !filters.completed) return false;
       if (e.status === 'no-show' && !filters.noShow) return false;
       if (e.status === 'scheduled' && !filters.scheduled) return false;
+      if (selectedDoctorFilter !== "ALL" && e.doctor_ic !== selectedDoctorFilter) return false;
       return true;
   });
 
@@ -450,6 +454,31 @@ export default function AdminDashboard() {
     </div>
   );
 
+  const customSlotPropGetter = (date: Date) => {
+      const dayStr = moment(date).format("ddd").toLowerCase();
+      const timeStr = moment(date).format("HH:mm");
+      const isToday = moment(date).isSame(moment(), 'day');
+      
+      let isWorking = false;
+      const docsToCheck = selectedDoctorFilter === "ALL" ? doctors : doctors.filter(d => d.ic_passport_number === selectedDoctorFilter);
+
+      for (const doc of docsToCheck) {
+          if (!doc.schedules) continue;
+          const todayScheds = doc.schedules.filter((s: any) => s.day_of_week === dayStr);
+          for (const sched of todayScheds) {
+              if (timeStr >= sched.start_time.substring(0,5) && timeStr < sched.end_time.substring(0,5)) {
+                  isWorking = true; break;
+              }
+          }
+          if (isWorking) break;
+      }
+      
+      if (!isWorking) {
+          return { style: { backgroundColor: '#f1f5f9', cursor: 'not-allowed' } };
+      }
+      return {};
+  };
+
   return (
     <div className="max-w-7xl mx-auto relative">
       <div className="mb-6 flex justify-between items-center">
@@ -460,6 +489,41 @@ export default function AdminDashboard() {
         
         <div className="flex flex-col items-end gap-2">
             <div className="flex items-center gap-4">
+                {/* NOTIFICATIONS */}
+                <div className="relative">
+                    <button onClick={() => setShowNotifications(!showNotifications)} className="p-2 bg-white rounded-xl shadow-sm border border-slate-100 hover:bg-slate-50 relative">
+                        <Bell size={20} className="text-slate-600" />
+                        {vaccinesList.filter(v => v.is_low_stock).length > 0 && (
+                            <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
+                        )}
+                    </button>
+                    {showNotifications && (
+                        <div className="absolute right-0 mt-2 w-80 bg-white border border-slate-100 shadow-xl rounded-xl z-50 overflow-hidden">
+                            <div className="p-3 bg-slate-50 border-b font-bold text-slate-700 text-sm">Low Stock Alerts</div>
+                            <div className="max-h-60 overflow-y-auto">
+                                {vaccinesList.filter(v => v.is_low_stock).length === 0 ? (
+                                    <div className="p-4 text-center text-sm text-slate-500">No stock alerts.</div>
+                                ) : (
+                                    vaccinesList.filter(v => v.is_low_stock).map((v, i) => (
+                                        <div key={i} className="p-3 border-b border-slate-100 flex items-start gap-3">
+                                            <AlertTriangle size={16} className="text-red-500 mt-0.5 shrink-0" />
+                                            <div>
+                                                <p className="text-sm font-bold text-slate-800">{v.name}</p>
+                                                <p className="text-xs text-red-600">Stock: {v.stock_quantity} (Held: {v.held_quantity})</p>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <select value={selectedDoctorFilter} onChange={(e) => setSelectedDoctorFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-xl font-bold text-sm shadow-sm outline-none">
+                    <option value="ALL">All Doctors</option>
+                    {doctors.map(d => <option key={d.ic_passport_number} value={d.ic_passport_number}>{d.name}</option>)}
+                </select>
+                
                 <button onClick={openNewBookingModal} className="bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold text-sm shadow-md hover:bg-emerald-700">
                   + New Booking
                 </button>
@@ -528,6 +592,7 @@ export default function AdminDashboard() {
           eventPropGetter={eventStyleGetter}
           views={['month', 'week', 'day']}
           onSelectEvent={openEventModal}
+          slotPropGetter={customSlotPropGetter}
         />
       </div>
 
@@ -729,7 +794,7 @@ export default function AdminDashboard() {
                               <option value="">Select Vaccine</option>
                               {Object.keys(groupedVaccines).map(type => (
                                   <optgroup key={type} label={type}>
-                                      {groupedVaccines[type].map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
+                                      {groupedVaccines[type].filter((v:any) => !v.is_low_stock).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
                                   </optgroup>
                               ))}
                             </select>

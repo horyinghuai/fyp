@@ -46,15 +46,10 @@ export default function DeveloperPage() {
       else if (cleaned.startsWith('60')) cleaned = cleaned.substring(2);
       else if (cleaned.startsWith('0')) cleaned = cleaned.substring(1);
       
-      if (!/^\d{8,10}$/.test(cleaned)) return null;
+      // Validates Malaysian mobile (starts with 1, 8-9 digits) OR landline (starts with 2-9, 7-8 digits)
+      if (!/^(1[0-9]{8,9}|[2-9][0-9]{7,8})$/.test(cleaned)) return null;
 
-      if (cleaned.startsWith('11') || cleaned.startsWith('15')) {
-          return `+60${cleaned.substring(0, 2)}-${cleaned.substring(2)}`;
-      } else if (cleaned.startsWith('1')) {
-          return `+60${cleaned.substring(0, 2)}-${cleaned.substring(2)}`;
-      } else {
-          return `+60${cleaned.substring(0, 1)}-${cleaned.substring(1)}`;
-      }
+      return `+60${cleaned}`;
   };
 
   const formatIC = (ic: string) => {
