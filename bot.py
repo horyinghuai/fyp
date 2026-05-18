@@ -671,19 +671,20 @@ async def man_nat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return MAN_NAT
 
 async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    phone_input = clean_bot_username(update.message.text)
+    phone_input = clean_bot_username(update.message.text).replace(' ', '')
     
     if context.user_data.get('is_malaysian'):
-        pattern = r'^0\d{1,2}-?\d{7,8}$'
-        if not re.match(pattern, phone_input):
-            await update.message.reply_text("Invalid phone number format. Please re-enter.")
+        clean_digits = re.sub(r'\D', '', phone_input)
+        if clean_digits.startswith('60'):
+            clean_digits = clean_digits[2:]
+        elif clean_digits.startswith('0'):
+            clean_digits = clean_digits[1:]
+            
+        if not clean_digits.startswith('1') or len(clean_digits) not in [9, 10]:
+            await update.message.reply_text("❌ Invalid format. Please enter a valid Malaysian number (e.g. 012-3456789 or +60123456789):")
             return MAN_PHONE
-        clean_num = phone_input.replace('-', '')
-        if clean_num.startswith('011') or clean_num.startswith('015'):
-            formatted = f"+60{clean_num[1:3]}-{clean_num[3:]}"
-        else:
-            formatted = f"+60{clean_num[1:2]}-{clean_num[2:]}"
-        context.user_data['phone'] = formatted
+            
+        context.user_data['phone'] = f"+60{clean_digits}"
     else:
         if not phone_input.startswith('+'):
             await update.message.reply_text("⚠️ For Non-Malaysian patients, please enter your phone number starting with a '+' sign and the respective country code.")

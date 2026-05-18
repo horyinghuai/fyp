@@ -155,8 +155,24 @@ export default function BotRepliesPage() {
   };
 
   const handleStartNewChat = async () => {
-    const phone = newChatPhone.trim();
-    if (!phone.startsWith('+')) return alert("Phone number must start with a '+' symbol.");
+    let phone = newChatPhone.trim().replace(/ /g, '');
+    
+    // Auto-format Malaysian numbers and validate
+    if (phone.startsWith('0') || phone.startsWith('60') || phone.startsWith('+60')) {
+        let cleanDigits = phone.replace(/\D/g, '');
+        if (cleanDigits.startsWith('60')) cleanDigits = cleanDigits.substring(2);
+        else if (cleanDigits.startsWith('0')) cleanDigits = cleanDigits.substring(1);
+        
+        if (!cleanDigits.startsWith('1') || (cleanDigits.length !== 9 && cleanDigits.length !== 10)) {
+            return alert("Invalid Malaysian phone format. Valid formats: 01X-XXXXXXX, +601XXXXXXXX.");
+        }
+        phone = `+60${cleanDigits}`;
+    } else {
+        if (!phone.startsWith('+')) {
+            return alert("Phone number must start with a '+' symbol for Non-Malaysian numbers.");
+        }
+    }
+
     if (!newChatMessage.trim()) return alert("Message is required.");
 
     setSending(true);

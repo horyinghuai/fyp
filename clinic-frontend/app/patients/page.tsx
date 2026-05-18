@@ -173,24 +173,22 @@ export default function PatientsPage() {
     if (!formData.phone) return alert("⚠️ Phone Number is required.");
 
     // STRICT PHONE FORMATTING LOGIC
-    let finalPhone = formData.phone.trim();
-    const phoneRegex = /^(\+60|0|60)?\d{2,3}-?\d{7,8}$/;
+    let finalPhone = formData.phone.trim().replace(/ /g, '');
     
-    if (!phoneRegex.test(finalPhone)) {
-        return alert("Invalid phone format! Please enter as +60XX-XXXXXXXX or XXX-XXXXXXXX.");
+    if (isMalaysian) {
+        let cleanDigits = finalPhone.replace(/\D/g, '');
+        if (cleanDigits.startsWith('60')) cleanDigits = cleanDigits.substring(2);
+        else if (cleanDigits.startsWith('0')) cleanDigits = cleanDigits.substring(1);
+        
+        if (!cleanDigits.startsWith('1') || (cleanDigits.length !== 9 && cleanDigits.length !== 10)) {
+            return alert("Invalid Malaysian phone format. Valid formats: 01X-XXXXXXX, +601XXXXXXXX.");
+        }
+        finalPhone = `+60${cleanDigits}`;
+    } else {
+        if (!finalPhone.startsWith('+')) {
+            return alert("⚠️ For Non-Malaysian patients, phone number must start with a '+' symbol.");
+        }
     }
-    
-    let cleanDigits = finalPhone.replace(/[^\d]/g, '');
-    if (cleanDigits.startsWith('60')) cleanDigits = cleanDigits.substring(2);
-    else if (cleanDigits.startsWith('0')) cleanDigits = cleanDigits.substring(1);
-
-    if (cleanDigits.length < 8 || cleanDigits.length > 10) {
-        return alert("Invalid phone length. Please check the numbers.");
-    }
-
-    let prefix = cleanDigits.startsWith('11') || cleanDigits.startsWith('15') ? cleanDigits.substring(0, 3) : cleanDigits.substring(0, 2);
-    let suffix = cleanDigits.startsWith('11') || cleanDigits.startsWith('15') ? cleanDigits.substring(3) : cleanDigits.substring(2);
-    finalPhone = `+60${prefix}-${suffix}`;
 
     if (isMalaysian) {
         const cleanIC = formData.ic.replace(/[^0-9]/g, '');
