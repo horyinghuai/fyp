@@ -14,6 +14,11 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, MessageHandler, filters, InlineQueryHandler
 )
 
+REUSE_PATIENT = 31   # or any unused number
+APPOINTMENT_SELECT = 32
+APPOINTMENT_ACTION = 33
+MODIFY_ANOTHER = 34
+
 async def log_chat_to_db(clinic_id, tg_id, user_msg=None, bot_reply=None, msg_id=None):
     active_cid = clinic_id if clinic_id else DEFAULT_CLINIC_ID
     async with httpx.AsyncClient() as client:
@@ -415,23 +420,72 @@ def is_booking_related(text):
     keywords = ["book", "appointment", "reservation", "cancel", "modify", "check"]
     return any(k in text.lower() for k in keywords)
 
+async def ask_reuse_patient(update: Update, context: ContextTypes.DEFAULT_TYPE, for_check=False):
+    """Ask user if they want to use the saved patient details or start for another person."""
+    context.user_data['for_check'] = for_check
+    ic = context.user_data.get('ic')
+    name = context.user_data.get('name')
+    phone = context.user_data.get('phone')
+    id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
+    msg = (
+        f"We have your details from a previous session:\n"
+        f"Name: {name}\n"
+        f"{id_label}: {ic}\n"
+        f"Phone: {phone}\n\n"
+        f"Do you want to use these details for this { 'appointment check' if for_check else 'new booking' }?"
+    )
+    btns = [
+        [InlineKeyboardButton("✅ Yes, use my details", callback_data="reuse_yes")],
+        [InlineKeyboardButton("👤 No, this is for another person", callback_data="reuse_no")]
+    ]
+    if update.callback_query:
+        await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    else:
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    return REUSE_PATIENT
+
+async def handle_reuse_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    for_check = context.user_data.get('for_check', False)
+    
+    if query.data == "reuse_yes":
+        # Use existing details: skip nationality/registration flow
+        if for_check:
+            return await show_patient_appointments(update, context, query=True)
+        else:
+            return await show_main_services(query.message, context)
+    else:
+        # Start fresh – clear only the stored patient fields but keep clinic settings
+        for key in ['ic', 'name', 'phone', 'gender', 'nationality', 'address', 'is_malaysian']:
+            context.user_data.pop(key, None)
+        # Re‑enter nationality selection
+        msg = "To proceed, please select your nationality:"
+        btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")],
+                [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+        return NAT_CHOICE
+    
 async def main_menu_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    # Only disable buttons after user clicks, not when displaying
     choice = query.data
+    
     if choice == "main_create":
-        # If patient details already exist, skip to service selection
-        if context.user_data.get('ic'):
-            return await show_main_services(query.message, context)
-        # Otherwise, start patient details flow
-        return await proceed_with_start_patient_details(update, context, query=True)
+        # If we have stored patient details, ask for reuse
+        if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
+            return await ask_reuse_patient(update, context, for_check=False)
+        else:
+            # No previous details → start nationality flow
+            return await proceed_with_start_patient_details(update, context, query=True, for_check=False)
+            
     elif choice == "main_check":
-        # If patient details already exist, show appointments
-        if context.user_data.get('ic'):
-            return await show_patient_appointments(update, context, query=True)
-        # Otherwise, start patient details flow
-        return await proceed_with_start_patient_details(update, context, query=True, for_check=True)
+        # If we have stored patient details, ask for reuse
+        if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
+            return await ask_reuse_patient(update, context, for_check=True)
+        else:
+            return await proceed_with_start_patient_details(update, context, query=True, for_check=True)
+            
     elif choice == "main_general":
         await query.edit_message_text("Please type your general question below.")
         return OTHERS_REASON
@@ -443,7 +497,6 @@ async def proceed_with_start_patient_details(update, context, query=False, for_c
     btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")], [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
     if query:
         await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
-        await update.callback_query.edit_message_reply_markup(reply_markup=None)
     elif update.message:
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     else:
@@ -453,17 +506,16 @@ async def proceed_with_start_patient_details(update, context, query=False, for_c
     return NAT_CHOICE
 
 # Show patient appointments for check
-async def show_patient_appointments(update, context, query=False):
+async def show_patient_appointments(update: Update, context: ContextTypes.DEFAULT_TYPE, query=False):
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     ic = context.user_data.get('ic')
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
             if res.status_code != 200:
-                msg = "No reservations found."
+                msg = "No appointments found."
                 if query:
                     await update.callback_query.edit_message_text(msg)
-                    await update.callback_query.edit_message_reply_markup(reply_markup=None)
                 else:
                     await update.message.reply_text(msg)
                 btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No", callback_data="help_no")]]
@@ -472,30 +524,160 @@ async def show_patient_appointments(update, context, query=False):
             appts = res.json()
         except Exception:
             appts = []
+    
     if not appts:
-        msg = "No reservations found."
+        msg = "No appointments found."
         if query:
             await update.callback_query.edit_message_text(msg)
-            await update.callback_query.edit_message_reply_markup(reply_markup=None)
         else:
             await update.message.reply_text(msg)
         btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No", callback_data="help_no")]]
         await update.effective_message.reply_text("Is there anything else to help with?", reply_markup=InlineKeyboardMarkup(btns))
         return FINAL_HELP
-    # Sort from latest to oldest
-    appts = sorted(appts, key=lambda a: (a.get('date', ''), a.get('time', '')), reverse=True)
-    msg = "Your reservations:\n"
-    for a in appts:
-        msg += f"- {a.get('date', '')} {a.get('time', '')}: {a.get('service', '')}\n"
+    
+    # Sort appointments: future first (closest to farthest), then past (most recent first)
+    from datetime import datetime
+    def sort_key(a):
+        dt_str = f"{a['date']} {a['time']}"
+        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+    appts_sorted = sorted(appts, key=sort_key, reverse=False)
+    
+    # Create buttons for each appointment
+    keyboard = []
+    now = datetime.now()
+    for a in appts_sorted:
+        service = a.get('service', 'Consultation')
+        if service == 'Others':
+            detail = a.get('details', {}).get('reason', 'General')
+        elif service == 'Vaccine':
+            items = a.get('details', {}).get('items', [])
+            detail = items[0] if items else 'Vaccine'
+        elif service == 'Blood Test':
+            items = a.get('details', {}).get('items', [])
+            detail = ', '.join(items) if items else 'Blood Test'
+        else:
+            detail = service
+        label = f"{a['date']} {a['time'][:5]} - {detail}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['appt_id']}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main")])
+    
     if query:
-        await update.callback_query.edit_message_text(msg)
-        await update.callback_query.edit_message_reply_markup(reply_markup=None)
+        await update.callback_query.edit_message_text("Select an appointment to view details. For future appointments, you may also modify or cancel.", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text(msg)
-    btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No", callback_data="help_no")]]
-    await update.effective_message.reply_text("Is there anything else to help with?", reply_markup=InlineKeyboardMarkup(btns))
-    return FINAL_HELP
+        await update.message.reply_text("Select an appointment to view details. For future appointments, you may also modify or cancel.", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    return APPOINTMENT_SELECT
 
+async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "back_to_main":
+        return await proceed_with_start(update, context, query=True)
+    if data.startswith("view_appt_"):
+        appt_id = data.replace("view_appt_", "")
+        context.user_data['selected_appt_id'] = appt_id
+        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+        ic = context.user_data.get('ic')
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
+                if res.status_code == 200:
+                    appts = res.json()
+                    appt = next((a for a in appts if a['appt_id'] == appt_id), None)
+                    if appt:
+                        # Determine if appointment is in the future
+                        from datetime import datetime
+                        appt_dt = datetime.strptime(f"{appt['date']} {appt['time']}", "%Y-%m-%d %H:%M:%S")
+                        is_future = appt_dt > datetime.now()
+                        
+                        details = f"📋 *Appointment Details*\n"
+                        details += f"Date: {appt['date']}\nTime: {appt['time'][:5]}\nService: {appt['service']}\n"
+                        if appt['service'] == 'Vaccine':
+                            items = appt['details'].get('items', [])
+                            dose = appt['details'].get('dose', '')
+                            details += f"Vaccine: {', '.join(items)} {dose}\n"
+                        elif appt['service'] == 'Blood Test':
+                            items = appt['details'].get('items', [])
+                            details += f"Tests: {', '.join(items)}\n"
+                        else:
+                            reason = appt['details'].get('reason', 'General')
+                            details += f"Reason: {reason}\n"
+                        doctor = appt.get('doctor_name', 'ANY')
+                        details += f"Doctor: {doctor}\n"
+                        
+                        btns = []
+                        if is_future:
+                            btns.append([InlineKeyboardButton("✏️ Modify Appointment", callback_data=f"modify_appt_{appt_id}")])
+                            btns.append([InlineKeyboardButton("❌ Cancel Appointment", callback_data=f"cancel_appt_{appt_id}")])
+                        btns.append([InlineKeyboardButton("🔙 Back to List", callback_data="back_to_appt_list")])
+                        
+                        await query.edit_message_text(details, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+                        return APPOINTMENT_ACTION
+            except Exception:
+                pass
+        await query.edit_message_text("Unable to load appointment details. Please try again.")
+        return APPOINTMENT_SELECT
+
+async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "back_to_appt_list":
+        return await show_patient_appointments(update, context, query=True)
+    if data.startswith("modify_appt_"):
+        appt_id = data.replace("modify_appt_", "")
+        context.user_data['edit_appt_id'] = appt_id
+        # Fetch appointment details and pre-fill the edit menu
+        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+        ic = context.user_data.get('ic')
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
+                if res.status_code == 200:
+                    appts = res.json()
+                    appt = next((a for a in appts if a['appt_id'] == appt_id), None)
+                    if appt:
+                        # Store appointment data into user_data to pre-fill the edit flow
+                        context.user_data['service'] = appt['service']
+                        context.user_data['selected_items'] = appt['details'].get('items', [])
+                        context.user_data['dose'] = appt['details'].get('dose')
+                        context.user_data['general_notes'] = appt['details'].get('reason')
+                        context.user_data['doctor_pref'] = appt.get('doctor_name', 'ANY')
+                        context.user_data['book_date'] = appt['date']
+                        context.user_data['book_time'] = f"{appt['date']} {appt['time']}"
+                        context.user_data['is_editing'] = True
+                        context.user_data['original_appt_id'] = appt_id  # to be used for updating later
+                        
+                        # Show the edit menu
+                        btns = [
+                            [InlineKeyboardButton("Change Service", callback_data="editbook_service")],
+                            [InlineKeyboardButton("Change Vaccine/Test Details", callback_data="editbook_details")],
+                            [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
+                            [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
+                            [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")],
+                            [InlineKeyboardButton("❌ Cancel Draft Booking", callback_data="editbook_cancel")]
+                        ]
+                        await query.edit_message_text("What would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
+                        return EDIT_BOOKING_MENU
+            except Exception:
+                pass
+        await query.edit_message_text("Unable to load appointment for modification.")
+        return APPOINTMENT_SELECT
+    if data.startswith("cancel_appt_"):
+        appt_id = data.replace("cancel_appt_", "")
+        context.user_data['cancel_target_id'] = appt_id
+        btns = [
+            [InlineKeyboardButton("Change of schedule", callback_data="creason_Change of schedule")],
+            [InlineKeyboardButton("Feeling better", callback_data="creason_Feeling better")],
+            [InlineKeyboardButton("Booked wrong service", callback_data="creason_Booked wrong service")],
+            [InlineKeyboardButton("Personal reasons", callback_data="creason_Personal reasons")],
+            [InlineKeyboardButton("Other (Type below)", callback_data="creason_Other")]
+        ]
+        await query.edit_message_text("Why are you cancelling this appointment?\nSelect a reason below or type your own reason in the chat.", reply_markup=InlineKeyboardMarkup(btns))
+        return CANCEL_REASON
+    
 async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1500,13 +1682,12 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if choice == "abort_edit":
         context.user_data['is_editing'] = False
-        return await show_booking_summary(update, context)
+        # Clear edit mode and return to appointment list
+        return await show_patient_appointments(update, context, query=True)
     
     if choice == "cancel":
-        await query.edit_message_text("Draft Booking abandoned.")
-        btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
-        await query.message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
-        return FINAL_HELP
+        await query.edit_message_text("Modification cancelled. Your original appointment remains unchanged.")
+        return await show_patient_appointments(update, context, query=True)
         
     if choice == "service":
         return await show_main_services(query.message, context)
@@ -1540,6 +1721,10 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
     if query.data == "conf_edit":
         return await handle_edit_menu_routing(update, context)
 
+    # If this is a modification of an existing appointment
+    if context.user_data.get('original_appt_id'):
+        return await confirm_booking_edit(update, context)
+
     await query.edit_message_text("Processing your booking...")
     
     service = context.user_data['service']
@@ -1563,7 +1748,8 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             await client.post(f"{API_BASE}/book-appointment", json={
                 "clinic_id": active_cid, "telegram_id": update.effective_user.id, "ic_passport_number": context.user_data['ic'].upper(), 
-                "service_type": context.user_data['service'], "details": details_block, "scheduled_time": context.user_data['book_time']
+                "service_type": context.user_data['service'], "details": details_block, "scheduled_time": context.user_data['book_time'],
+                "skip_notification": True   # <-- Add this line
             }, timeout=10.0)
         except Exception as e:
             logger.error(f"Error booking appointment: {e}")
@@ -1593,15 +1779,91 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
     await query.message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
     return FINAL_HELP
 
+async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text("Updating your appointment...")
+    
+    service = context.user_data['service']
+    vaccines = context.user_data.get('vaccines_list', [])
+    selected_vac_name = context.user_data.get('selected_items', [None])[0] if context.user_data.get('selected_items') else None
+    selected_vac = next((v for v in vaccines if v['name'] == selected_vac_name), None)
+    total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+
+    details_block = {
+        "items": context.user_data.get('selected_items', []), 
+        "dose": context.user_data.get('dose'),
+        "total_doses": total_doses,
+        "general_notes": context.user_data.get('general_notes'),
+        "doctor_pref": context.user_data.get('doctor_pref', 'ANY'),
+        "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
+        "assigned_doctor_id": context.user_data.get('assigned_doctor_id')
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            # Use update-appointment endpoint
+            await client.post(f"{API_BASE}/update-appointment", json={
+                "appt_id": context.user_data['original_appt_id'],
+                "service_type": service,
+                "details": details_block,
+                "scheduled_time": context.user_data['book_time'],
+                "status": "scheduled"
+            }, timeout=10.0)
+        except Exception as e:
+            logger.error(f"Error updating appointment: {e}")
+            await query.message.reply_text("Failed to update appointment. Please try again.")
+            return FINAL_HELP
+    
+    time_str = context.user_data['book_time']
+    date_part, time_part = time_str.split(" ")
+    
+    confirmed_summary = (f"✅ *Appointment Successfully Updated!*\n\n"
+                         f"Date: {date_part}\nTime: {time_part}\n"
+                         f"Service: {service}\n")
+    
+    await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
+    
+    # Ask if user wants to modify another appointment
+    btns = [
+        [InlineKeyboardButton("Yes, modify another", callback_data="modify_another")],
+        [InlineKeyboardButton("No, I'm done", callback_data="help_no")]
+    ]
+    await query.message.reply_text("Do you want to modify another appointment?", reply_markup=InlineKeyboardMarkup(btns))
+    return MODIFY_ANOTHER
+
+async def modify_another_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "modify_another":
+        return await show_patient_appointments(update, context, query=True)
+    else:
+        return await final_help_logic(update, context)
+    
 async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    # Disable buttons after user clicks
     await query.edit_message_reply_markup(reply_markup=None)
-    # Reset live chat flag since the bot is taking over again
     context.user_data['is_live_chat'] = False
+    
     if query.data == "help_yes":
-        # Show main menu again, keep patient details if exist
+        # Keep only essential patient data and clinic info for reuse
+        preserved = {
+            'ic': context.user_data.get('ic'),
+            'name': context.user_data.get('name'),
+            'phone': context.user_data.get('phone'),
+            'gender': context.user_data.get('gender'),
+            'nationality': context.user_data.get('nationality'),
+            'address': context.user_data.get('address'),
+            'is_malaysian': context.user_data.get('is_malaysian'),
+            'active_clinic_id': context.user_data.get('active_clinic_id'),
+            'clinic_name': context.user_data.get('clinic_name')
+        }
+        context.user_data.clear()
+        context.user_data.update(preserved)
+        context.user_data['is_editing'] = False
         return await proceed_with_start(update, context, query=True)
     else:
         await query.edit_message_text("No, I'm done")
@@ -1656,6 +1918,9 @@ if __name__ == '__main__':
             CallbackQueryHandler(final_help_logic, pattern="^help_")
         ],
         states={
+            REUSE_PATIENT: [CallbackQueryHandler(handle_reuse_choice, pattern="^reuse_")],
+            APPOINTMENT_SELECT: [CallbackQueryHandler(appointment_selected, pattern="^(view_appt_|back_to_main)")],
+            APPOINTMENT_ACTION: [CallbackQueryHandler(appointment_action, pattern="^(modify_appt_|cancel_appt_|back_to_appt_list)")],
             START_CLINIC_SELECT: [CallbackQueryHandler(handle_start_clinic_select, pattern="^startclinic_")],
             NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],
             MY_METHOD_CHOICE: [CallbackQueryHandler(my_method_logic, pattern="^meth_")],
@@ -1750,7 +2015,8 @@ if __name__ == '__main__':
             CANCEL_REASON: [
                 CallbackQueryHandler(cancel_reason_logic),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_reason_logic)
-            ]
+            ],
+            MODIFY_ANOTHER: [CallbackQueryHandler(modify_another_choice, pattern="^(modify_another|help_no)")]
         },
         fallbacks=[CommandHandler('start', start), CommandHandler('cancel', cancel_command)],
         allow_reentry=True

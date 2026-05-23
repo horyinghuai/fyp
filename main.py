@@ -270,6 +270,7 @@ class Booking(BaseModel):
     service_type: str
     details: Dict[str, Any]
     scheduled_time: str
+    skip_notification: Optional[bool] = False   # Add this line
 
 class UpdateBooking(BaseModel):
     appt_id: str
@@ -1300,27 +1301,28 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
             db.add(stage)
             
-        # --- INSIDE book_appointment, JUST BEFORE THE RETURN ---
+                # INSIDE book_appointment, JUST BEFORE THE RETURN (around line 850)
         db.commit()
 
-        # Send Booking Summary
-        try:
-            summary = (f"✅ Booking Confirmed at AICAS Clinic\n"
-                       f"Name: {patient.name}\n"
-                       f"Service: {booking.service_type}\n"
-                       f"Date/Time: {start_time.strftime('%Y-%m-%d %H:%M')}")
-                       
-            if booking.service_type == "Blood Test":
-                summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."
-            
-            if patient.telegram_id:
-                token = os.getenv("TELEGRAM_BOT_TOKEN")
-                async with httpx.AsyncClient() as client:
-                    await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": patient.telegram_id, "text": summary})
-            else:
-                await send_sms_async(patient.phone, summary)
-        except Exception as e:
-            print(f"Failed to send booking summary: {e}")
+        # Send Booking Summary ONLY if not skipped
+        if not booking.skip_notification:
+            try:
+                summary = (f"✅ Booking Confirmed at AICAS Clinic\n"
+                           f"Name: {patient.name}\n"
+                           f"Service: {booking.service_type}\n"
+                           f"Date/Time: {start_time.strftime('%Y-%m-%d %H:%M')}")
+                           
+                if booking.service_type == "Blood Test":
+                    summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."
+                
+                if patient.telegram_id:
+                    token = os.getenv("TELEGRAM_BOT_TOKEN")
+                    async with httpx.AsyncClient() as client:
+                        await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": patient.telegram_id, "text": summary})
+                else:
+                    await send_sms_async(patient.phone, summary)
+            except Exception as e:
+                print(f"Failed to send booking summary: {e}")
 
         return {"status": "success"}
     except HTTPException:
