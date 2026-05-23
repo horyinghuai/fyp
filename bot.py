@@ -389,24 +389,112 @@ async def handle_start_clinic_select(update: Update, context: ContextTypes.DEFAU
 async def proceed_with_start(update, context, query=False):
     clinic_name = "our Clinic"
     active_cid = context.user_data['active_clinic_id']
-    
     if active_cid:
         async with httpx.AsyncClient() as client:
             try:
                 res = await client.get(f"{API_BASE}/clinic/{active_cid}", timeout=3.0)
-                if res.status_code == 200: clinic_name = res.json().get('name', 'our Clinic')
-            except Exception as e: pass
-            
+                if res.status_code == 200:
+                    clinic_name = res.json().get('name', 'our Clinic')
+            except Exception:
+                pass
     context.user_data['clinic_name'] = clinic_name
-    
-    msg = f"Welcome to {clinic_name}!\nTo get started, please select your nationality:"
+    msg = f"Welcome to {clinic_name}!\nHow can I help you today?"
+    btns = [
+        [InlineKeyboardButton("1. Create New Appointment", callback_data="main_create")],
+        [InlineKeyboardButton("2. Check Appointment Details", callback_data="main_check")],
+        [InlineKeyboardButton("3. General Question", callback_data="main_general")]
+    ]
+    if query:
+        await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    elif update.message:
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    else:
+        await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    return SERVICE
+def is_booking_related(text):
+    keywords = ["book", "appointment", "reservation", "cancel", "modify", "check"]
+    return any(k in text.lower() for k in keywords)
+
+async def main_menu_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # Only disable buttons after user clicks, not when displaying
+    choice = query.data
+    if choice == "main_create":
+        # If patient details already exist, skip to service selection
+        if context.user_data.get('ic'):
+            return await show_main_services(query.message, context)
+        # Otherwise, start patient details flow
+        return await proceed_with_start_patient_details(update, context, query=True)
+    elif choice == "main_check":
+        # If patient details already exist, show appointments
+        if context.user_data.get('ic'):
+            return await show_patient_appointments(update, context, query=True)
+        # Otherwise, start patient details flow
+        return await proceed_with_start_patient_details(update, context, query=True, for_check=True)
+    elif choice == "main_general":
+        await query.edit_message_text("Please type your general question below.")
+        return OTHERS_REASON
+
+# Helper to start patient details flow
+async def proceed_with_start_patient_details(update, context, query=False, for_check=False):
+    # Reuse nationality selection
+    msg = "To proceed, please select your nationality:"
     btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")], [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
-    
-    if query: await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
-    elif update.message: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
-    else: await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
-    
+    if query:
+        await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+        await update.callback_query.edit_message_reply_markup(reply_markup=None)
+    elif update.message:
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    else:
+        await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    # Mark if this is for check
+    context.user_data['for_check'] = for_check
     return NAT_CHOICE
+
+# Show patient appointments for check
+async def show_patient_appointments(update, context, query=False):
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+    ic = context.user_data.get('ic')
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
+            if res.status_code != 200:
+                msg = "No reservations found."
+                if query:
+                    await update.callback_query.edit_message_text(msg)
+                    await update.callback_query.edit_message_reply_markup(reply_markup=None)
+                else:
+                    await update.message.reply_text(msg)
+                btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No", callback_data="help_no")]]
+                await update.effective_message.reply_text("Is there anything else to help with?", reply_markup=InlineKeyboardMarkup(btns))
+                return FINAL_HELP
+            appts = res.json()
+        except Exception:
+            appts = []
+    if not appts:
+        msg = "No reservations found."
+        if query:
+            await update.callback_query.edit_message_text(msg)
+            await update.callback_query.edit_message_reply_markup(reply_markup=None)
+        else:
+            await update.message.reply_text(msg)
+        btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No", callback_data="help_no")]]
+        await update.effective_message.reply_text("Is there anything else to help with?", reply_markup=InlineKeyboardMarkup(btns))
+        return FINAL_HELP
+    # Sort from latest to oldest
+    appts = sorted(appts, key=lambda a: (a.get('date', ''), a.get('time', '')), reverse=True)
+    msg = "Your reservations:\n"
+    for a in appts:
+        msg += f"- {a.get('date', '')} {a.get('time', '')}: {a.get('service', '')}\n"
+    if query:
+        await update.callback_query.edit_message_text(msg)
+        await update.callback_query.edit_message_reply_markup(reply_markup=None)
+    else:
+        await update.message.reply_text(msg)
+    btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No", callback_data="help_no")]]
+    await update.effective_message.reply_text("Is there anything else to help with?", reply_markup=InlineKeyboardMarkup(btns))
+    return FINAL_HELP
 
 async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1508,40 +1596,43 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
 async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+    # Disable buttons after user clicks
+    await query.edit_message_reply_markup(reply_markup=None)
     # Reset live chat flag since the bot is taking over again
     context.user_data['is_live_chat'] = False
-    
     if query.data == "help_yes":
-        return await start(update, context) 
+        # Show main menu again, keep patient details if exist
+        return await proceed_with_start(update, context, query=True)
     else:
         await query.edit_message_text("No, I'm done")
         clinic_name = context.user_data.get('clinic_name', 'our Clinic')
-        await query.message.reply_text(f"Thank you for using {clinic_name} AICAS Bot. Have a great day!")
+        await query.message.reply_text(f"Thank you for using {clinic_name} AICAS Bot. Have a great day!\n\nIf you want to restart the clinic bot, just type /start.")
         return ConversationHandler.END
 
 # --- bot.py ---
 
 async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = clean_bot_username(update.message.text)
-    if not text: return
+    if not text:
+        return
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
-    
-    # Forward to AI/Admin to alert them
+    # If message is booking related, direct back to bot
+    if is_booking_related(text):
+        context.user_data['is_live_chat'] = False
+        await update.message.reply_text("Redirecting you back to the appointment service...")
+        return await proceed_with_start(update, context)
+    # Otherwise, forward to admin
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/ask-admin", json={
-                "clinic_id": active_cid, 
-                "telegram_id": update.effective_user.id, 
+                "clinic_id": active_cid,
+                "telegram_id": update.effective_user.id,
                 "message": text
             }, timeout=5.0)
-            
-            # ONLY send auto-reply once per "Admin Session"
             if not context.user_data.get('is_live_chat'):
                 context.user_data['is_live_chat'] = True
                 bot_reply = "✅ Your message has been sent to the clinic admin. They will reply shortly."
                 await update.message.reply_text(bot_reply)
-            
         except Exception as e:
             logger.error(f"Error sending general message: {e}")
             await update.message.reply_text("⚠️ Could not send message to admin at this time.")
@@ -1556,19 +1647,13 @@ if __name__ == '__main__':
         .connect_timeout(30.0)
         .read_timeout(30.0)
         .write_timeout(30.0)
-        .pool_timeout(30.0)
         .build()
     )
-    
-    async def error_handler(update, context):
-        logger.error(f"Exception while handling an update: {context.error}")
-    app.add_error_handler(error_handler)
-    
     conv = ConversationHandler(
         entry_points=[
-            CommandHandler('start', start), 
+            CommandHandler('start', start),
             CommandHandler('cancel', cancel_command),
-            CallbackQueryHandler(final_help_logic, pattern="^help_") # <--- ADD THIS LINE
+            CallbackQueryHandler(final_help_logic, pattern="^help_")
         ],
         states={
             START_CLINIC_SELECT: [CallbackQueryHandler(handle_start_clinic_select, pattern="^startclinic_")],
@@ -1614,8 +1699,10 @@ if __name__ == '__main__':
                 CallbackQueryHandler(handle_profile_edit_selection, pattern="^edit_cancel$")
             ],
             EDIT_PROFILE_MENU: [CallbackQueryHandler(handle_profile_edit_selection, pattern="^edit_")],
-            
-            SERVICE: [CallbackQueryHandler(service_choice, pattern="^svc_")],
+            SERVICE: [
+                CallbackQueryHandler(main_menu_logic, pattern="^main_"),
+                CallbackQueryHandler(service_choice, pattern="^svc_")
+            ],
             OTHERS_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, others_reason)],
             V_TYPE: [
                 CallbackQueryHandler(vaccine_type_selected, pattern="^vtype_"),
@@ -1641,7 +1728,7 @@ if __name__ == '__main__':
                 CallbackQueryHandler(route_back_v_type, pattern="^back_v_type$"),
                 CallbackQueryHandler(route_back_service_details, pattern="^back_bt_pkg$"),
                 CallbackQueryHandler(restart_service, pattern="^back_start$"),
-                CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
+                CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$") ,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_time_selection)
             ],
             DOC_SELECT: [
@@ -1649,8 +1736,8 @@ if __name__ == '__main__':
                 CallbackQueryHandler(show_doctor_preference, pattern="^back_doc_pref$")
             ],
             BOOK_DATE_TIME: [
-                CallbackQueryHandler(show_doctor_preference, pattern="^back_doc_pref$"),
-                CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
+                CallbackQueryHandler(show_doctor_preference, pattern="^back_doc_pref$") ,
+                CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$") ,
                 CallbackQueryHandler(handle_date_time_selection, pattern="^(date_|time_|back_date|sug_)"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_time_selection)
             ],
@@ -1668,13 +1755,9 @@ if __name__ == '__main__':
         fallbacks=[CommandHandler('start', start), CommandHandler('cancel', cancel_command)],
         allow_reentry=True
     )
-    
     app.add_handler(conv)
     app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_text))
-    
-    # ADD THIS LINE:
     app.add_handler(MessageHandler(filters.TEXT, log_all_incoming), group=1)
-    
     logger.info("Bot is starting...")
     app.run_polling(drop_pending_updates=True)
