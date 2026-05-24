@@ -271,6 +271,7 @@ class Booking(BaseModel):
     details: Dict[str, Any]
     scheduled_time: str
     skip_notification: Optional[bool] = False   # Add this line
+    source: Optional[str] = "web"
 
 class UpdateBooking(BaseModel):
     appt_id: str
@@ -1301,16 +1302,20 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
             db.add(stage)
             
-                # INSIDE book_appointment, JUST BEFORE THE RETURN (around line 850)
+                # --- INSIDE book_appointment, JUST BEFORE return {"status": "success"} ---
         db.commit()
 
-        # Send Booking Summary ONLY if not skipped
-        if not booking.skip_notification:
+        # Send Booking Summary ONLY if requested from the React Website
+        if getattr(booking, 'source', 'web') == 'web':
             try:
-                summary = (f"✅ Booking Confirmed at AICAS Clinic\n"
+                summary = (f"✅ Booking Successfully Confirmed!\n\n"
                            f"Name: {patient.name}\n"
+                           f"IC/Passport: {patient.ic_passport_number}\n"
+                           f"Phone: {patient.phone}\n"
+                           f"Date: {start_time.strftime('%Y-%m-%d')}\n"
+                           f"Time: {start_time.strftime('%H:%M')}\n"
                            f"Service: {booking.service_type}\n"
-                           f"Date/Time: {start_time.strftime('%Y-%m-%d %H:%M')}")
+                           f"Details: {booking.details}")
                            
                 if booking.service_type == "Blood Test":
                     summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."

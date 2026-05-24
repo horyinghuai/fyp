@@ -535,38 +535,63 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
         await update.effective_message.reply_text("Is there anything else to help with?", reply_markup=InlineKeyboardMarkup(btns))
         return FINAL_HELP
     
-    # Sort appointments: future first (closest to farthest), then past (most recent first)
+    # Sort appointments: future first (soonest to latest), then past (most recent to oldest)
     from datetime import datetime
     def sort_key(a):
         dt_str = f"{a['date']} {a['time']}"
         return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-    appts_sorted = sorted(appts, key=sort_key, reverse=False)
-    
-    # Create buttons for each appointment
-    keyboard = []
     now = datetime.now()
-    for a in appts_sorted:
-        service = a.get('service', 'Consultation')
-        if service == 'Others':
-            detail = a.get('details', {}).get('reason', 'General')
-        elif service == 'Vaccine':
-            items = a.get('details', {}).get('items', [])
-            detail = items[0] if items else 'Vaccine'
-        elif service == 'Blood Test':
-            items = a.get('details', {}).get('items', [])
-            detail = ', '.join(items) if items else 'Blood Test'
-        else:
-            detail = service
-        label = f"{a['date']} {a['time'][:5]} - {detail}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['appt_id']}")])
-    
+    future_appts = [a for a in appts if sort_key(a) >= now]
+    past_appts = [a for a in appts if sort_key(a) < now]
+    future_appts_sorted = sorted(future_appts, key=sort_key)
+    past_appts_sorted = sorted(past_appts, key=sort_key, reverse=True)
+
+    keyboard = []
+    # Future appointments (can modify/cancel)
+    if future_appts_sorted:
+        keyboard.append([InlineKeyboardButton("⏰ Upcoming Appointments", callback_data="noop")])
+        for a in future_appts_sorted:
+            service = a.get('service', 'Consultation')
+            if service == 'Others':
+                detail = a.get('details', {}).get('reason', 'General')
+            elif service == 'Vaccine':
+                items = a.get('details', {}).get('items', [])
+                detail = items[0] if items else 'Vaccine'
+            elif service == 'Blood Test':
+                items = a.get('details', {}).get('items', [])
+                detail = ', '.join(items) if items else 'Blood Test'
+            else:
+                detail = service
+            label = f"{a['date']} {a['time'][:5]} - {detail}"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['appt_id']}")])
+    # Past appointments (view only)
+    if past_appts_sorted:
+        keyboard.append([InlineKeyboardButton("📅 Past Appointments", callback_data="noop")])
+        for a in past_appts_sorted:
+            service = a.get('service', 'Consultation')
+            if service == 'Others':
+                detail = a.get('details', {}).get('reason', 'General')
+            elif service == 'Vaccine':
+                items = a.get('details', {}).get('items', [])
+                detail = items[0] if items else 'Vaccine'
+            elif service == 'Blood Test':
+                items = a.get('details', {}).get('items', [])
+                detail = ', '.join(items) if items else 'Blood Test'
+            else:
+                detail = service
+            label = f"{a['date']} {a['time'][:5]} - {detail}"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['appt_id']}")])
+
     keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main")])
-    
+
+    msg = ("Below are your appointments (future to past).\n"
+           "\n- Click an appointment to check for details.\n"
+           "- For future appointments, you can also modify or cancel.\n"
+           "- For past appointments, you can only view details.")
     if query:
-        await update.callback_query.edit_message_text("Select an appointment to view details. For future appointments, you may also modify or cancel.", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text("Select an appointment to view details. For future appointments, you may also modify or cancel.", reply_markup=InlineKeyboardMarkup(keyboard))
-    
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
     return APPOINTMENT_SELECT
 
 async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1438,7 +1463,7 @@ async def handle_doc_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BOOK_DATE_TIME
 
 async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    service = context.user_data['service']
+    service = context.user_data.get('service', 'General Appointment')
     doctor_pref = context.user_data.get('doctor_pref', 'ANY')
     is_editing = context.user_data.get('is_editing', False)
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
@@ -1655,7 +1680,6 @@ async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
         [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
         [InlineKeyboardButton("🔙 Cancel Modify (Keep Details)", callback_data="editbook_abort_edit")], # <--- ADD THIS LINE
-        [InlineKeyboardButton("❌ Cancel Draft Booking", callback_data="editbook_cancel")]
     ]
     await query.edit_message_text("What would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
     return EDIT_BOOKING_MENU
@@ -1684,11 +1708,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data['is_editing'] = False
         # Clear edit mode and return to appointment list
         return await show_patient_appointments(update, context, query=True)
-    
-    if choice == "cancel":
-        await query.edit_message_text("Modification cancelled. Your original appointment remains unchanged.")
-        return await show_patient_appointments(update, context, query=True)
-        
+
     if choice == "service":
         return await show_main_services(query.message, context)
     elif choice == "details":
@@ -1795,11 +1815,8 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
     details_block = {
         "items": context.user_data.get('selected_items', []), 
         "dose": context.user_data.get('dose'),
-        "total_doses": total_doses,
         "general_notes": context.user_data.get('general_notes'),
-        "doctor_pref": context.user_data.get('doctor_pref', 'ANY'),
-        "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
-        "assigned_doctor_id": context.user_data.get('assigned_doctor_id')
+        "assigned_doctor_name": context.user_data.get('assigned_doctor_name')
     }
 
     async with httpx.AsyncClient() as client:
@@ -1820,9 +1837,16 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
     time_str = context.user_data['book_time']
     date_part, time_part = time_str.split(" ")
     
-    confirmed_summary = (f"✅ *Appointment Successfully Updated!*\n\n"
-                         f"Date: {date_part}\nTime: {time_part}\n"
-                         f"Service: {service}\n")
+    confirmed_summary = (
+        f"✅ *Appointment Successfully Updated!*\n\n"
+        f"Name: {context.user_data.get('name', 'N/A')}\n"
+        f"IC/Passport: {context.user_data.get('ic', 'N/A')}\n"
+        f"Phone: {context.user_data.get('phone', 'N/A')}\n"
+        f"Date: {date_part}\n"
+        f"Time: {time_part}\n"
+        f"Service: {service}\n"
+        f"Details: {details_block.get('items', [])}\n"
+    )
     
     await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
     
