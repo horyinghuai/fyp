@@ -2057,7 +2057,6 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
         models.Doctor, models.Appointment.doctor_ic == models.Doctor.ic_passport_number
     ).filter(
         models.Appointment.patient_id == patient.id,
-        models.ApptStage.scheduled_time >= now,
         models.ApptStage.status != 'canceled'
     ).all()
 

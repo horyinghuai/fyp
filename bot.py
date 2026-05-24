@@ -492,7 +492,10 @@ async def main_menu_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Helper to start patient details flow
 async def proceed_with_start_patient_details(update, context, query=False, for_check=False):
-    # Reuse nationality selection
+    # Clear any stale patient details from previous incomplete registration
+    for key in ['ic', 'name', 'phone', 'gender', 'nationality', 'address', 'is_malaysian']:
+        context.user_data.pop(key, None)
+
     msg = "To proceed, please select your nationality:"
     btns = [[InlineKeyboardButton("Malaysian", callback_data="nat_my")], [InlineKeyboardButton("Non-Malaysian", callback_data="nat_non")]]
     if query:
@@ -501,7 +504,6 @@ async def proceed_with_start_patient_details(update, context, query=False, for_c
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     else:
         await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
-    # Mark if this is for check
     context.user_data['for_check'] = for_check
     return NAT_CHOICE
 
@@ -512,7 +514,17 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
-            if res.status_code != 200:
+            if res.status_code == 404:
+                msg = "❌ This IC/Passport number is not registered in our clinic. Please use /start to book an appointment first."
+                if query:
+                    await update.callback_query.edit_message_text(msg)
+                else:
+                    await update.message.reply_text(msg)
+                # Back to main menu
+                btns = [[InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]]
+                await update.effective_message.reply_text("What would you like to do?", reply_markup=InlineKeyboardMarkup(btns))
+                return SERVICE
+            elif res.status_code != 200:
                 msg = "No appointments found."
                 if query:
                     await update.callback_query.edit_message_text(msg)
@@ -526,7 +538,7 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
             appts = []
     
     if not appts:
-        msg = "No appointments found."
+        msg = "You have no upcoming or past appointments."
         if query:
             await update.callback_query.edit_message_text(msg)
         else:
@@ -535,7 +547,6 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
         await update.effective_message.reply_text("Is there anything else to help with?", reply_markup=InlineKeyboardMarkup(btns))
         return FINAL_HELP
     
-    # Sort appointments: future first (soonest to latest), then past (most recent to oldest)
     from datetime import datetime
     def sort_key(a):
         dt_str = f"{a['date']} {a['time']}"
@@ -547,9 +558,8 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
     past_appts_sorted = sorted(past_appts, key=sort_key, reverse=True)
 
     keyboard = []
-    # Future appointments (can modify/cancel)
     if future_appts_sorted:
-        keyboard.append([InlineKeyboardButton("⏰ Upcoming Appointments", callback_data="noop")])
+        keyboard.append([InlineKeyboardButton("⏰ Upcoming Appointments (click to view, modify, or cancel)", callback_data="noop")])
         for a in future_appts_sorted:
             service = a.get('service', 'Consultation')
             if service == 'Others':
@@ -564,9 +574,8 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
                 detail = service
             label = f"{a['date']} {a['time'][:5]} - {detail}"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['appt_id']}")])
-    # Past appointments (view only)
     if past_appts_sorted:
-        keyboard.append([InlineKeyboardButton("📅 Past Appointments", callback_data="noop")])
+        keyboard.append([InlineKeyboardButton("📅 Past Appointments (view only)", callback_data="noop")])
         for a in past_appts_sorted:
             service = a.get('service', 'Consultation')
             if service == 'Others':
@@ -654,7 +663,7 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if data.startswith("modify_appt_"):
         appt_id = data.replace("modify_appt_", "")
         context.user_data['edit_appt_id'] = appt_id
-        # Fetch appointment details and pre-fill the edit menu
+        # Fetch appointment details and store full object for abort
         active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
         ic = context.user_data.get('ic')
         async with httpx.AsyncClient() as client:
@@ -664,7 +673,7 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     appts = res.json()
                     appt = next((a for a in appts if a['appt_id'] == appt_id), None)
                     if appt:
-                        # Store appointment data into user_data to pre-fill the edit flow
+                        context.user_data['abort_appt_details'] = appt  # Store for abort
                         context.user_data['service'] = appt['service']
                         context.user_data['selected_items'] = appt['details'].get('items', [])
                         context.user_data['dose'] = appt['details'].get('dose')
@@ -682,7 +691,6 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
                             [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
                             [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")],
-                            [InlineKeyboardButton("❌ Cancel Draft Booking", callback_data="editbook_cancel")]
                         ]
                         await query.edit_message_text("What would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
                         return EDIT_BOOKING_MENU
@@ -1022,9 +1030,10 @@ async def show_profile_summary(update: Update, context: ContextTypes.DEFAULT_TYP
 async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
+
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
-    
+    for_check = context.user_data.get('for_check', False)
+
     if query.data == "prof_edit":
         id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
         btns = [
@@ -1037,18 +1046,22 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
         return EDIT_PROFILE_MENU
 
     await query.edit_message_text("✅ Profile confirmed. Saving to database...")
-    
+
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/register-patient", json={
-                "clinic_id": active_cid, "name": context.user_data['name'].upper(), "ic_passport_number": context.user_data['ic'].upper(), 
+                "clinic_id": active_cid, "name": context.user_data['name'].upper(), "ic_passport_number": context.user_data['ic'].upper(),
                 "phone": context.user_data['phone'], "telegram_id": update.effective_user.id,
-                "address": context.user_data.get('address', '').upper(), "gender": context.user_data.get('gender', '').upper(), "nationality": context.user_data.get('nationality', '').upper() 
+                "address": context.user_data.get('address', '').upper(), "gender": context.user_data.get('gender', '').upper(), "nationality": context.user_data.get('nationality', '').upper()
             }, timeout=5.0)
         except Exception as e:
             logger.error(f"Error registering patient: {e}")
-        
-    return await show_main_services(query.message, context)
+
+    if for_check:
+        # Show appointments list instead of service selection
+        return await show_patient_appointments(update, context, query=True)
+    else:
+        return await show_main_services(query.message, context)
 
 async def handle_profile_edit_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1209,13 +1222,16 @@ async def render_v_dose_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def route_back_v_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    context.user_data['service'] = 'Vaccine'
     
+    # If we are in edit mode, go back to edit menu instead of vaccine categories
+    if context.user_data.get('is_editing'):
+        return await handle_edit_menu_routing(update, context)
+    
+    context.user_data['service'] = 'Vaccine'
     vaccines = context.user_data.get('vaccines_list', [])
     types = list(set(v.get('type', 'General').strip() for v in vaccines))
     btns = [[InlineKeyboardButton(t.title(), callback_data=f"vtype_{t}")] for t in types]
     btns.append([InlineKeyboardButton("🔙 Back to Services", callback_data="back_start")])
-    
     await query.edit_message_text("Please choose a vaccine category/type:", reply_markup=InlineKeyboardMarkup(btns))
     return V_TYPE
 
@@ -1317,8 +1333,11 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return await restart_service(update, context)
     
-    if data == "back_bt_pkg": 
+    if data == "back_bt_pkg":
         await query.answer()
+        if context.user_data.get('is_editing'):
+            # Go to edit menu instead of package list
+            return await handle_edit_menu_routing(update, context)
         context.user_data['selected_items'] = []
         return await show_blood_tests(update, context, "package")
     
@@ -1680,6 +1699,7 @@ async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
         [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
         [InlineKeyboardButton("🔙 Cancel Modify (Keep Details)", callback_data="editbook_abort_edit")], # <--- ADD THIS LINE
+        [InlineKeyboardButton("❌ Cancel Draft Booking", callback_data="editbook_cancel")]
     ]
     await query.edit_message_text("What would you like to modify?", reply_markup=InlineKeyboardMarkup(btns))
     return EDIT_BOOKING_MENU
@@ -1688,9 +1708,12 @@ async def route_back_service_details(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     await query.answer()
     
+    if context.user_data.get('is_editing'):
+        return await handle_edit_menu_routing(update, context)
+    
     service = context.user_data.get('service')
     if service == 'Vaccine':
-        return await route_back_v_type(update, context) 
+        return await route_back_v_type(update, context)
     elif service == 'Blood Test':
         context.user_data['selected_items'] = []
         return await show_blood_tests(update, context, "package")
