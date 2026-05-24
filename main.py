@@ -2048,43 +2048,61 @@ def get_patient_by_id(clinic_id: str, ic_passport: str, db: Session = Depends(ge
 @app.get("/patient/{clinic_id}/appointments/{ic}")
 def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_db)):
     patient = db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id, models.Patient.ic_passport_number == ic).first()
-    if not patient: raise HTTPException(status_code=404, detail="Patient not found")
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
     
-    now = datetime.now()
-    appts = db.query(models.Appointment, models.ApptStage, models.Doctor).join(
-        models.ApptStage, models.Appointment.id == models.ApptStage.appointment_id
+    # Get all stages (no time filter) for this patient
+    stages = db.query(models.ApptStage, models.Appointment, models.Doctor).join(
+        models.Appointment, models.ApptStage.appointment_id == models.Appointment.id
     ).outerjoin(
         models.Doctor, models.Appointment.doctor_ic == models.Doctor.ic_passport_number
     ).filter(
         models.Appointment.patient_id == patient.id,
         models.ApptStage.status != 'canceled'
-    ).all()
-
+    ).order_by(models.ApptStage.scheduled_time.asc()).all()
+    
     res = []
-    for appt, stage, doc in appts:
+    for stage, appt, doc in stages:
         appt_vaccines = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).all()
         appt_tests = db.query(models.AppointmentBloodTest).filter_by(appointment_id=appt.id).all()
+        
         service = "Others"
         item_names = []
-        dose = None
+        dose = stage.stage_name   # e.g., "Dose 1", "Dose 2", "Booster"
         reason = appt.general_notes
         
         if appt_vaccines:
             service = "Vaccine"
-            for av in appt_vaccines:
-                dose = av.dose_number
-                v = db.query(models.Vaccine).filter_by(id=av.vaccine_id).first()
-                if v: item_names.append(v.name)
+            # Get vaccine name from the first vaccine (should be same for all doses)
+            first_vac = appt_vaccines[0]
+            v = db.query(models.Vaccine).filter_by(id=first_vac.vaccine_id).first()
+            if v:
+                item_names = [v.name]
         elif appt_tests:
             service = "Blood Test"
             for at in appt_tests:
                 bt = db.query(models.BloodTest).filter_by(id=at.blood_test_id).first()
-                if bt: item_names.append(bt.name)
+                if bt:
+                    item_names.append(bt.name)
         elif reason:
             service = "Others"
-                
-        details_block = { "items": item_names, "dose": dose, "reason": reason, "assigned_doctor_name": doc.name if doc else "ANY", "assigned_doctor_id": str(doc.ic_passport_number) if doc else None, "service_type": service }
-        res.append({ "appt_id": str(appt.id), "service": service, "details": details_block, "date": stage.scheduled_time.strftime("%Y-%m-%d"), "time": stage.scheduled_time.strftime("%H:%M:%S"), "doctor_name": doc.name if doc else "ANY" })
+        
+        details_block = {
+            "items": item_names,
+            "dose": dose,
+            "reason": reason,
+            "assigned_doctor_name": doc.name if doc else "ANY",
+            "assigned_doctor_id": str(doc.ic_passport_number) if doc else None,
+            "service_type": service
+        }
+        res.append({
+            "appt_id": str(appt.id),
+            "service": service,
+            "details": details_block,
+            "date": stage.scheduled_time.strftime("%Y-%m-%d"),
+            "time": stage.scheduled_time.strftime("%H:%M:%S"),
+            "doctor_name": doc.name if doc else "ANY"
+        })
     return res
 
 @app.get("/patient-clinics/{telegram_id}")
