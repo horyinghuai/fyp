@@ -16,6 +16,7 @@ export default function DeveloperPage() {
   const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [generatedDevPasswords, setGeneratedDevPasswords] = useState<any>(null);
+  const [retrievingPasswords, setRetrievingPasswords] = useState<{ admin?: boolean, temp?: boolean }>({});
 
   const fetchClinics = async () => {
       const token = localStorage.getItem('aicas_token');
@@ -37,6 +38,14 @@ export default function DeveloperPage() {
   useEffect(() => { fetchClinics(); }, []);
 
   const validateEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+  const checkRegistrationNumberExists = (regNum: string, excludeClinicId?: string) => {
+      const trimmedRegNum = regNum.trim().toUpperCase();
+      return clinics.some(c => {
+          if (excludeClinicId && c.id === excludeClinicId) return false;
+          return (c.registration_number || '').toUpperCase() === trimmedRegNum;
+      });
+  };
 
   const formatAndValidatePhone = (phone: string) => {
       if (!phone) return null;
@@ -99,9 +108,19 @@ export default function DeveloperPage() {
 
       // 1. Individual constraint checks
       if (!devForm.clinic_name) return setStatusMsg({ type: 'error', text: 'Clinic Name is required.' });
+      if (!devForm.registration_number) return setStatusMsg({ type: 'error', text: 'Registration Number is required.' });
+      
+      // Check for duplicate registration number
+      if (checkRegistrationNumberExists(devForm.registration_number, isEditing && isEditing !== 'new' ? isEditing : undefined)) {
+          return setStatusMsg({ type: 'error', text: `Registration Number '${devForm.registration_number.toUpperCase()}' already exists. Please use a different registration number.` });
+      }
+      
       if (!devForm.admin_ic) return setStatusMsg({ type: 'error', text: 'Primary Admin IC/Passport is required.' });
       if (!devForm.admin_name) return setStatusMsg({ type: 'error', text: 'Primary Admin Name is required.' });
       if (!devForm.admin_email) return setStatusMsg({ type: 'error', text: 'Primary Admin Email is required.' });
+      if (!devForm.temp_admin_ic) return setStatusMsg({ type: 'error', text: 'Temporary Admin IC/Passport is required.' });
+      if (!devForm.temp_admin_name) return setStatusMsg({ type: 'error', text: 'Temporary Admin Name is required.' });
+      if (!devForm.temp_admin_email) return setStatusMsg({ type: 'error', text: 'Temporary Admin Email is required.' });
 
       if (devForm.contact_number) {
           const formattedPhone = formatAndValidatePhone(devForm.contact_number);
@@ -110,7 +129,7 @@ export default function DeveloperPage() {
       }
 
       if (!validateEmail(devForm.admin_email)) return setStatusMsg({ type: 'error', text: 'Invalid Admin Email format.' });
-      if (devForm.temp_admin_email && !validateEmail(devForm.temp_admin_email)) return setStatusMsg({ type: 'error', text: 'Invalid Temporary Admin Email format.' });
+      if (!validateEmail(devForm.temp_admin_email)) return setStatusMsg({ type: 'error', text: 'Invalid Temporary Admin Email format.' });
 
       let finalAdminIC = devForm.admin_ic.toUpperCase();
       if (devForm.admin_is_my) {
@@ -119,7 +138,7 @@ export default function DeveloperPage() {
       }
 
       let finalTempAdminIC = devForm.temp_admin_ic.toUpperCase();
-      if (devForm.temp_admin_email && devForm.temp_admin_is_my) {
+      if (devForm.temp_admin_is_my) {
           if (finalTempAdminIC.replace(/\D/g, '').length !== 12) return setStatusMsg({ type: 'error', text: 'Temporary Admin IC must be exactly 12 digits for Malaysians.' });
           finalTempAdminIC = formatIC(finalTempAdminIC);
       }
@@ -130,9 +149,20 @@ export default function DeveloperPage() {
 
       const submitPayload = async (isForced = false) => {
           const payload = {
-              ...devForm,
+              clinic_name: devForm.clinic_name.toUpperCase(),
+              registration_number: devForm.registration_number.toUpperCase(),
+              address: devForm.address.toUpperCase(),
+              contact_number: devForm.contact_number,
               admin_ic: finalAdminIC,
+              admin_name: devForm.admin_name,
+              admin_email: devForm.admin_email,
+              admin_is_my: devForm.admin_is_my,
+              admin_status: devForm.admin_status,
               temp_admin_ic: finalTempAdminIC,
+              temp_admin_name: devForm.temp_admin_name,
+              temp_admin_email: devForm.temp_admin_email,
+              temp_admin_is_my: devForm.temp_admin_is_my,
+              temp_admin_status: devForm.temp_admin_status,
               force_email_update: isForced
           };
 
@@ -176,27 +206,17 @@ export default function DeveloperPage() {
                       if (window.confirm("The IC number entered is currently linked to a DIFFERENT email address in another clinic. Do you want to overwrite their email globally to the new one you provided? (This will reset their password)")) {
                           submitPayload(true);
                       } else {
-                          setStatusMsg({ type: 'error', text: 'Action cancelled. Please use the original email address for this user IC.' });
+                          setStatusMsg({ type: 'error', text: 'Action cancelled. Original email restored.' });
+                          const originalClinic = clinics.find(c => c.id === isEditing);
+                          if (originalClinic) openForm(originalClinic);
                       }
-                  // Replace this section inside handleSaveClinic:
-                } else {
-                    const err = await res.json();
-                    if (err.detail === "EMAIL_MISMATCH" || err.detail?.includes("EMAIL_MISMATCH")) {
-                        if (window.confirm("The IC number entered is currently linked to a DIFFERENT email address in another clinic. Do you want to overwrite their email globally to the new one you provided? (This will reset their password)")) {
-                            submitPayload(true);
-                        } else {
-                            // --- NEW RESTORATION LOGIC ---
-                            setStatusMsg({ type: 'error', text: 'Action cancelled. Original email restored.' });
-                            const originalClinic = clinics.find(c => c.id === isEditing);
-                            if (originalClinic) openForm(originalClinic);
-                            // -----------------------------
-                        }
-                    } else {
-                        setStatusMsg({ type: 'error', text: err.detail || 'Save failed.' });
-                    }
-                }
+                  } else {
+                      setStatusMsg({ type: 'error', text: err.detail || 'Failed to save clinic. Please try again.' });
+                  }
               }
-          } catch (err) { setStatusMsg({ type: 'error', text: 'Server connection error.' }); }
+          } catch (err) { 
+              setStatusMsg({ type: 'error', text: 'Unable to connect to server. Please check your connection and try again.' }); 
+          }
           setIsSubmitting(false);
       };
 
@@ -213,7 +233,35 @@ export default function DeveloperPage() {
               return;
           }
           fetchClinics();
-      } catch (err) { alert("Server error"); }
+      } catch (err) { alert("Unable to connect to server. Please check your connection and try again."); }
+  };
+
+  const handleRetrievePassword = async (clinicId: string, adminType: 'admin' | 'temp') => {
+      setRetrievingPasswords({ ...retrievingPasswords, [adminType]: true });
+      const token = localStorage.getItem('aicas_token');
+      try {
+          const res = await fetch(`http://127.0.0.1:8000/admin/clinics/${clinicId}/retrieve-password/${adminType}`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          
+          if (res.status === 401) {
+              localStorage.removeItem('aicas_token');
+              localStorage.removeItem('aicas_user');
+              window.location.href = '/login';
+              return;
+          }
+
+          if (res.ok) {
+              const data = await res.json();
+              setGeneratedDevPasswords({ ...generatedDevPasswords, [adminType]: data.password });
+          } else {
+              alert('Failed to retrieve password. Please try again.');
+          }
+      } catch (err) {
+          alert('Unable to connect to server. Please check your connection and try again.');
+      }
+      setRetrievingPasswords({ ...retrievingPasswords, [adminType]: false });
   };
 
   if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
@@ -237,46 +285,90 @@ export default function DeveloperPage() {
                 )}
                 <div>
                     <h3 className="font-bold text-lg text-blue-700 mb-4 border-b pb-2">1. Clinic Information</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                        <input type="text" placeholder="Clinic Name *" required value={devForm.clinic_name} onChange={e => setDevForm({...devForm, clinic_name: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
-                        <input type="text" placeholder="Registration Number" value={devForm.registration_number} onChange={e => setDevForm({...devForm, registration_number: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
-                        <input type="text" placeholder="Contact Number (e.g. +6012-3456789)" value={devForm.contact_number} onChange={e => setDevForm({...devForm, contact_number: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
-                        <input type="text" placeholder="Full Address" value={devForm.address} onChange={e => setDevForm({...devForm, address: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
+                    <div className="grid grid-cols-2 gap-6">
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">Clinic Name *</label>
+                            <input type="text" placeholder="Enter clinic name" required value={devForm.clinic_name} onChange={e => setDevForm({...devForm, clinic_name: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">Registration Number *</label>
+                            <input type="text" placeholder="Enter registration number" required value={devForm.registration_number} onChange={e => setDevForm({...devForm, registration_number: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">Contact Number</label>
+                            <input type="text" placeholder="e.g. +6012-3456789" value={devForm.contact_number} onChange={e => setDevForm({...devForm, contact_number: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">Full Address</label>
+                            <input type="text" placeholder="Enter clinic address" value={devForm.address} onChange={e => setDevForm({...devForm, address: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase" />
+                        </div>
                     </div>
                 </div>
 
                 <div>
                     <h3 className="font-bold text-lg text-purple-700 mb-4 border-b pb-2">2. Primary Administrator</h3>
-                    <div className={`grid gap-4 ${isEditing === 'new' ? 'grid-cols-4' : 'grid-cols-5'}`}>
-                        <select value={devForm.admin_is_my ? "my" : "non_my"} onChange={e => setDevForm({...devForm, admin_is_my: e.target.value === "my", admin_ic: ''})} className="p-3 border rounded-xl outline-none bg-slate-50">
-                            <option value="my">Malaysian</option><option value="non_my">Non-Malaysian</option>
-                        </select>
-                        <input type="text" placeholder={devForm.admin_is_my ? "IC Number *" : "Passport Number *"} required value={devForm.admin_ic} onChange={e => setDevForm({...devForm, admin_ic: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase" />
-                        <input type="text" placeholder="Full Name *" required value={devForm.admin_name} onChange={e => setDevForm({...devForm, admin_name: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase" />
-                        <input type="email" placeholder="Login Email *" required value={devForm.admin_email} onChange={e => setDevForm({...devForm, admin_email: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50" />
-                        {isEditing !== 'new' && (
-                            <select value={devForm.admin_status} onChange={e => setDevForm({...devForm, admin_status: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-white shadow-sm font-bold text-slate-700">
-                                <option value="active">Active</option>
-                                <option value="inactive">Inactive</option>
+                    <div className={`grid gap-6 ${isEditing === 'new' ? 'grid-cols-4' : 'grid-cols-5'}`}>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">ID Type *</label>
+                            <select value={devForm.admin_is_my ? "my" : "non_my"} onChange={e => setDevForm({...devForm, admin_is_my: e.target.value === "my", admin_ic: ''})} className="w-full p-3 border rounded-xl outline-none bg-slate-50">
+                                <option value="my">Malaysian</option>
+                                <option value="non_my">Non-Malaysian</option>
                             </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">{devForm.admin_is_my ? "IC Number" : "Passport Number"} *</label>
+                            <input type="text" placeholder={devForm.admin_is_my ? "e.g. 123456789012" : "Enter passport number"} required value={devForm.admin_ic} onChange={e => setDevForm({...devForm, admin_ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">Full Name *</label>
+                            <input type="text" placeholder="Enter full name" required value={devForm.admin_name} onChange={e => setDevForm({...devForm, admin_name: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">Login Email *</label>
+                            <input type="email" placeholder="Enter email address" required value={devForm.admin_email} onChange={e => setDevForm({...devForm, admin_email: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50" />
+                        </div>
+                        {isEditing !== 'new' && (
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-2">Status</label>
+                                <select value={devForm.admin_status} onChange={e => setDevForm({...devForm, admin_status: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-white shadow-sm font-bold text-slate-700">
+                                    <option value="active">Active</option>
+                                    <option value="inactive">Inactive</option>
+                                </select>
+                            </div>
                         )}
                     </div>
                 </div>
 
                 <div>
-                    <h3 className="font-bold text-lg text-emerald-700 mb-4 border-b pb-2">3. Temporary Administrator (Optional)</h3>
-                    <div className={`grid gap-4 ${isEditing === 'new' ? 'grid-cols-4' : 'grid-cols-5'}`}>
-                        <select value={devForm.temp_admin_is_my ? "my" : "non_my"} onChange={e => setDevForm({...devForm, temp_admin_is_my: e.target.value === "my", temp_admin_ic: ''})} className="p-3 border rounded-xl outline-none bg-slate-50">
-                            <option value="my">Malaysian</option><option value="non_my">Non-Malaysian</option>
-                        </select>
-                        <input type="text" placeholder={devForm.temp_admin_is_my ? "IC Number" : "Passport Number"} value={devForm.temp_admin_ic} onChange={e => setDevForm({...devForm, temp_admin_ic: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase" />
-                        <input type="text" placeholder="Full Name" value={devForm.temp_admin_name} onChange={e => setDevForm({...devForm, temp_admin_name: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase" />
-                        <input type="email" placeholder="Login Email" value={devForm.temp_admin_email} onChange={e => setDevForm({...devForm, temp_admin_email: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50" />
-                        {isEditing !== 'new' && devForm.temp_admin_ic && (
-                            <select value={devForm.temp_admin_status} onChange={e => setDevForm({...devForm, temp_admin_status: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white shadow-sm font-bold text-slate-700">
-                                <option value="active">Active</option>
-                                <option value="inactive">Inactive</option>
+                    <h3 className="font-bold text-lg text-emerald-700 mb-4 border-b pb-2">3. Temporary Administrator *</h3>
+                    <div className={`grid gap-6 ${isEditing === 'new' ? 'grid-cols-4' : 'grid-cols-5'}`}>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">ID Type *</label>
+                            <select value={devForm.temp_admin_is_my ? "my" : "non_my"} onChange={e => setDevForm({...devForm, temp_admin_is_my: e.target.value === "my", temp_admin_ic: ''})} className="w-full p-3 border rounded-xl outline-none bg-slate-50">
+                                <option value="my">Malaysian</option>
+                                <option value="non_my">Non-Malaysian</option>
                             </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">{devForm.temp_admin_is_my ? "IC Number" : "Passport Number"} *</label>
+                            <input type="text" placeholder={devForm.temp_admin_is_my ? "e.g. 123456789012" : "Enter passport number"} required value={devForm.temp_admin_ic} onChange={e => setDevForm({...devForm, temp_admin_ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">Full Name *</label>
+                            <input type="text" placeholder="Enter full name" required value={devForm.temp_admin_name} onChange={e => setDevForm({...devForm, temp_admin_name: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">Login Email *</label>
+                            <input type="email" placeholder="Enter email address" required value={devForm.temp_admin_email} onChange={e => setDevForm({...devForm, temp_admin_email: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50" />
+                        </div>
+                        {isEditing !== 'new' && devForm.temp_admin_ic && (
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-2">Status</label>
+                                <select value={devForm.temp_admin_status} onChange={e => setDevForm({...devForm, temp_admin_status: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-white shadow-sm font-bold text-slate-700">
+                                    <option value="active">Active</option>
+                                    <option value="inactive">Inactive</option>
+                                </select>
+                            </div>
                         )}
                     </div>
                 </div>
@@ -299,7 +391,12 @@ export default function DeveloperPage() {
                                  <span className="block text-xs font-bold text-slate-400 uppercase">Primary Admin</span>
                                  <span className="font-bold text-slate-700">{devForm.admin_email}</span>
                              </div>
-                             <span className="font-mono bg-white px-4 py-2 rounded-lg border text-red-600 font-bold">{generatedDevPasswords.admin}</span>
+                             <div className="flex items-center gap-3">
+                                 <span className="font-mono bg-white px-4 py-2 rounded-lg border text-red-600 font-bold">{generatedDevPasswords.admin}</span>
+                                 <button onClick={() => handleRetrievePassword(isEditing as string, 'admin')} disabled={retrievingPasswords.admin} className="px-3 py-1 bg-blue-100 text-blue-600 text-xs font-bold rounded-lg hover:bg-blue-200 disabled:opacity-50">
+                                     {retrievingPasswords.admin ? 'Retrieving...' : 'Retrieve Again'}
+                                 </button>
+                             </div>
                          </div>
                      )}
                      {generatedDevPasswords.temp && (
@@ -308,7 +405,12 @@ export default function DeveloperPage() {
                                  <span className="block text-xs font-bold text-slate-400 uppercase">Temporary Admin</span>
                                  <span className="font-bold text-slate-700">{devForm.temp_admin_email}</span>
                              </div>
-                             <span className="font-mono bg-white px-4 py-2 rounded-lg border text-red-600 font-bold">{generatedDevPasswords.temp}</span>
+                             <div className="flex items-center gap-3">
+                                 <span className="font-mono bg-white px-4 py-2 rounded-lg border text-red-600 font-bold">{generatedDevPasswords.temp}</span>
+                                 <button onClick={() => handleRetrievePassword(isEditing as string, 'temp')} disabled={retrievingPasswords.temp} className="px-3 py-1 bg-blue-100 text-blue-600 text-xs font-bold rounded-lg hover:bg-blue-200 disabled:opacity-50">
+                                     {retrievingPasswords.temp ? 'Retrieving...' : 'Retrieve Again'}
+                                 </button>
+                             </div>
                          </div>
                      )}
                  </div>
@@ -319,9 +421,9 @@ export default function DeveloperPage() {
                 {clinics.map(c => (
                     <div key={c.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-start">
                         <div>
-                            <h3 className="text-xl font-bold text-slate-800 mb-1">{c.name}</h3>
+                            <h3 className="text-xl font-bold text-slate-800 mb-1">{c.name?.toUpperCase()}</h3>
                             <div className="text-sm text-slate-500 mb-4 flex gap-4">
-                                <span><strong>Reg No:</strong> {c.registration_number || 'N/A'}</span>
+                                <span><strong>Reg No:</strong> {(c.registration_number || 'N/A').toUpperCase()}</span>
                                 <span><strong>Phone:</strong> {c.contact_number || 'N/A'}</span>
                             </div>
                             <div className="flex gap-6">
@@ -351,6 +453,8 @@ export default function DeveloperPage() {
                         </div>
                         <div className="flex flex-col gap-2">
                             <button onClick={() => openForm(c)} className="px-4 py-2 bg-slate-100 text-slate-700 text-sm font-bold rounded-lg hover:bg-slate-200">Modify Details</button>
+                            <button onClick={() => handleRetrievePassword(c.id, 'admin')} className="px-4 py-2 bg-orange-50 text-orange-600 text-sm font-bold rounded-lg hover:bg-orange-100">Primary Admin Password</button>
+                            <button onClick={() => handleRetrievePassword(c.id, 'temp')} className="px-4 py-2 bg-orange-50 text-orange-600 text-sm font-bold rounded-lg hover:bg-orange-100">Temp Admin Password</button>
                             <button onClick={() => handleDeleteClinic(c.id)} className="px-4 py-2 bg-red-50 text-red-600 text-sm font-bold rounded-lg hover:bg-red-100">Delete Clinic</button>
                         </div>
                     </div>

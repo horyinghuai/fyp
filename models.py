@@ -177,3 +177,18 @@ class ChatTemplate(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(100), nullable=False)
     message = Column(String, nullable=False)
+
+class TemporaryAdminPassword(Base):
+    __tablename__ = "temporary_admin_passwords"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
+    admin_type = Column(String(10), nullable=False)  # 'admin' or 'temp'
+    password = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    clinic = relationship("Clinic", back_populates="temp_passwords")
+    
+    __table_args__ = (
+        UniqueConstraint('clinic_id', 'admin_type', name='unique_clinic_admin'),
+    )
