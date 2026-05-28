@@ -624,12 +624,16 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     data = query.data
     if data == "reenter_ic":
+
+        # clear previous IC before reentering
+        context.user_data.pop('ic', None)
+
         if context.user_data.get('is_malaysian'):
-            await query.edit_message_text(
+            await query.message.reply_text(
                 "Please reenter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):"
             )
         else:
-            await query.edit_message_text(
+            await query.message.reply_text(
                 "Please reenter your Passport Number:"
             )
 
@@ -699,8 +703,8 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if data == "back_to_appt_list":
         return await show_patient_appointments(update, context, query=True)
     if data.startswith("modify_appt_"):
-        appt_id = data.replace("modify_appt_", "")
-        context.user_data['edit_appt_id'] = appt_id
+        stage_id = data.replace("modify_appt_", "")
+        context.user_data['edit_appt_id'] = stage_id
         context.user_data['editing_existing'] = True   # mark as editing existing appointment
         # Fetch appointment details and pre-fill the edit menu
         active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
@@ -710,7 +714,7 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
                 if res.status_code == 200:
                     appts = res.json()
-                    appt = next((a for a in appts if a['appt_id'] == appt_id), None)
+                    appt = next((a for a in appts if a['stage_id'] == stage_id), None)
                     if appt:
                         context.user_data['abort_appt_details'] = appt   # store for cancel/modify
                         # Store appointment data into user_data to pre-fill the edit flow
@@ -722,13 +726,75 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         context.user_data['book_date'] = appt['date']
                         context.user_data['book_time'] = f"{appt['date']} {appt['time']}"
                         context.user_data['is_editing'] = True
-                        context.user_data['original_appt_id'] = appt_id
+                        context.user_data['original_appt_id'] = stage_id
                         # Show the edit menu (will use handle_edit_menu_routing)
                         return await handle_edit_menu_routing(update, context)
             except Exception:
                 pass
-        await query.edit_message_text("Unable to load appointment for modification.")
-        return APPOINTMENT_SELECT
+        btns = [
+            [InlineKeyboardButton("🔙 Back to Appointment List", callback_data="back_to_appt_list")],
+            [InlineKeyboardButton("📩 Contact Clinic Admin", callback_data="contact_clinic_admin")]
+        ]
+
+        await query.edit_message_text(
+            "Unable to load appointment for modification.",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+
+        return APPOINTMENT_ACTION
+    
+    if data == "contact_clinic_admin":
+
+        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+        ic = context.user_data.get('ic')
+
+        template = """
+    🔄 APPOINTMENT MODIFICATION REQUEST
+
+    Hello Admin, I would like to request a change to my upcoming booking.
+
+    --- CURRENT BOOKING ---
+    Date: [Enter current booking date]
+    Time: [Enter current booking time]
+    Service: [Enter service]
+    Service Details: [Enter details]
+    Doctor: [Enter doctor]
+
+    --- MY REQUEST ---
+    Action Required: [Type MODIFY or CANCEL]
+    Reason (Optional): [Enter reason for change/cancellation]
+
+    --- IF MODIFYING, FILL NEW DETAILS ---
+    (Leave blank if keeping the original detail)
+
+    New Date: [Enter new date]
+    New Time: [Enter new time]
+    New Service: [Type VACCINE or BLOOD TEST or OTHERS]
+    New Service Details: [Enter new service details]
+    New Doctor: [Enter new doctor]
+
+    Thank you!
+    """
+
+        btns = [
+            [InlineKeyboardButton(
+                "📋 Paste Template",
+                switch_inline_query_current_chat=template
+            )],
+            [InlineKeyboardButton(
+                "🔙 Back to Appointment List",
+                callback_data="back_to_appt_list"
+            )]
+        ]
+
+        await query.edit_message_text(
+            "You can tap the button below to paste the modification request template into the chat field.\n\n"
+            "You may edit the details before sending it to the clinic admin.",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+
+        return APPOINTMENT_ACTION
+
     if data.startswith("cancel_appt_"):
         appt_id = data.replace("cancel_appt_", "")
         context.user_data['cancel_target_id'] = appt_id
