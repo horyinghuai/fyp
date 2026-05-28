@@ -1,3 +1,4 @@
+from multiprocessing import context
 import os
 import httpx
 import re
@@ -518,8 +519,20 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
         try:
             res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
             if res.status_code == 404:
-                msg = "❌ The IC number/Passport number inserted is not registered."
-                btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]]
+                is_my = context.user_data.get('is_malaysian')
+
+                if is_my:
+                    msg = "❌ The IC number inserted is not registered."
+                    btns = [
+                        [InlineKeyboardButton("Reenter your IC number", callback_data="reenter_ic")],
+                        [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]
+                    ]
+                else:
+                    msg = "❌ The Passport number inserted is not registered."
+                    btns = [
+                        [InlineKeyboardButton("Reenter your Passport number", callback_data="reenter_ic")],
+                        [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]
+                    ]
                 if query:
                     await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
                 else:
@@ -575,7 +588,7 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
             else:
                 detail = service
             label = f"{a['date']} {a['time'][:5]} - {detail}"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['appt_id']}")])
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['stage_id']}")])
     if past_appts_sorted:
         keyboard.append([InlineKeyboardButton("📅 Past Appointments (view only)", callback_data="noop")])
         for a in past_appts_sorted:
@@ -592,7 +605,7 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
             else:
                 detail = service
             label = f"{a['date']} {a['time'][:5]} - {detail}"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['appt_id']}")])
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['stage_id']}")])
 
     keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main")])
 
@@ -611,14 +624,21 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     data = query.data
     if data == "reenter_ic":
-        id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
-        await query.edit_message_text(f"Please enter your {id_label}:")
+        if context.user_data.get('is_malaysian'):
+            await query.edit_message_text(
+                "Please reenter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):"
+            )
+        else:
+            await query.edit_message_text(
+                "Please reenter your Passport Number:"
+            )
+
         return MAN_ID_CHECK
     if data == "back_to_main":
         return await proceed_with_start(update, context, query=True)
     if data.startswith("view_appt_"):
-        appt_id = data.replace("view_appt_", "")
-        context.user_data['selected_appt_id'] = appt_id
+        stage_id = data.replace("view_appt_", "")
+        context.user_data['selected_stage_id'] = stage_id
         active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
         ic = context.user_data.get('ic')
         async with httpx.AsyncClient() as client:
@@ -626,7 +646,7 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
                 res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
                 if res.status_code == 200:
                     appts = res.json()
-                    appt = next((a for a in appts if a['appt_id'] == appt_id), None)
+                    appt = next((a for a in appts if a['stage_id'] == stage_id), None)
                     if appt:
                         # Determine if appointment is in the future
                         from datetime import datetime
@@ -650,8 +670,19 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
                         
                         btns = []
                         if is_future:
-                            btns.append([InlineKeyboardButton("✏️ Modify Appointment", callback_data=f"modify_appt_{appt_id}")])
-                            btns.append([InlineKeyboardButton("❌ Cancel Appointment", callback_data=f"cancel_appt_{appt_id}")])
+                            btns.append([
+                                InlineKeyboardButton(
+                                    "✏️ Modify Appointment",
+                                    callback_data=f"modify_appt_{appt['stage_id']}"
+                                )
+                            ])
+
+                            btns.append([
+                                InlineKeyboardButton(
+                                    "❌ Cancel Appointment",
+                                    callback_data=f"cancel_appt_{appt['stage_id']}"
+                                )
+                            ])
                         btns.append([InlineKeyboardButton("🔙 Back to List", callback_data="back_to_appt_list")])
                         
                         await query.edit_message_text(details, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
@@ -877,16 +908,46 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # IC found, go to show_patient_appointments
                     return await show_patient_appointments(update, context, query=False)
                 else:
-                    # IC not found - show alert
-                    msg = "❌ The IC number/Passport number inserted is not registered."
-                    btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]]
-                    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+                    # IC / Passport not found
+                    if is_my:
+                        msg = "❌ The IC number inserted is not registered."
+                        btns = [
+                            [InlineKeyboardButton("Reenter your IC number", callback_data="reenter_ic")],
+                            [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]
+                        ]
+                    else:
+                        msg = "❌ The Passport number inserted is not registered."
+                        btns = [
+                            [InlineKeyboardButton("Reenter your Passport number", callback_data="reenter_ic")],
+                            [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]
+                        ]
+
+                    await update.message.reply_text(
+                        msg,
+                        reply_markup=InlineKeyboardMarkup(btns)
+                    )
+
                     return APPOINTMENT_SELECT
             except Exception as e:
                 logger.error(f"Error checking IC: {e}")
-                msg = "❌ The IC number/Passport number inserted is not registered."
-                btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]]
-                await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+                if is_my:
+                    msg = "❌ The IC number inserted is not registered."
+                    btns = [
+                        [InlineKeyboardButton("Reenter your IC number", callback_data="reenter_ic")],
+                        [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]
+                    ]
+                else:
+                    msg = "❌ The Passport number inserted is not registered."
+                    btns = [
+                        [InlineKeyboardButton("Reenter your Passport number", callback_data="reenter_ic")],
+                        [InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]
+                    ]
+
+                await update.message.reply_text(
+                    msg,
+                    reply_markup=InlineKeyboardMarkup(btns)
+                )
+
                 return APPOINTMENT_SELECT
 
     # For create booking flow, continue with full registration

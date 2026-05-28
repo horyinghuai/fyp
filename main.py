@@ -2097,6 +2097,7 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
         }
         res.append({
             "appt_id": str(appt.id),
+            "stage_id": str(stage.id),
             "service": service,
             "details": details_block,
             "date": stage.scheduled_time.strftime("%Y-%m-%d"),
