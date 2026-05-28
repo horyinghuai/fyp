@@ -625,7 +625,6 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     data = query.data
     if data == "reenter_ic":
 
-        # clear previous IC before reentering
         context.user_data.pop('ic', None)
 
         if context.user_data.get('is_malaysian'):
@@ -2172,7 +2171,12 @@ if __name__ == '__main__':
         ],
         states={
             REUSE_PATIENT: [CallbackQueryHandler(handle_reuse_choice, pattern="^reuse_")],
-            APPOINTMENT_SELECT: [CallbackQueryHandler(appointment_selected, pattern="^(view_appt_|back_to_main)")],
+            APPOINTMENT_SELECT: [
+                CallbackQueryHandler(
+                    appointment_selected,
+                    pattern="^(view_appt_|back_to_main|reenter_ic)"
+                )
+            ],
             APPOINTMENT_ACTION: [CallbackQueryHandler(appointment_action, pattern="^(modify_appt_|cancel_appt_|back_to_appt_list)")],
             START_CLINIC_SELECT: [CallbackQueryHandler(handle_start_clinic_select, pattern="^startclinic_")],
             NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],
