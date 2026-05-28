@@ -348,7 +348,7 @@ async def execute_cancellation(message, context, reason):
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/cancel-appointment/{appt_id}", json={"cancel_reason": reason}, timeout=5.0)
-            text = "✅ Appointment successfully cancelled."
+            text = "Booking is cancelled successfully"
             if hasattr(message, 'edit_text'): await message.edit_text(text)
             else: await message.reply_text(text)
         except Exception as e:
@@ -720,6 +720,16 @@ async def nat_choice_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nat_str = "Malaysian" if is_my else "Non-Malaysian"
     await query.edit_message_text(f"You selected: {nat_str}")
     
+    # For check booking details (first-time users), skip upload/manual choice and go direct to IC input
+    for_check = context.user_data.get('for_check', False)
+    if for_check:
+        if is_my:
+            await query.message.reply_text("Please enter your IC Number (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
+        else:
+            await query.message.reply_text("Please enter your Passport Number:")
+        return MAN_ID_CHECK
+    
+    # For new booking (existing flow)
     if is_my:
         btns = [[InlineKeyboardButton("Upload MyKad", callback_data="meth_photo")],
                 [InlineKeyboardButton("Enter Manually", callback_data="meth_manual")]]
@@ -841,6 +851,7 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = clean_bot_username(update.message.text)
     is_my = context.user_data.get('is_malaysian')
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+    for_check = context.user_data.get('for_check', False)
 
     if is_my:
         ic_digits = re.sub(r'\D', '', text)
@@ -849,13 +860,36 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return MAN_ID_CHECK
         formatted_id = f"{ic_digits[:6]}-{ic_digits[6:8]}-{ic_digits[8:]}"
         context.user_data['ic'] = formatted_id
-        context.user_data['gender'] = "FEMALE" if int(ic_digits[-1]) % 2 == 0 else "MALE"
-        context.user_data['nationality'] = "MALAYSIA"
+        if not for_check:
+            context.user_data['gender'] = "FEMALE" if int(ic_digits[-1]) % 2 == 0 else "MALE"
+            context.user_data['nationality'] = "MALAYSIA"
     else:
         context.user_data['ic'] = text
         
     if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
 
+    # For check booking details flow, check if IC exists and go directly to appointments
+    if for_check:
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(f"{API_BASE}/patient/{active_cid}/id/{context.user_data['ic']}", timeout=5.0)
+                if res.status_code == 200:
+                    # IC found, go to show_patient_appointments
+                    return await show_patient_appointments(update, context, query=False)
+                else:
+                    # IC not found - show alert
+                    msg = "❌ The IC number/Passport number inserted is not registered."
+                    btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Services", callback_data="back_to_main")]]
+                    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+                    return APPOINTMENT_SELECT
+            except Exception as e:
+                logger.error(f"Error checking IC: {e}")
+                msg = "❌ The IC number/Passport number inserted is not registered."
+                btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Services", callback_data="back_to_main")]]
+                await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+                return APPOINTMENT_SELECT
+
+    # For create booking flow, continue with full registration
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(f"{API_BASE}/patient/{active_cid}/id/{context.user_data['ic']}", timeout=5.0)
@@ -1770,7 +1804,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data.pop(key, None)
         
         # Show booking removed message
-        await query.edit_message_text("❌ Your draft booking has been cancelled successfully.")
+        await query.edit_message_text("Your draft booking has been cancelled successfully.")
         
         # Ask if anything else to help with
         btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
