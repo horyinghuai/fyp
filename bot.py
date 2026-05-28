@@ -342,6 +342,9 @@ async def execute_cancellation(message, context, reason):
     appt_id = context.user_data.get('cancel_target_id')
     if not appt_id: return ConversationHandler.END
 
+    # Apply sentence case to reason
+    reason = reason.capitalize() if reason else reason
+
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/cancel-appointment/{appt_id}", json={"cancel_reason": reason}, timeout=5.0)
@@ -515,14 +518,13 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
         try:
             res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
             if res.status_code == 404:
-                msg = "❌ This IC/Passport number is not registered in our clinic. Please re-enter your IC/Passport number."
+                msg = "❌ The IC number/Passport number inserted is not registered."
+                btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Services", callback_data="back_to_main")]]
                 if query:
-                    await update.callback_query.edit_message_text(msg)
+                    await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
                 else:
-                    await update.message.reply_text(msg)
-                id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
-                await update.effective_message.reply_text(f"Please enter your {id_label}:")
-                return MAN_ID_CHECK
+                    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+                return APPOINTMENT_SELECT
             elif res.status_code != 200:
                 msg = "No appointments found."
                 if query:
@@ -565,7 +567,8 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
                 detail = a.get('details', {}).get('reason', 'General')
             elif service == 'Vaccine':
                 items = a.get('details', {}).get('items', [])
-                detail = items[0] if items else 'Vaccine'
+                dose = a.get('details', {}).get('dose', '')
+                detail = f"{items[0]} {dose}" if items else 'Vaccine'
             elif service == 'Blood Test':
                 items = a.get('details', {}).get('items', [])
                 detail = ', '.join(items) if items else 'Blood Test'
@@ -581,7 +584,8 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
                 detail = a.get('details', {}).get('reason', 'General')
             elif service == 'Vaccine':
                 items = a.get('details', {}).get('items', [])
-                detail = items[0] if items else 'Vaccine'
+                dose = a.get('details', {}).get('dose', '')
+                detail = f"{items[0]} {dose}" if items else 'Vaccine'
             elif service == 'Blood Test':
                 items = a.get('details', {}).get('items', [])
                 detail = ', '.join(items) if items else 'Blood Test'
@@ -606,6 +610,10 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     data = query.data
+    if data == "reenter_ic":
+        id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
+        await query.edit_message_text(f"Please enter your {id_label}:")
+        return MAN_ID_CHECK
     if data == "back_to_main":
         return await proceed_with_start(update, context, query=True)
     if data.startswith("view_appt_"):
@@ -1215,9 +1223,6 @@ async def route_back_v_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if context.user_data.get('is_editing'):
-        return await handle_edit_menu_routing(update, context)
-    
     context.user_data['service'] = 'Vaccine'
     vaccines = context.user_data.get('vaccines_list', [])
     types = list(set(v.get('type', 'General').strip() for v in vaccines))
@@ -1758,12 +1763,19 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
             return await show_booking_summary(update, context)
 
     elif choice == "cancel":
-        # Only for create booking: discard draft and go to main menu
+        # Only for create booking: discard draft and show confirmation
         context.user_data['is_editing'] = False
         context.user_data['editing_existing'] = False
         for key in ['service', 'selected_items', 'dose', 'general_notes', 'doctor_pref', 'book_date', 'book_time', 'assigned_doctor_name', 'assigned_doctor_id']:
             context.user_data.pop(key, None)
-        return await show_main_services(query.message, context)
+        
+        # Show booking removed message
+        await query.edit_message_text("❌ Your draft booking has been cancelled successfully.")
+        
+        # Ask if anything else to help with
+        btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+        await query.message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+        return FINAL_HELP
 
     elif choice == "service":
         return await show_main_services(query.message, context)
@@ -1778,7 +1790,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
             prev_reason = context.user_data.get('general_notes', '')
             btns = [
                 [InlineKeyboardButton("✏️ Tap here to Edit", switch_inline_query_current_chat=prev_reason)],
-                [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")]
+                [InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="back_edit_menu")]
             ]
             msg = f"Your current reason is:\n\n*{prev_reason}*\n\nTo modify, click the edit button below, then send the updated reason."
             await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
@@ -2048,7 +2060,11 @@ if __name__ == '__main__':
                 CallbackQueryHandler(main_menu_logic, pattern="^main_"),
                 CallbackQueryHandler(service_choice, pattern="^svc_")
             ],
-            OTHERS_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, others_reason)],
+            OTHERS_REASON: [
+                CallbackQueryHandler(handle_booking_edit, pattern="^editbook_abort_edit$"),
+                CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, others_reason)
+            ],
             V_TYPE: [
                 CallbackQueryHandler(vaccine_type_selected, pattern="^vtype_"),
                 CallbackQueryHandler(restart_service, pattern="^back_start$")
