@@ -519,7 +519,7 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
             res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
             if res.status_code == 404:
                 msg = "❌ The IC number/Passport number inserted is not registered."
-                btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Services", callback_data="back_to_main")]]
+                btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]]
                 if query:
                     await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
                 else:
@@ -879,13 +879,13 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     # IC not found - show alert
                     msg = "❌ The IC number/Passport number inserted is not registered."
-                    btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Services", callback_data="back_to_main")]]
+                    btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]]
                     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
                     return APPOINTMENT_SELECT
             except Exception as e:
                 logger.error(f"Error checking IC: {e}")
                 msg = "❌ The IC number/Passport number inserted is not registered."
-                btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Services", callback_data="back_to_main")]]
+                btns = [[InlineKeyboardButton("Reenter your IC/Passport number", callback_data="reenter_ic"), InlineKeyboardButton("Back to Main Menu", callback_data="back_to_main")]]
                 await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
                 return APPOINTMENT_SELECT
 
