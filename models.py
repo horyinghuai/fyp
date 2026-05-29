@@ -180,18 +180,8 @@ class ChatTemplate(Base):
 
 class TemporaryAdminPassword(Base):
     __tablename__ = "temporary_admin_passwords"
-    
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
-    admin_type = Column(String(10), nullable=False)  # 'admin' or 'temp'
+    admin_type = Column(String(10), nullable=False)
     password = Column(String(255), nullable=False)
-    created_at = Column(
-        DateTime,
-        default=datetime.datetime.utcnow
-    )
-    
-    clinic = relationship("Clinic", back_populates="temp_passwords")
-    
-    __table_args__ = (
-        UniqueConstraint('clinic_id', 'admin_type', name='unique_clinic_admin'),
-    )
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

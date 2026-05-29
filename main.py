@@ -141,6 +141,14 @@ app.add_middleware(
 )
 
 # --- Pydantic Models ---
+class RequestEmailChangeReq(BaseModel):
+    current_password: str
+    new_email: str
+
+class VerifyEmailChangeReq(BaseModel):
+    new_email: str
+    code: str
+
 class CheckEmailReq(BaseModel):
     email: str
 
@@ -776,6 +784,11 @@ def register_clinic(data: ClinicRegistrationReq, db: Session = Depends(get_db), 
             )
             db.add(t_staff)
 
+        if admin_pwd:
+            db.add(models.TemporaryAdminPassword(clinic_id=new_clinic.id, admin_type='admin', password=admin_pwd))
+        if temp_admin_pwd:
+            db.add(models.TemporaryAdminPassword(clinic_id=new_clinic.id, admin_type='temp', password=temp_admin_pwd))
+            
         db.commit()
         return {
             "status": "success", 
@@ -873,6 +886,16 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
             else:
                 new_t_staff = models.ClinicStaff(ic_passport_number=data.temp_admin_ic, clinic_id=clinic_id, role='temporary_admin', status=data.temp_admin_status or 'inactive', assigned_by=data.admin_ic, permissions='ALL')
                 db.add(new_t_staff)
+
+        if admin_pwd:
+            tap_admin = db.query(models.TemporaryAdminPassword).filter_by(clinic_id=clinic_id, admin_type='admin').first()
+            if tap_admin: tap_admin.password = admin_pwd
+            else: db.add(models.TemporaryAdminPassword(clinic_id=clinic_id, admin_type='admin', password=admin_pwd))
+            
+        if temp_admin_pwd:
+            tap_temp = db.query(models.TemporaryAdminPassword).filter_by(clinic_id=clinic_id, admin_type='temp').first()
+            if tap_temp: tap_temp.password = temp_admin_pwd
+            else: db.add(models.TemporaryAdminPassword(clinic_id=clinic_id, admin_type='temp', password=temp_admin_pwd))
 
         db.commit()
         return {
@@ -990,6 +1013,75 @@ def update_self_profile(data: UserSelfUpdateReq, db: Session = Depends(get_db), 
         user.password_hash = get_password_hash(data.password)
     db.commit()
     return {"status": "success", "name": user.name}
+
+@app.post("/admin/clinics/{clinic_id}/retrieve-password/{admin_type}")
+def retrieve_temp_password(clinic_id: str, admin_type: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != 'developer':
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    tap = db.query(models.TemporaryAdminPassword).filter_by(clinic_id=clinic_id, admin_type=admin_type).first()
+    if not tap:
+        raise HTTPException(status_code=404, detail="Password not found. The user may have already logged in and changed it.")
+        
+    return {"status": "success", "password": tap.password}
+
+@app.post("/admin/request-email-change")
+async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
+    if not verify_password(req.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect current password.")
+    
+    conflict = db.query(models.User).filter(models.User.email == req.new_email).first()
+    if conflict:
+        raise HTTPException(status_code=400, detail="This email is already in use by another account.")
+        
+    code = ''.join(random.choices(string.digits, k=6))
+    hashed_code = get_password_hash(code)
+    
+    db.query(models.VerificationCode).filter_by(ic_passport_number=user.ic_passport_number, used=False).update({"used": True})
+    v_code = models.VerificationCode(ic_passport_number=user.ic_passport_number, code_hash=hashed_code, expires_at=datetime.utcnow() + timedelta(minutes=15))
+    db.add(v_code)
+    db.commit()
+    
+    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+    sendgrid_from_email = os.getenv("SENDGRID_FROM_EMAIL")
+    if sendgrid_api_key and sendgrid_from_email:
+        try:
+            email_data = {
+                "personalizations": [{"to": [{"email": req.new_email}], "subject": "AICAS Email Update Verification"}],
+                "from": {"email": sendgrid_from_email, "name": "AICAS System"},
+                "content": [{"type": "text/plain", "value": f"Your verification code to update your email is: {code}\nThis code expires in 15 minutes."}]
+            }
+            async with httpx.AsyncClient() as client:
+                await client.post("https://api.sendgrid.com/v3/mail/send", headers={"Authorization": f"Bearer {sendgrid_api_key}", "Content-Type": "application/json"}, json=email_data)
+        except: pass
+    else:
+        print(f"\n========== MOCK EMAIL VERIFICATION ==========")
+        print(f"To: {req.new_email}\nCode: {code}")
+        print("=============================================\n")
+        
+    return {"status": "success"}
+
+@app.post("/admin/verify-email-change")
+def verify_email_change(req: VerifyEmailChangeReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
+    
+    v_code = db.query(models.VerificationCode).filter(
+        models.VerificationCode.ic_passport_number == user.ic_passport_number,
+        models.VerificationCode.used == False,
+        models.VerificationCode.expires_at > datetime.utcnow()
+    ).order_by(models.VerificationCode.created_at.desc()).first()
+    
+    if not v_code or not verify_password(req.code, v_code.code_hash):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+        
+    conflict = db.query(models.User).filter(models.User.email == req.new_email).first()
+    if conflict: raise HTTPException(status_code=400, detail="This email is already in use by another account.")
+    
+    user.email = req.new_email
+    v_code.used = True
+    db.commit()
+    return {"status": "success"}
 
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
