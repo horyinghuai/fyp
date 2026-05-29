@@ -17,6 +17,7 @@ export default function SettingsPage() {
   // Email Modal States
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [emailPhase, setEmailPhase] = useState<'password' | 'code'>('password');
+  const [newEmailTarget, setNewEmailTarget] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [modalError, setModalError] = useState('');
@@ -90,24 +91,13 @@ export default function SettingsPage() {
       return setStatus({ type: 'error', text: 'Password requirements not met.' });
     }
 
-    if (formData.email !== originalEmail) {
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
-            return setStatus({ type: 'error', text: 'Invalid email format.' });
-        }
-        setCurrentPassword('');
-        setVerifyCode('');
-        setModalError('');
-        setEmailPhase('password');
-        setShowEmailModal(true);
-        return;
-    }
-
     await proceedWithUpdate(false);
   };
 
   const handleRequestEmailChange = async () => {
       setModalError('');
-      if (!currentPassword) return setModalError('Current password is required.');
+      if (!newEmailTarget || !currentPassword) return setModalError('New email and current password are required.');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmailTarget)) return setModalError('Invalid email format.');
 
       setIsLoading(true);
       const token = localStorage.getItem('aicas_token');
@@ -115,7 +105,7 @@ export default function SettingsPage() {
           const res = await fetch('http://127.0.0.1:8000/admin/request-email-change', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ current_password: currentPassword, new_email: formData.email })
+              body: JSON.stringify({ current_password: currentPassword, new_email: newEmailTarget })
           });
           const data = await res.json();
           if (res.ok) {
@@ -139,12 +129,23 @@ export default function SettingsPage() {
           const res = await fetch('http://127.0.0.1:8000/admin/verify-email-change', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ new_email: formData.email, code: verifyCode })
+              body: JSON.stringify({ new_email: newEmailTarget, code: verifyCode })
           });
           const data = await res.json();
           if (res.ok) {
               setShowEmailModal(false);
-              await proceedWithUpdate(true);
+              
+              // Update local state and localStorage immediately
+              const userStr = localStorage.getItem('aicas_user');
+              if(userStr) {
+                  const user = JSON.parse(userStr);
+                  user.email = newEmailTarget;
+                  localStorage.setItem('aicas_user', JSON.stringify(user));
+              }
+              setFormData(f => ({ ...f, email: newEmailTarget }));
+              setOriginalEmail(newEmailTarget);
+              setStatus({ type: 'success', text: 'Email successfully updated!' });
+              window.dispatchEvent(new Event('storage'));
           } else {
               setModalError(data.detail || 'Invalid or expired code.');
           }
@@ -187,13 +188,28 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-2">Email Address (Login ID)</label>
-              <input 
-                type="email" 
-                value={formData.email || ''} 
-                onChange={(e) => setFormData({...formData, email: e.target.value})} 
-                className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50"
-                required
-              />
+              <div className="flex gap-3">
+                  <input 
+                    type="email" 
+                    value={formData.email || ''} 
+                    readOnly
+                    className="flex-1 p-3 border rounded-xl outline-none bg-slate-100 text-slate-500 cursor-not-allowed"
+                  />
+                  <button 
+                    type="button" 
+                    onClick={() => {
+                        setShowEmailModal(true);
+                        setEmailPhase('password');
+                        setNewEmailTarget('');
+                        setCurrentPassword('');
+                        setVerifyCode('');
+                        setModalError('');
+                    }}
+                    className="px-5 py-3 bg-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-300 transition whitespace-nowrap"
+                  >
+                      Change Email
+                  </button>
+              </div>
             </div>
           </div>
 
@@ -256,7 +272,14 @@ export default function SettingsPage() {
                 
                 {emailPhase === 'password' ? (
                     <>
-                        <p className="text-sm text-slate-600 mb-4">To change your email to <strong>{formData.email}</strong>, please enter your current password.</p>
+                        <p className="text-sm text-slate-600 mb-4">To change your email, please enter your new email address and current password.</p>
+                        <input 
+                            type="email" 
+                            placeholder="New Email Address" 
+                            value={newEmailTarget} 
+                            onChange={e => setNewEmailTarget(e.target.value)} 
+                            className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 mb-3" 
+                        />
                         <input 
                             type="password" 
                             placeholder="Current Password" 
@@ -265,13 +288,13 @@ export default function SettingsPage() {
                             className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 mb-6" 
                         />
                         <div className="flex gap-3">
-                            <button onClick={() => { setShowEmailModal(false); setFormData({...formData, email: originalEmail}); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
+                            <button onClick={() => setShowEmailModal(false)} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
                             <button onClick={handleRequestEmailChange} disabled={isLoading} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition disabled:opacity-50">Continue</button>
                         </div>
                     </>
                 ) : (
                     <>
-                        <p className="text-sm text-slate-600 mb-4">A 6-digit verification code has been sent to <strong>{formData.email}</strong>.</p>
+                        <p className="text-sm text-slate-600 mb-4">A 6-digit verification code has been sent to <strong>{newEmailTarget}</strong>.</p>
                         <input 
                             type="text" 
                             placeholder="------" 
@@ -281,7 +304,7 @@ export default function SettingsPage() {
                             className="w-full p-4 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 mb-6 font-mono tracking-[1em] text-center text-2xl" 
                         />
                         <div className="flex gap-3">
-                            <button onClick={() => { setShowEmailModal(false); setFormData({...formData, email: originalEmail}); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
+                            <button onClick={() => setShowEmailModal(false)} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
                             <button onClick={handleVerifyEmailChange} disabled={isLoading} className="flex-1 bg-emerald-600 text-white font-bold py-3 rounded-xl hover:bg-emerald-700 transition disabled:opacity-50">Verify & Save</button>
                         </div>
                     </>
