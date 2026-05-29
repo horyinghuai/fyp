@@ -185,7 +185,10 @@ class TemporaryAdminPassword(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     admin_type = Column(String(10), nullable=False)  # 'admin' or 'temp'
     password = Column(String(255), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(
+        DateTime,
+        default=datetime.datetime.utcnow
+    )
     
     clinic = relationship("Clinic", back_populates="temp_passwords")
     
