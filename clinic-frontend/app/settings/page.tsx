@@ -21,6 +21,9 @@ export default function SettingsPage() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [modalError, setModalError] = useState('');
+  
+  // Timer State
+  const [resendTimer, setResendTimer] = useState(0);
 
   useEffect(() => {
       const userStr = localStorage.getItem('aicas_user');
@@ -34,6 +37,17 @@ export default function SettingsPage() {
           setOriginalEmail(user.email || '');
       }
   }, []);
+
+  // Handle the countdown timer
+  useEffect(() => {
+      let timer: NodeJS.Timeout;
+      if (resendTimer > 0 && emailPhase === 'code') {
+          timer = setInterval(() => {
+              setResendTimer(prev => prev - 1);
+          }, 1000);
+      }
+      return () => clearInterval(timer);
+  }, [resendTimer, emailPhase]);
 
   const reqs = {
     length: formData.newPassword.length >= 8,
@@ -94,7 +108,7 @@ export default function SettingsPage() {
     await proceedWithUpdate(false);
   };
 
-  const handleRequestEmailChange = async () => {
+  const handleRequestEmailChange = async (isResend = false) => {
       setModalError('');
       if (!newEmailTarget || !currentPassword) return setModalError('New email and current password are required.');
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmailTarget)) return setModalError('Invalid email format.');
@@ -110,6 +124,7 @@ export default function SettingsPage() {
           const data = await res.json();
           if (res.ok) {
               setEmailPhase('code');
+              setResendTimer(15); // Start the 15-second countdown
           } else {
               setModalError(data.detail || 'Failed to request change.');
           }
@@ -306,14 +321,14 @@ export default function SettingsPage() {
 
                         <div className="flex gap-3">
                             <button onClick={() => setShowEmailModal(false)} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
-                            <button onClick={handleRequestEmailChange} disabled={isLoading} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition disabled:opacity-50">Continue</button>
+                            <button onClick={() => handleRequestEmailChange(false)} disabled={isLoading} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition disabled:opacity-50">Continue</button>
                         </div>
                     </>
                 ) : (
                     <>
                         <p className="text-sm text-slate-600 mb-4">A 6-digit verification code has been sent to <strong>{newEmailTarget}</strong>.</p>
                         
-                        <div className="mb-6">
+                        <div className="mb-2">
                             <label className="block text-sm font-bold text-slate-700 mb-1">Verification Code</label>
                             <input 
                                 type="text" 
@@ -323,6 +338,18 @@ export default function SettingsPage() {
                                 maxLength={6}
                                 className="w-full p-4 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 font-mono tracking-[1em] text-center text-2xl" 
                             />
+                        </div>
+                        
+                        {/* 15-Second Resend Countdown */}
+                        <div className="text-sm text-center mb-6">
+                            <span className="text-slate-500">Didn't receive the code? </span>
+                            {resendTimer > 0 ? (
+                                <span className="font-bold text-slate-400">Resend in {resendTimer}s</span>
+                            ) : (
+                                <button type="button" onClick={() => handleRequestEmailChange(true)} disabled={isLoading} className="font-bold text-blue-600 hover:text-blue-700 hover:underline">
+                                    Resend Code
+                                </button>
+                            )}
                         </div>
                         
                         <div className="flex gap-3">

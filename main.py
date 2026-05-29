@@ -1056,7 +1056,7 @@ def retrieve_temp_password(clinic_id: str, admin_type: str, db: Session = Depend
 
 @app.post("/admin/request-email-change")
 async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    import random, string, httpx
+    import random, string, httpx, os
     from datetime import datetime, timedelta
     
     try:
@@ -1087,13 +1087,17 @@ async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends
         sendgrid_from_email = os.getenv("SENDGRID_FROM_EMAIL")
         if sendgrid_api_key and sendgrid_from_email:
             try:
+                # FIX: Moved 'subject' to the root to prevent SendGrid 400 Bad Request rejections
                 email_data = {
-                    "personalizations": [{"to": [{"email": req.new_email}], "subject": "AICAS Email Update Verification"}],
+                    "personalizations": [{"to": [{"email": req.new_email}]}],
                     "from": {"email": sendgrid_from_email, "name": "AICAS System"},
+                    "subject": "AICAS Email Update Verification",
                     "content": [{"type": "text/plain", "value": f"Your verification code to update your email is: {code}\nThis code expires in 15 minutes."}]
                 }
                 async with httpx.AsyncClient() as client:
-                    await client.post("https://api.sendgrid.com/v3/mail/send", headers={"Authorization": f"Bearer {sendgrid_api_key}", "Content-Type": "application/json"}, json=email_data)
+                    res = await client.post("https://api.sendgrid.com/v3/mail/send", headers={"Authorization": f"Bearer {sendgrid_api_key}", "Content-Type": "application/json"}, json=email_data)
+                    if res.status_code >= 400:
+                        print(f"SendGrid Error: {res.text}")
             except Exception as e:
                 print(f"Failed to send email via SendGrid: {e}")
         else:

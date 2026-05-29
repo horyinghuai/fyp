@@ -199,7 +199,7 @@ export default function DeveloperPage() {
               } else {
                   const err = await res.json();
                   if (err.detail === "EMAIL_MISMATCH" || err.detail?.includes("EMAIL_MISMATCH")) {
-                      if (window.confirm("The IC number entered is currently linked to a DIFFERENT email address in another clinic. Do you want to overwrite their email globally to the new one you provided? (This will reset their password)")) {
+                      if (window.confirm("Are you sure you want to overwrite the email address for this user globally? (This will reset their password)")) {
                           submitPayload(true);
                       } else {
                           setStatusMsg({ type: 'error', text: 'Action cancelled. Original email restored.' });
