@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { CheckCircle2, XCircle } from 'lucide-react';
 
 export default function SettingsPage() {
+  const [originalEmail, setOriginalEmail] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -12,6 +13,13 @@ export default function SettingsPage() {
   });
   const [status, setStatus] = useState({ type: '', text: '' });
   const [isLoading, setIsLoading] = useState(false);
+
+  // Email Modal States
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailPhase, setEmailPhase] = useState<'password' | 'code'>('password');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [verifyCode, setVerifyCode] = useState('');
+  const [modalError, setModalError] = useState('');
 
   useEffect(() => {
       const userStr = localStorage.getItem('aicas_user');
@@ -22,6 +30,7 @@ export default function SettingsPage() {
               name: user.name || '', 
               email: user.email || '' 
           }));
+          setOriginalEmail(user.email || '');
       }
   }, []);
 
@@ -36,29 +45,17 @@ export default function SettingsPage() {
   
   const isPasswordValid = formData.newPassword === '' || Object.values(reqs).every(Boolean);
 
-  const handleUpdate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setStatus({ type: '', text: '' });
-
-    if (!isPasswordValid) {
-      return setStatus({ type: 'error', text: 'Password requirements not met.' });
-    }
-
+  const proceedWithUpdate = async (emailAlreadyUpdated: boolean) => {
     setIsLoading(true);
-    
     const token = localStorage.getItem('aicas_token');
     try {
+        const payload: any = { name: formData.name || '', email: formData.email || '' };
+        if (formData.newPassword) payload.password = formData.newPassword;
+
         const res = await fetch(`http://127.0.0.1:8000/admin/profile`, {
             method: 'PUT',
-            headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-                name: formData.name || '',
-                email: formData.email || '',
-                password: formData.newPassword || undefined
-            })
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify(payload)
         });
         
         if (res.ok) {
@@ -67,11 +64,13 @@ export default function SettingsPage() {
             if(userStr) {
                 const user = JSON.parse(userStr);
                 user.name = data.name;
+                user.email = formData.email;
                 localStorage.setItem('aicas_user', JSON.stringify(user));
             }
             
-            setStatus({ type: 'success', text: 'Profile updated successfully.' });
+            setStatus({ type: 'success', text: emailAlreadyUpdated ? 'Email and profile updated successfully!' : 'Profile updated successfully.' });
             setFormData(f => ({ ...f, newPassword: '', confirmPassword: '' }));
+            setOriginalEmail(formData.email);
             window.dispatchEvent(new Event('storage'));
         } else {
             const err = await res.json();
@@ -80,8 +79,79 @@ export default function SettingsPage() {
     } catch (e) {
         setStatus({ type: 'error', text: 'Server error.' });
     }
-    
     setIsLoading(false);
+  };
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStatus({ type: '', text: '' });
+
+    if (!isPasswordValid) {
+      return setStatus({ type: 'error', text: 'Password requirements not met.' });
+    }
+
+    if (formData.email !== originalEmail) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+            return setStatus({ type: 'error', text: 'Invalid email format.' });
+        }
+        setCurrentPassword('');
+        setVerifyCode('');
+        setModalError('');
+        setEmailPhase('password');
+        setShowEmailModal(true);
+        return;
+    }
+
+    await proceedWithUpdate(false);
+  };
+
+  const handleRequestEmailChange = async () => {
+      setModalError('');
+      if (!currentPassword) return setModalError('Current password is required.');
+
+      setIsLoading(true);
+      const token = localStorage.getItem('aicas_token');
+      try {
+          const res = await fetch('http://127.0.0.1:8000/admin/request-email-change', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({ current_password: currentPassword, new_email: formData.email })
+          });
+          const data = await res.json();
+          if (res.ok) {
+              setEmailPhase('code');
+          } else {
+              setModalError(data.detail || 'Failed to request change.');
+          }
+      } catch (err) {
+          setModalError('Server error. Please try again.');
+      }
+      setIsLoading(false);
+  };
+
+  const handleVerifyEmailChange = async () => {
+      setModalError('');
+      if (!verifyCode) return setModalError('Verification code is required.');
+      
+      setIsLoading(true);
+      const token = localStorage.getItem('aicas_token');
+      try {
+          const res = await fetch('http://127.0.0.1:8000/admin/verify-email-change', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({ new_email: formData.email, code: verifyCode })
+          });
+          const data = await res.json();
+          if (res.ok) {
+              setShowEmailModal(false);
+              await proceedWithUpdate(true);
+          } else {
+              setModalError(data.detail || 'Invalid or expired code.');
+          }
+      } catch (err) {
+          setModalError('Server error. Please try again.');
+      }
+      setIsLoading(false);
   };
 
   const ReqItem = ({ met, text }: { met: boolean, text: string }) => (
@@ -173,6 +243,52 @@ export default function SettingsPage() {
           </div>
         </form>
       </div>
+
+      {showEmailModal && (
+        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
+            <div className="bg-white p-8 rounded-2xl w-[450px] shadow-2xl">
+                <h3 className="text-xl font-bold text-slate-800 mb-4 border-b pb-2">Verify Email Change</h3>
+                {modalError && (
+                    <div className="p-3 rounded-lg mb-4 text-sm font-bold bg-red-100 text-red-700">
+                        {modalError}
+                    </div>
+                )}
+                
+                {emailPhase === 'password' ? (
+                    <>
+                        <p className="text-sm text-slate-600 mb-4">To change your email to <strong>{formData.email}</strong>, please enter your current password.</p>
+                        <input 
+                            type="password" 
+                            placeholder="Current Password" 
+                            value={currentPassword} 
+                            onChange={e => setCurrentPassword(e.target.value)} 
+                            className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 mb-6" 
+                        />
+                        <div className="flex gap-3">
+                            <button onClick={() => { setShowEmailModal(false); setFormData({...formData, email: originalEmail}); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
+                            <button onClick={handleRequestEmailChange} disabled={isLoading} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition disabled:opacity-50">Continue</button>
+                        </div>
+                    </>
+                ) : (
+                    <>
+                        <p className="text-sm text-slate-600 mb-4">A 6-digit verification code has been sent to <strong>{formData.email}</strong>.</p>
+                        <input 
+                            type="text" 
+                            placeholder="------" 
+                            value={verifyCode} 
+                            onChange={e => setVerifyCode(e.target.value)} 
+                            maxLength={6}
+                            className="w-full p-4 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 mb-6 font-mono tracking-[1em] text-center text-2xl" 
+                        />
+                        <div className="flex gap-3">
+                            <button onClick={() => { setShowEmailModal(false); setFormData({...formData, email: originalEmail}); }} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
+                            <button onClick={handleVerifyEmailChange} disabled={isLoading} className="flex-1 bg-emerald-600 text-white font-bold py-3 rounded-xl hover:bg-emerald-700 transition disabled:opacity-50">Verify & Save</button>
+                        </div>
+                    </>
+                )}
+            </div>
+        </div>
+      )}
     </div>
   );
 }

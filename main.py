@@ -572,6 +572,13 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
         
         if user.password_hash == data.temp_password or verify_password(data.temp_password, user.password_hash):
             user.password_hash = get_password_hash(data.new_password)
+            
+            # Delete used temporary password
+            db.query(models.TemporaryAdminPassword).filter(
+                models.TemporaryAdminPassword.clinic_id == 'dev',
+                models.TemporaryAdminPassword.password == data.temp_password
+            ).delete()
+            
             db.commit()
             access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
             access_token = create_access_token(
@@ -590,6 +597,13 @@ def force_password_reset(data: FirstLoginResetReq, db: Session = Depends(get_db)
     
     if user.password_hash == data.temp_password or verify_password(data.temp_password, user.password_hash):
         user.password_hash = get_password_hash(data.new_password)
+        
+        # Delete used temporary password
+        db.query(models.TemporaryAdminPassword).filter(
+            models.TemporaryAdminPassword.clinic_id == data.clinic_id,
+            models.TemporaryAdminPassword.password == data.temp_password
+        ).delete()
+        
         db.commit()
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -914,7 +928,22 @@ def update_clinic(clinic_id: str, data: ClinicRegistrationReq, db: Session = Dep
 def delete_clinic(clinic_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     if current_user.role != 'developer':
         raise HTTPException(status_code=403, detail="Not authorized")
+        
+    # Find admins of this clinic before deleting it
+    staff_records = db.query(models.ClinicStaff).filter(
+        models.ClinicStaff.clinic_id == clinic_id,
+        models.ClinicStaff.role.in_(['primary_admin', 'temporary_admin'])
+    ).all()
+    admin_ics = [s.ic_passport_number for s in staff_records]
+
     db.query(models.Clinic).filter(models.Clinic.id == clinic_id).delete()
+    
+    # Clean up their User table records if they aren't part of any other clinic
+    for ic in admin_ics:
+        other_staff = db.query(models.ClinicStaff).filter(models.ClinicStaff.ic_passport_number == ic).first()
+        if not other_staff:
+            db.query(models.User).filter(models.User.ic_passport_number == ic).delete()
+            
     db.commit()
     return {"status": "success"}
     

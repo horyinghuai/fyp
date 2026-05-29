@@ -18,12 +18,6 @@ export default function DeveloperPage() {
   const [generatedDevPasswords, setGeneratedDevPasswords] = useState<any>(null);
   const [retrievingPasswords, setRetrievingPasswords] = useState<{ admin?: boolean, temp?: boolean }>({});
 
-  // --- Profile Settings States ---
-  const [showProfile, setShowProfile] = useState(false);
-  const [profileData, setProfileData] = useState({ email: '', currentPassword: '', newEmail: '', code: '' });
-  const [profilePhase, setProfilePhase] = useState<'idle' | 'verifying'>('idle');
-  const [profileMsg, setProfileMsg] = useState({ type: '', text: '' });
-
   const fetchClinics = async () => {
       const token = localStorage.getItem('aicas_token');
       try {
@@ -62,7 +56,6 @@ export default function DeveloperPage() {
       else if (cleaned.startsWith('0')) cleaned = cleaned.substring(1);
       
       if (!/^(1[0-9]{8,9}|[2-9][0-9]{7,8})$/.test(cleaned)) return null;
-
       return `+60${cleaned}`;
   };
 
@@ -258,10 +251,8 @@ export default function DeveloperPage() {
           if (res.ok) {
               const data = await res.json();
               if (generatedDevPasswords) {
-                  // Re-renders the password inside the creation success UI block
                   setGeneratedDevPasswords({ ...generatedDevPasswords, [adminType]: data.password });
               } else {
-                  // Pops an alert if retrieving directly from the clinic list
                   const roleName = adminType === 'admin' ? "Primary Admin" : "Temporary Admin";
                   alert(`Retrieved Password for ${roleName}:\n\n${data.password}\n\nPlease copy this and securely share it.`);
               }
@@ -275,69 +266,6 @@ export default function DeveloperPage() {
       setRetrievingPasswords({ ...retrievingPasswords, [adminType]: false });
   };
 
-  // --- Profile Logic ---
-  const openProfile = () => {
-      const user = JSON.parse(localStorage.getItem('aicas_user') || '{}');
-      setProfileData({ email: user.email || '', currentPassword: '', newEmail: '', code: '' });
-      setProfilePhase('idle');
-      setProfileMsg({ type: '', text: '' });
-      setShowProfile(true);
-  };
-
-  const handleRequestEmailChange = async () => {
-      setProfileMsg({ type: '', text: '' });
-      if (!profileData.newEmail || !profileData.currentPassword) {
-          return setProfileMsg({ type: 'error', text: 'New email and current password are required.' });
-      }
-      if (!validateEmail(profileData.newEmail)) return setProfileMsg({ type: 'error', text: 'Invalid new email format.' });
-      
-      const token = localStorage.getItem('aicas_token');
-      try {
-          const res = await fetch('http://127.0.0.1:8000/admin/request-email-change', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ current_password: profileData.currentPassword, new_email: profileData.newEmail })
-          });
-          const data = await res.json();
-          if (res.ok) {
-              setProfilePhase('verifying');
-              setProfileMsg({ type: 'success', text: 'Verification code sent to your new email.' });
-          } else {
-              setProfileMsg({ type: 'error', text: data.detail || 'Failed to request change.' });
-          }
-      } catch (err) {
-          setProfileMsg({ type: 'error', text: 'Server error. Please try again.' });
-      }
-  };
-
-  const handleVerifyEmailChange = async () => {
-      setProfileMsg({ type: '', text: '' });
-      if (!profileData.code) return setProfileMsg({ type: 'error', text: 'Verification code is required.' });
-      
-      const token = localStorage.getItem('aicas_token');
-      try {
-          const res = await fetch('http://127.0.0.1:8000/admin/verify-email-change', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ new_email: profileData.newEmail, code: profileData.code })
-          });
-          const data = await res.json();
-          if (res.ok) {
-              setProfilePhase('idle');
-              setProfileData({ ...profileData, email: profileData.newEmail, newEmail: '', currentPassword: '', code: '' });
-              setProfileMsg({ type: 'success', text: 'Email successfully updated!' });
-              
-              const user = JSON.parse(localStorage.getItem('aicas_user') || '{}');
-              user.email = profileData.newEmail;
-              localStorage.setItem('aicas_user', JSON.stringify(user));
-          } else {
-              setProfileMsg({ type: 'error', text: data.detail || 'Invalid or expired code.' });
-          }
-      } catch (err) {
-          setProfileMsg({ type: 'error', text: 'Server error. Please try again.' });
-      }
-  };
-
   if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
 
   return (
@@ -348,7 +276,6 @@ export default function DeveloperPage() {
                  <p className="text-slate-500 mt-1 text-sm">Manage Active Clinics & Master Admins</p>
              </div>
              <div className="flex gap-3">
-                 {!isEditing && <button onClick={openProfile} className="bg-slate-200 text-slate-800 font-bold px-6 py-2.5 rounded-xl hover:bg-slate-300 transition">My Profile</button>}
                  {!isEditing && <button onClick={() => openForm()} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition">+ Register Clinic</button>}
              </div>
         </div>
@@ -539,54 +466,6 @@ export default function DeveloperPage() {
                     </div>
                 ))}
                 {clinics.length === 0 && <p className="text-center text-slate-400 py-10">No clinics registered in the system.</p>}
-            </div>
-        )}
-
-        {showProfile && (
-            <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
-                <div className="bg-white p-8 rounded-2xl w-[500px] shadow-2xl">
-                    <h2 className="text-2xl font-bold mb-4 border-b pb-4">My Developer Profile</h2>
-                    {profileMsg.text && (
-                        <div className={`p-3 rounded-lg mb-4 text-sm font-bold ${profileMsg.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                            {profileMsg.text}
-                        </div>
-                    )}
-                    
-                    <div className="space-y-5 mb-6">
-                        <div>
-                            <label className="block text-sm font-semibold text-slate-700 mb-1">Current Logged-in Email</label>
-                            <input type="text" readOnly value={profileData.email} className="w-full p-3 border rounded-xl bg-slate-50 text-slate-500 cursor-not-allowed" />
-                        </div>
-                        
-                        {profilePhase === 'idle' ? (
-                            <>
-                                <div>
-                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Change Email To</label>
-                                    <input type="email" placeholder="Enter new email address" value={profileData.newEmail} onChange={e => setProfileData({...profileData, newEmail: e.target.value})} className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50/30" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Current Password <span className="text-slate-400 font-normal">(Required for security)</span></label>
-                                    <input type="password" placeholder="Verify your current password" value={profileData.currentPassword} onChange={e => setProfileData({...profileData, currentPassword: e.target.value})} className="w-full p-3 border rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" />
-                                </div>
-                                <button onClick={handleRequestEmailChange} className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition">Request Email Update</button>
-                            </>
-                        ) : (
-                            <>
-                                <div>
-                                    <label className="block text-sm font-semibold text-slate-700 mb-1">Enter Verification Code</label>
-                                    <p className="text-xs text-slate-500 mb-3">A secure 6-digit code has been sent to <strong>{profileData.newEmail}</strong>.</p>
-                                    <input type="text" placeholder="------" value={profileData.code} onChange={e => setProfileData({...profileData, code: e.target.value})} className="w-full p-4 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none font-mono tracking-[1em] text-center text-2xl" maxLength={6} />
-                                </div>
-                                <div className="flex gap-3">
-                                    <button onClick={() => setProfilePhase('idle')} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
-                                    <button onClick={handleVerifyEmailChange} className="flex-1 bg-emerald-600 text-white font-bold py-3 rounded-xl hover:bg-emerald-700 transition">Verify & Update</button>
-                                </div>
-                            </>
-                        )}
-                    </div>
-                    
-                    <button onClick={() => setShowProfile(false)} className="w-full py-3 text-slate-500 hover:bg-slate-50 rounded-xl font-bold border border-transparent hover:border-slate-200 transition">Close Settings</button>
-                </div>
             </div>
         )}
     </div>
