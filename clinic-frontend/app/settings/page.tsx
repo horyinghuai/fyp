@@ -135,7 +135,6 @@ export default function SettingsPage() {
           if (res.ok) {
               setShowEmailModal(false);
               
-              // Update local state and localStorage immediately
               const userStr = localStorage.getItem('aicas_user');
               if(userStr) {
                   const user = JSON.parse(userStr);
@@ -186,30 +185,34 @@ export default function SettingsPage() {
                 required
               />
             </div>
+            {/* Empty div perfectly shortens the Name box layout */}
+            <div></div>
+
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-2">Email Address (Login ID)</label>
-              <div className="flex gap-3">
-                  <input 
-                    type="email" 
-                    value={formData.email || ''} 
-                    readOnly
-                    className="flex-1 p-3 border rounded-xl outline-none bg-slate-100 text-slate-500 cursor-not-allowed"
-                  />
-                  <button 
-                    type="button" 
-                    onClick={() => {
-                        setShowEmailModal(true);
-                        setEmailPhase('password');
-                        setNewEmailTarget('');
-                        setCurrentPassword('');
-                        setVerifyCode('');
-                        setModalError('');
-                    }}
-                    className="px-5 py-3 bg-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-300 transition whitespace-nowrap"
-                  >
-                      Change Email
-                  </button>
-              </div>
+              <input 
+                  type="email" 
+                  value={formData.email || ''} 
+                  readOnly
+                  className="w-full p-3 border rounded-xl outline-none bg-slate-100 text-slate-500 cursor-not-allowed"
+              />
+            </div>
+            <div className="flex items-end">
+              {/* Perfectly aligned in the right column above Confirm New Password */}
+              <button 
+                  type="button" 
+                  onClick={() => {
+                      setShowEmailModal(true);
+                      setEmailPhase('password');
+                      setNewEmailTarget('');
+                      setCurrentPassword('');
+                      setVerifyCode('');
+                      setModalError('');
+                  }}
+                  className="w-full p-3 bg-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-300 transition whitespace-nowrap"
+              >
+                  Change Email
+              </button>
             </div>
           </div>
 
@@ -272,21 +275,38 @@ export default function SettingsPage() {
                 
                 {emailPhase === 'password' ? (
                     <>
-                        <p className="text-sm text-slate-600 mb-4">To change your email, please enter your new email address and current password.</p>
-                        <input 
-                            type="email" 
-                            placeholder="New Email Address" 
-                            value={newEmailTarget} 
-                            onChange={e => setNewEmailTarget(e.target.value)} 
-                            className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 mb-3" 
-                        />
-                        <input 
-                            type="password" 
-                            placeholder="Current Password" 
-                            value={currentPassword} 
-                            onChange={e => setCurrentPassword(e.target.value)} 
-                            className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 mb-6" 
-                        />
+                        <div className="mb-4">
+                            <label className="block text-sm font-bold text-slate-700 mb-1">Current Email</label>
+                            <input 
+                                type="email" 
+                                readOnly 
+                                value={originalEmail} 
+                                className="w-full p-3 border rounded-xl bg-slate-100 text-slate-500 cursor-not-allowed" 
+                            />
+                        </div>
+
+                        <div className="mb-4">
+                            <label className="block text-sm font-bold text-slate-700 mb-1">New Email Address</label>
+                            <input 
+                                type="email" 
+                                placeholder="Enter your new email address" 
+                                value={newEmailTarget} 
+                                onChange={e => setNewEmailTarget(e.target.value)} 
+                                className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500" 
+                            />
+                        </div>
+                        
+                        <div className="mb-6">
+                            <label className="block text-sm font-bold text-slate-700 mb-1">Current Password</label>
+                            <input 
+                                type="password" 
+                                placeholder="Enter your current password" 
+                                value={currentPassword} 
+                                onChange={e => setCurrentPassword(e.target.value)} 
+                                className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500" 
+                            />
+                        </div>
+
                         <div className="flex gap-3">
                             <button onClick={() => setShowEmailModal(false)} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
                             <button onClick={handleRequestEmailChange} disabled={isLoading} className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition disabled:opacity-50">Continue</button>
@@ -295,14 +315,19 @@ export default function SettingsPage() {
                 ) : (
                     <>
                         <p className="text-sm text-slate-600 mb-4">A 6-digit verification code has been sent to <strong>{newEmailTarget}</strong>.</p>
-                        <input 
-                            type="text" 
-                            placeholder="------" 
-                            value={verifyCode} 
-                            onChange={e => setVerifyCode(e.target.value)} 
-                            maxLength={6}
-                            className="w-full p-4 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 mb-6 font-mono tracking-[1em] text-center text-2xl" 
-                        />
+                        
+                        <div className="mb-6">
+                            <label className="block text-sm font-bold text-slate-700 mb-1">Verification Code</label>
+                            <input 
+                                type="text" 
+                                placeholder="------" 
+                                value={verifyCode} 
+                                onChange={e => setVerifyCode(e.target.value)} 
+                                maxLength={6}
+                                className="w-full p-4 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 font-mono tracking-[1em] text-center text-2xl" 
+                            />
+                        </div>
+                        
                         <div className="flex gap-3">
                             <button onClick={() => setShowEmailModal(false)} className="flex-1 bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition">Cancel</button>
                             <button onClick={handleVerifyEmailChange} disabled={isLoading} className="flex-1 bg-emerald-600 text-white font-bold py-3 rounded-xl hover:bg-emerald-700 transition disabled:opacity-50">Verify & Save</button>

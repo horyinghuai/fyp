@@ -1056,62 +1056,90 @@ def retrieve_temp_password(clinic_id: str, admin_type: str, db: Session = Depend
 
 @app.post("/admin/request-email-change")
 async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
-    if not verify_password(req.current_password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Incorrect current password.")
+    import random, string, httpx
+    from datetime import datetime, timedelta
     
-    conflict = db.query(models.User).filter(models.User.email == req.new_email).first()
-    if conflict:
-        raise HTTPException(status_code=400, detail="This email is already in use by another account.")
+    try:
+        user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
+        if not verify_password(req.current_password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Incorrect current password.")
         
-    code = ''.join(random.choices(string.digits, k=6))
-    hashed_code = get_password_hash(code)
-    
-    db.query(models.VerificationCode).filter_by(ic_passport_number=user.ic_passport_number, used=False).update({"used": True})
-    v_code = models.VerificationCode(ic_passport_number=user.ic_passport_number, code_hash=hashed_code, expires_at=datetime.utcnow() + timedelta(minutes=15))
-    db.add(v_code)
-    db.commit()
-    
-    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
-    sendgrid_from_email = os.getenv("SENDGRID_FROM_EMAIL")
-    if sendgrid_api_key and sendgrid_from_email:
-        try:
-            email_data = {
-                "personalizations": [{"to": [{"email": req.new_email}], "subject": "AICAS Email Update Verification"}],
-                "from": {"email": sendgrid_from_email, "name": "AICAS System"},
-                "content": [{"type": "text/plain", "value": f"Your verification code to update your email is: {code}\nThis code expires in 15 minutes."}]
-            }
-            async with httpx.AsyncClient() as client:
-                await client.post("https://api.sendgrid.com/v3/mail/send", headers={"Authorization": f"Bearer {sendgrid_api_key}", "Content-Type": "application/json"}, json=email_data)
-        except: pass
-    else:
-        print(f"\n========== MOCK EMAIL VERIFICATION ==========")
-        print(f"To: {req.new_email}\nCode: {code}")
-        print("=============================================\n")
+        conflict = db.query(models.User).filter(models.User.email == req.new_email).first()
+        if conflict:
+            raise HTTPException(status_code=400, detail="This email is already in use by another account.")
+            
+        code = ''.join(random.choices(string.digits, k=6))
+        hashed_code = get_password_hash(code)
         
-    return {"status": "success"}
+        # Safely expire older codes
+        old_codes = db.query(models.VerificationCode).filter_by(ic_passport_number=user.ic_passport_number, used=False).all()
+        for oc in old_codes:
+            oc.used = True
+            
+        v_code = models.VerificationCode(
+            ic_passport_number=user.ic_passport_number, 
+            code_hash=hashed_code, 
+            expires_at=datetime.utcnow() + timedelta(minutes=15)
+        )
+        db.add(v_code)
+        db.commit()
+        
+        # Send Email Verification
+        sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+        sendgrid_from_email = os.getenv("SENDGRID_FROM_EMAIL")
+        if sendgrid_api_key and sendgrid_from_email:
+            try:
+                email_data = {
+                    "personalizations": [{"to": [{"email": req.new_email}], "subject": "AICAS Email Update Verification"}],
+                    "from": {"email": sendgrid_from_email, "name": "AICAS System"},
+                    "content": [{"type": "text/plain", "value": f"Your verification code to update your email is: {code}\nThis code expires in 15 minutes."}]
+                }
+                async with httpx.AsyncClient() as client:
+                    await client.post("https://api.sendgrid.com/v3/mail/send", headers={"Authorization": f"Bearer {sendgrid_api_key}", "Content-Type": "application/json"}, json=email_data)
+            except Exception as e:
+                print(f"Failed to send email via SendGrid: {e}")
+        else:
+            print(f"\n========== MOCK EMAIL VERIFICATION ==========")
+            print(f"To: {req.new_email}\nCode: {code}")
+            print("=============================================\n")
+            
+        return {"status": "success"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Email Change Error: {e}")
+        raise HTTPException(status_code=400, detail="An internal server error occurred.")
 
 @app.post("/admin/verify-email-change")
 def verify_email_change(req: VerifyEmailChangeReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
-    
-    v_code = db.query(models.VerificationCode).filter(
-        models.VerificationCode.ic_passport_number == user.ic_passport_number,
-        models.VerificationCode.used == False,
-        models.VerificationCode.expires_at > datetime.utcnow()
-    ).order_by(models.VerificationCode.created_at.desc()).first()
-    
-    if not v_code or not verify_password(req.code, v_code.code_hash):
-        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+    from datetime import datetime
+    try:
+        user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
         
-    conflict = db.query(models.User).filter(models.User.email == req.new_email).first()
-    if conflict: raise HTTPException(status_code=400, detail="This email is already in use by another account.")
+        v_code = db.query(models.VerificationCode).filter(
+            models.VerificationCode.ic_passport_number == user.ic_passport_number,
+            models.VerificationCode.used == False,
+            models.VerificationCode.expires_at > datetime.utcnow()
+        ).order_by(models.VerificationCode.created_at.desc()).first()
+        
+        if not v_code or not verify_password(req.code, v_code.code_hash):
+            raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+            
+        conflict = db.query(models.User).filter(models.User.email == req.new_email).first()
+        if conflict: raise HTTPException(status_code=400, detail="This email is already in use by another account.")
+        
+        user.email = req.new_email
+        v_code.used = True
+        db.commit()
+        return {"status": "success"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Verify Error: {e}")
+        raise HTTPException(status_code=400, detail="Verification failed.")
     
-    user.email = req.new_email
-    v_code.used = True
-    db.commit()
-    return {"status": "success"}
-
 @app.get("/admin/appointments/{clinic_id}")
 def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
     try:
