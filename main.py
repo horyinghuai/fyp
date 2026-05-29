@@ -1060,8 +1060,9 @@ async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends
     from datetime import datetime, timedelta
     
     try:
+        # We lookup by the subject (which holds the IC/Passport) from the token directly
         user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
-        if not verify_password(req.current_password, user.password_hash):
+        if not user or not verify_password(req.current_password, user.password_hash):
             raise HTTPException(status_code=401, detail="Incorrect current password.")
         
         conflict = db.query(models.User).filter(models.User.email == req.new_email).first()
@@ -1071,10 +1072,8 @@ async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends
         code = ''.join(random.choices(string.digits, k=6))
         hashed_code = get_password_hash(code)
         
-        # Safely expire older codes
         old_codes = db.query(models.VerificationCode).filter_by(ic_passport_number=user.ic_passport_number, used=False).all()
-        for oc in old_codes:
-            oc.used = True
+        for oc in old_codes: oc.used = True
             
         v_code = models.VerificationCode(
             ic_passport_number=user.ic_passport_number, 
@@ -1084,7 +1083,6 @@ async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends
         db.add(v_code)
         db.commit()
         
-        # Send Email Verification
         sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
         sendgrid_from_email = os.getenv("SENDGRID_FROM_EMAIL")
         if sendgrid_api_key and sendgrid_from_email:
@@ -1116,6 +1114,7 @@ def verify_email_change(req: VerifyEmailChangeReq, db: Session = Depends(get_db)
     from datetime import datetime
     try:
         user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
+        if not user: raise HTTPException(status_code=401, detail="User not found.")
         
         v_code = db.query(models.VerificationCode).filter(
             models.VerificationCode.ic_passport_number == user.ic_passport_number,

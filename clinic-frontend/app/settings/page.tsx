@@ -174,8 +174,8 @@ export default function SettingsPage() {
         <h2 className="text-xl font-bold text-slate-800 mb-6 border-b pb-4">Personal Details</h2>
         
         <form onSubmit={handleUpdate} className="space-y-6">
-          <div className="grid grid-cols-2 gap-6">
-            <div>
+          <div className="grid grid-cols-1 gap-6">
+            <div className="w-full">
               <label className="block text-sm font-bold text-slate-700 mb-2">Full Name</label>
               <input 
                 type="text" 
@@ -185,34 +185,31 @@ export default function SettingsPage() {
                 required
               />
             </div>
-            {/* Empty div perfectly shortens the Name box layout */}
-            <div></div>
 
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-2">Email Address (Login ID)</label>
-              <input 
-                  type="email" 
-                  value={formData.email || ''} 
-                  readOnly
-                  className="w-full p-3 border rounded-xl outline-none bg-slate-100 text-slate-500 cursor-not-allowed"
-              />
-            </div>
-            <div className="flex items-end">
-              {/* Perfectly aligned in the right column above Confirm New Password */}
-              <button 
-                  type="button" 
-                  onClick={() => {
-                      setShowEmailModal(true);
-                      setEmailPhase('password');
-                      setNewEmailTarget('');
-                      setCurrentPassword('');
-                      setVerifyCode('');
-                      setModalError('');
-                  }}
-                  className="w-full p-3 bg-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-300 transition whitespace-nowrap"
-              >
-                  Change Email
-              </button>
+              <div className="flex gap-3">
+                  <input 
+                    type="email" 
+                    value={formData.email || ''} 
+                    readOnly
+                    className="w-[70%] p-3 border rounded-xl outline-none bg-slate-100 text-slate-500 cursor-not-allowed"
+                  />
+                  <button 
+                    type="button" 
+                    onClick={() => {
+                        setShowEmailModal(true);
+                        setEmailPhase('password');
+                        setNewEmailTarget('');
+                        setCurrentPassword('');
+                        setVerifyCode('');
+                        setModalError('');
+                    }}
+                    className="w-[30%] p-3 bg-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-300 transition whitespace-nowrap"
+                  >
+                      Change Email
+                  </button>
+              </div>
             </div>
           </div>
 
