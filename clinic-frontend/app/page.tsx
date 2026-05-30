@@ -196,11 +196,13 @@ export default function AdminDashboard() {
 
       doctors.forEach(doc => {
           if(!doc.schedules) return;
-          const todayScheds = doc.schedules.filter((s: any) => s.day_of_week === dayOfWeek);
+          // Case-insensitive day check
+          const todayScheds = doc.schedules.filter((s: any) => s.day_of_week && s.day_of_week.toLowerCase() === dayOfWeek);
           
           todayScheds.forEach((sched: any) => {
-              let curr = moment(`${editDate} ${sched.start_time}`, "YYYY-MM-DD HH:mm");
-              const end = moment(`${editDate} ${sched.end_time}`, "YYYY-MM-DD HH:mm");
+              // Let moment parse the string dynamically to prevent "Invalid Date" errors if the DB returns seconds (e.g. 09:00:00)
+              let curr = moment(`${editDate} ${sched.start_time}`);
+              const end = moment(`${editDate} ${sched.end_time}`);
               
               while (curr.clone().add(duration, 'minutes').isSameOrBefore(end)) {
                   const timeStr = curr.format("HH:mm");
@@ -208,7 +210,7 @@ export default function AdminDashboard() {
                   const slotEnd = curr.clone().add(duration, 'minutes');
                   
                   // Allow past times ONLY if we are actively editing an existing event on that exact time
-                  const isCurrentEventTime = selectedEvent && moment(selectedEvent.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${timeStr}`;
+                  const isCurrentEventTime = selectedEvent && moment(selectedEvent.start).format("HH:mm") === timeStr && moment(selectedEvent.start).format("YYYY-MM-DD") === editDate;
 
                   if (isToday && slotStart.isSameOrBefore(now) && !isCurrentEventTime) {
                       curr.add(duration, 'minutes');
@@ -229,7 +231,10 @@ export default function AdminDashboard() {
                   if (!isBusy || isCurrentEventTime) {
                       timesSet.add(timeStr);
                       if (!docsForTime[timeStr]) docsForTime[timeStr] = [];
-                      docsForTime[timeStr].push(doc);
+                      // Prevent duplicate doctors in the same slot array
+                      if (!docsForTime[timeStr].some(d => d.ic_passport_number === doc.ic_passport_number)) {
+                          docsForTime[timeStr].push(doc);
+                      }
                   }
                   curr.add(duration, 'minutes');
               }
@@ -732,10 +737,14 @@ export default function AdminDashboard() {
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Time</label>
                         <select value={editTime} onChange={e => {
-                            setEditTime(e.target.value);
-                            const docs = docsForTime[e.target.value] || [];
+                            const newTime = e.target.value;
+                            setEditTime(newTime);
+                            const docs = docsForTime[newTime] || [];
+                            // Automatically assign a free doctor for this slot if the current one is not valid
                             if (docs.length > 0 && !docs.find(d => d.ic_passport_number === editForm.doctor_ic)) {
                                 setEditForm(prev => ({...prev, doctor_ic: docs[0].ic_passport_number}));
+                            } else if (docs.length === 0) {
+                                setEditForm(prev => ({...prev, doctor_ic: ''}));
                             }
                         }} className="w-full p-2 border rounded-lg outline-none bg-white">
                             <option value="">Select Time</option>
@@ -767,8 +776,8 @@ export default function AdminDashboard() {
                       <div className={isNewBooking ? "col-span-2" : ""}>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
                         <select value={editForm.service} onChange={(e) => {
-                            setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''}); // Clear items and doctor
-                            setEditTime(""); 
+                            setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
+                            setEditTime(""); // Clear the time to refresh 15/30 min intervals correctly
                         }} className="w-full p-2 border rounded-lg bg-white outline-none">
                           <option value="Consultation">Consultation</option><option value="Vaccine">Vaccine</option><option value="Blood Test">Blood Test</option>
                         </select>
