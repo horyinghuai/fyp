@@ -698,51 +698,25 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
 async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    # Read the override data if it exists (from reminders), otherwise fallback to the normal query data
-    data = context.user_data.pop('action_data_override', query.data)
-    
+    data = query.data
     if data == "back_to_appt_list":
         return await show_patient_appointments(update, context, query=True)
-        
-    if data.startswith("modify_appt_") or data.startswith("cancel_appt_"):
-        is_modify = data.startswith("modify_appt_")
-        stage_id = data.replace("modify_appt_", "").replace("cancel_appt_", "")
-        
+    if data.startswith("modify_appt_"):
+        stage_id = data.replace("modify_appt_", "")
+        context.user_data['edit_appt_id'] = stage_id
+        context.user_data['editing_existing'] = True   # mark as editing existing appointment
+        # Fetch appointment details and pre-fill the edit menu
         active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
         ic = context.user_data.get('ic')
-        tg_id = update.effective_user.id
-        
         async with httpx.AsyncClient() as client:
             try:
-                appt = None
-                # 1. Try to fetch from the active clinic first
-                if ic:
-                    res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
-                    if res.status_code == 200:
-                        appts = res.json()
-                        appt = next((a for a in appts if str(a['stage_id']) == str(stage_id)), None)
-                
-                # 2. Fallback: Search across all registered clinics if not found
-                if not appt and ic:
-                    c_res = await client.get(f"{API_BASE}/patient-clinics/{tg_id}", timeout=5.0)
-                    if c_res.status_code == 200:
-                        for c in c_res.json():
-                            if str(c['id']) != str(active_cid):
-                                a_res = await client.get(f"{API_BASE}/patient/{c['id']}/appointments/{ic}", timeout=5.0)
-                                if a_res.status_code == 200:
-                                    a_list = a_res.json()
-                                    found = next((a for a in a_list if str(a['stage_id']) == str(stage_id)), None)
-                                    if found:
-                                        appt = found
-                                        context.user_data['active_clinic_id'] = str(c['id'])
-                                        break
-
-                if appt:
-                    if is_modify:
-                        context.user_data['edit_appt_id'] = stage_id
-                        context.user_data['editing_existing'] = True
-                        context.user_data['abort_appt_details'] = appt   
+                res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
+                if res.status_code == 200:
+                    appts = res.json()
+                    appt = next((a for a in appts if a['stage_id'] == stage_id), None)
+                    if appt:
+                        context.user_data['abort_appt_details'] = appt   # store for cancel/modify
+                        # Store appointment data into user_data to pre-fill the edit flow
                         context.user_data['service'] = appt['service']
                         context.user_data['selected_items'] = appt['details'].get('items', [])
                         context.user_data['dose'] = appt['details'].get('dose')
@@ -751,39 +725,25 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         context.user_data['book_date'] = appt['date']
                         context.user_data['book_time'] = f"{appt['date']} {appt['time']}"
                         context.user_data['is_editing'] = True
-                        # Critical fix: Use appt_id instead of stage_id for backend modifications
-                        context.user_data['original_appt_id'] = appt.get('appt_id') 
+                        context.user_data['original_appt_id'] = stage_id
+                        # Show the edit menu (will use handle_edit_menu_routing)
                         return await handle_edit_menu_routing(update, context)
-                    else:
-                        # Critical fix: Capture correct appt_id for cancellation
-                        context.user_data['cancel_target_id'] = appt.get('appt_id') 
-                        btns = [
-                            [InlineKeyboardButton("Change of schedule", callback_data="creason_Change of schedule")],
-                            [InlineKeyboardButton("Feeling better", callback_data="creason_Feeling better")],
-                            [InlineKeyboardButton("Booked wrong service", callback_data="creason_Booked wrong service")],
-                            [InlineKeyboardButton("Personal reasons", callback_data="creason_Personal reasons")],
-                            [InlineKeyboardButton("Other (Type below)", callback_data="creason_Other")]
-                        ]
-                        await query.edit_message_text("Why are you cancelling this appointment?\nSelect a reason below or type your own reason in the chat.", reply_markup=InlineKeyboardMarkup(btns))
-                        return CANCEL_REASON
-
-            except Exception as e:
-                logger.error(f"Error fetching appointment: {e}")
+            except Exception:
                 pass
-                
         btns = [
             [InlineKeyboardButton("🔙 Back to Appointment List", callback_data="back_to_appt_list")],
             [InlineKeyboardButton("📩 Contact Clinic Admin", callback_data="contact_clinic_admin")]
         ]
 
         await query.edit_message_text(
-            "Unable to load appointment for modification. It may have been completed, canceled, or is no longer available.",
+            "Unable to load appointment for modification.",
             reply_markup=InlineKeyboardMarkup(btns)
         )
 
         return APPOINTMENT_ACTION
     
     if data == "contact_clinic_admin":
+
         active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
         ic = context.user_data.get('ic')
 
@@ -2037,9 +1997,8 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                 details += f"Doctor: {doctor}\n"
                 btns = []
                 if is_future:
-                    # FIX: Enforcing stage_id instead of appt_id
-                    btns.append([InlineKeyboardButton("✏️ Modify Appointment", callback_data=f"modify_appt_{appt['stage_id']}")])
-                    btns.append([InlineKeyboardButton("❌ Cancel Appointment", callback_data=f"cancel_appt_{appt['stage_id']}")])
+                    btns.append([InlineKeyboardButton("✏️ Modify Appointment", callback_data=f"modify_appt_{appt['appt_id']}")])
+                    btns.append([InlineKeyboardButton("❌ Cancel Appointment", callback_data=f"cancel_appt_{appt['appt_id']}")])
                 btns.append([InlineKeyboardButton("🔙 Back to List", callback_data="back_to_appt_list")])
                 await query.edit_message_text(details, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
                 return APPOINTMENT_ACTION
@@ -2257,30 +2216,7 @@ async def handle_reminder_action(update: Update, context: ContextTypes.DEFAULT_T
     
     tg_id = update.effective_user.id
     
-    # Extract stage_id to accurately pull the specific patient record
-    stage_id = ""
-    if data.startswith("rem_conf_"):
-        stage_id = data.replace("rem_conf_", "")
-    elif data.startswith("rem_mod_"):
-        stage_id = data.replace("rem_mod_", "")
-    elif data.startswith("rem_can_"):
-        stage_id = data.replace("rem_can_", "")
-        
-    # Invisibly retrieve the exact patient IC and Clinic for THIS appointment
-    if stage_id:
-        async with httpx.AsyncClient() as client:
-            try:
-                res = await client.get(f"{API_BASE}/appointment-context/{stage_id}", timeout=5.0)
-                if res.status_code == 200:
-                    p_data = res.json()
-                    context.user_data['ic'] = p_data['ic']
-                    context.user_data['active_clinic_id'] = p_data['clinic_id']
-                    context.user_data['name'] = p_data['name']
-                    context.user_data['is_malaysian'] = True 
-            except Exception as e:
-                logger.error(f"Error fetching exact patient context: {e}")
-
-    # Fallback if context fetch fails
+    # Check if context memory was lost, retrieve patient invisibly
     if not context.user_data.get('ic'):
         async with httpx.AsyncClient() as client:
             try:
@@ -2302,6 +2238,7 @@ async def handle_reminder_action(update: Update, context: ContextTypes.DEFAULT_T
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
 
     if data.startswith("rem_conf_"):
+        stage_id = data.replace("rem_conf_", "")
         # Save to chat_messages table making it appear in Bot Replies dashboard
         await log_chat_to_db(active_cid, tg_id, user_msg="✅ Patient confirmed their appointment.", bot_reply="Thank you for the confirmation.")
         
@@ -2311,12 +2248,14 @@ async def handle_reminder_action(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
         
     elif data.startswith("rem_mod_"):
-        # Safely pass the spoofed data string via context memory instead of overwriting query.data
-        context.user_data['action_data_override'] = f"modify_appt_{stage_id}"
+        stage_id = data.replace("rem_mod_", "")
+        query.data = f"modify_appt_{stage_id}"
+        # Passes it directly to the appointment_action modifier which triggers handle_edit_menu_routing
         return await appointment_action(update, context) 
         
     elif data.startswith("rem_can_"):
-        context.user_data['action_data_override'] = f"cancel_appt_{stage_id}"
+        stage_id = data.replace("rem_can_", "")
+        query.data = f"cancel_appt_{stage_id}"
         return await appointment_action(update, context)
 
 async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
