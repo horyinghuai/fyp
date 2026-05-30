@@ -197,28 +197,34 @@ export default function AdminDashboard() {
       doctors.forEach(doc => {
           if(!doc.schedules) return;
           const todayScheds = doc.schedules.filter((s: any) => s.day_of_week === dayOfWeek);
+          
           todayScheds.forEach((sched: any) => {
               let curr = moment(`${editDate} ${sched.start_time}`, "YYYY-MM-DD HH:mm");
               const end = moment(`${editDate} ${sched.end_time}`, "YYYY-MM-DD HH:mm");
               
               while (curr.clone().add(duration, 'minutes').isSameOrBefore(end)) {
                   const timeStr = curr.format("HH:mm");
+                  const slotStart = curr.clone();
+                  const slotEnd = curr.clone().add(duration, 'minutes');
                   
-                  // Allow past times if editing an existing event on that exact time
+                  // Allow past times ONLY if we are actively editing an existing event on that exact time
                   const isCurrentEventTime = selectedEvent && moment(selectedEvent.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${timeStr}`;
 
-                  if (isToday && curr.isSameOrBefore(now) && !isCurrentEventTime) {
+                  if (isToday && slotStart.isSameOrBefore(now) && !isCurrentEventTime) {
                       curr.add(duration, 'minutes');
                       continue;
                   }
 
-                  // Only mark as busy if it belongs to a different appointment
-                  const isBusy = events.some(e => 
-                      e.doctor_ic === doc.ic_passport_number && 
-                      e.status !== 'canceled' && 
-                      (!selectedEvent || e.id !== selectedEvent.id) && 
-                      moment(e.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${timeStr}`
-                  );
+                  // Robust Overlap Check - checks if slot overlaps with an ongoing appointment
+                  const isBusy = events.some(e => {
+                      if (e.doctor_ic !== doc.ic_passport_number || e.status === 'canceled') return false;
+                      if (selectedEvent && e.id === selectedEvent.id) return false;
+                      
+                      const eStart = moment(e.start);
+                      const eEnd = moment(e.end);
+                      
+                      return slotStart.isBefore(eEnd) && slotEnd.isAfter(eStart);
+                  });
                   
                   if (!isBusy || isCurrentEventTime) {
                       timesSet.add(timeStr);
@@ -720,6 +726,7 @@ export default function AdminDashboard() {
                         <input type="date" min={moment().format("YYYY-MM-DD")} value={editDate} onChange={(e) => {
                             setEditDate(e.target.value);
                             setEditTime("");
+                            setEditForm(prev => ({...prev, doctor_ic: ''})); // Clear doctor to force re-selection
                         }} className="w-full p-2 border rounded-lg outline-none" />
                       </div>
                       <div>
@@ -760,7 +767,7 @@ export default function AdminDashboard() {
                       <div className={isNewBooking ? "col-span-2" : ""}>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
                         <select value={editForm.service} onChange={(e) => {
-                            setEditForm({...editForm, service: e.target.value, items: []});
+                            setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''}); // Clear items and doctor
                             setEditTime(""); 
                         }} className="w-full p-2 border rounded-lg bg-white outline-none">
                           <option value="Consultation">Consultation</option><option value="Vaccine">Vaccine</option><option value="Blood Test">Blood Test</option>
