@@ -368,6 +368,12 @@ class ProfileUpdateReq(BaseModel):
     email: str
     password: Optional[str] = None
 
+class RecommendSlotReq(BaseModel):
+    clinic_id: str
+    base_date: str
+    doctor_pref: str = 'ANY'
+    duration: int = 30
+
 # --- Helper Functions ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
@@ -2490,3 +2496,117 @@ def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     
+@app.post("/recommend-slots")
+def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
+    from datetime import datetime, timedelta
+    
+    try:
+        start_date = datetime.strptime(req.base_date, "%Y-%m-%d").date()
+    except:
+        start_date = datetime.now().date()
+        
+    # 1. Evaluate Constraints & Doctor Preferences
+    doctors_query = db.query(models.Doctor).join(models.DoctorClinicAvailability).filter(
+        models.DoctorClinicAvailability.clinic_id == req.clinic_id,
+        models.DoctorClinicAvailability.status == 'active'
+    )
+    
+    if req.doctor_pref not in ['ANY', 'MALE', 'FEMALE', 'SPECIFIC']:
+        doctors_query = doctors_query.filter(models.Doctor.name == req.doctor_pref)
+    elif req.doctor_pref in ['MALE', 'FEMALE']:
+        doctors_query = doctors_query.filter(models.Doctor.gender == req.doctor_pref)
+        
+    doctors = doctors_query.distinct().all()
+    if not doctors:
+        return {"error": "No doctors found matching criteria."}
+        
+    # 2. Calculate Workload (Scheduled & Upcoming Only)
+    workloads = {}
+    for doc in doctors:
+        count = db.query(models.AppointmentStage).join(models.Appointment).filter(
+            models.Appointment.doctor_ic == doc.ic_passport_number,
+            models.AppointmentStage.status == 'scheduled',
+            models.AppointmentStage.scheduled_time >= datetime.now()
+        ).count()
+        workloads[doc.ic_passport_number] = count
+
+    max_wl = max(workloads.values()) if workloads.values() else 1
+    if max_wl == 0: max_wl = 1
+
+    # 3. Generate and Rank Slots (7-Day Window)
+    all_slots = []
+    for i in range(8):
+        curr_date = start_date + timedelta(days=i)
+        day_str = curr_date.strftime("%a").lower()
+        
+        for doc in doctors:
+            avails = db.query(models.DoctorClinicAvailability).filter(
+                models.DoctorClinicAvailability.doctor_ic == doc.ic_passport_number,
+                models.DoctorClinicAvailability.clinic_id == req.clinic_id,
+                models.DoctorClinicAvailability.day_of_week == day_str,
+                models.DoctorClinicAvailability.status == 'active'
+            ).all()
+            
+            for a in avails:
+                t = datetime.combine(curr_date, a.start_time)
+                end_t = datetime.combine(curr_date, a.end_time)
+                
+                while t + timedelta(minutes=req.duration) <= end_t:
+                    if t > datetime.now():
+                        conflict = db.query(models.AppointmentStage).join(models.Appointment).filter(
+                            models.Appointment.doctor_ic == doc.ic_passport_number,
+                            models.AppointmentStage.scheduled_time == t,
+                            models.AppointmentStage.status == 'scheduled'
+                        ).first()
+                        
+                        if not conflict:
+                            # 70% Doctor Workload (Lowest gets closer to 1.0)
+                            wl_score = 1.0 - (workloads[doc.ic_passport_number] / max_wl) 
+                            
+                            # 20% Slot Availability (Closer to target date gets closer to 1.0)
+                            hours_from_now = (t - datetime.now()).total_seconds() / 3600.0
+                            avail_score = 1.0 - min(hours_from_now / (7 * 24), 1.0) 
+                            
+                            # 10% Doctor Continuity 
+                            cont_score = 1.0 if req.doctor_pref == doc.name else 0.5
+                            
+                            final_score = (wl_score * 0.70) + (avail_score * 0.20) + (cont_score * 0.10)
+                            
+                            all_slots.append({
+                                "doctor": doc.name,
+                                "date_str": curr_date.strftime("%Y-%m-%d"),
+                                "time_str": t.strftime("%I:%M %p"),
+                                "display": f"{curr_date.strftime('%d/%m/%Y')} {t.strftime('%A')} {t.strftime('%I:%M %p')}",
+                                "score": final_score,
+                                "t_val": t
+                            })
+                    t += timedelta(minutes=req.duration)
+                    
+    if not all_slots:
+        return {"error": "No available slots within the next 7 days."}
+        
+    # Sort by Score (Descending), then Chronologically
+    all_slots.sort(key=lambda x: (x["score"], -x["t_val"].timestamp()), reverse=True)
+    best = all_slots[0]
+    
+    # 4. Extract 3 Unique Alternatives
+    alts = []
+    seen = set([best["display"]])
+    for s in all_slots[1:]:
+        if s["display"] not in seen:
+            alts.append(s["display"])
+            seen.add(s["display"])
+        if len(alts) >= 3:
+            break
+            
+    # Reasoning logic based on specific constraint
+    reason = "Lowest workload period for this doctor." if req.doctor_pref not in ['ANY', 'MALE', 'FEMALE'] else "Optimal workload distribution among available doctors."
+    
+    return {
+        "recommended_doctor": best["doctor"],
+        "recommended_slot": best["display"],
+        "raw_date": best["date_str"],
+        "raw_time": best["time_str"],
+        "reasoning": reason,
+        "alternative_slots": alts
+    }

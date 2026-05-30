@@ -1638,11 +1638,44 @@ async def handle_doc_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BOOK_DATE_TIME
 
 async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    service = context.user_data.get('service', 'General Appointment')
+    service = context.user_data['service']
     doctor_pref = context.user_data.get('doctor_pref', 'ANY')
     is_editing = context.user_data.get('is_editing', False)
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+    duration = 15 if service == 'Vaccine' else 30
     
+    import datetime as dt
+    today_str = dt.datetime.now().strftime("%Y-%m-%d")
+
+    # ----- SCHEDULING AGENT RECOMMENDATION BLOCK -----
+    rec_msg = ""
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.post(f"{API_BASE}/recommend-slots", json={
+                "clinic_id": active_cid,
+                "base_date": today_str,
+                "doctor_pref": doctor_pref,
+                "duration": duration
+            }, timeout=10.0)
+            
+            if res.status_code == 200:
+                data = res.json()
+                if "error" not in data:
+                    alts = "\n".join([f"• {a}" for a in data['alternative_slots']])
+                    rec_msg = (
+                        f"\n\n⭐ *AI Recommended*\n"
+                        f"Doctor: {data['recommended_doctor']}\n"
+                        f"Date: {data['raw_date']}\n"
+                        f"Time: {data['raw_time']}\n"
+                        f"Reason: {data['reasoning']}\n\n"
+                        f"*Alternative Recommendations:*\n{alts}\n\n"
+                        f"_Patients may still choose any available slot._"
+                    )
+        except Exception as e:
+            logger.error(f"Scheduling Agent Error: {e}")
+            pass
+    # --------------------------------------------------
+
     markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
     
     if service in ['Vaccine', 'Blood Test']:
@@ -1650,8 +1683,12 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     else:
         msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
         
-    if update.callback_query: await update.callback_query.message.reply_text(msg, reply_markup=markup)
-    elif update.message: await update.message.reply_text(msg, reply_markup=markup)
+    msg += rec_msg
+        
+    if update.callback_query: 
+        await update.callback_query.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
+    elif update.message: 
+        await update.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
 
 async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = context.user_data['service']
