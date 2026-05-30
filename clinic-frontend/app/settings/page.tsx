@@ -5,6 +5,7 @@ import { CheckCircle2, XCircle } from 'lucide-react';
 
 export default function SettingsPage() {
   const [originalEmail, setOriginalEmail] = useState('');
+  const [originalName, setOriginalName] = useState('');
   const [formData, setFormData] = useState({ name: '', email: '', newPassword: '', confirmPassword: '' });
   const [status, setStatus] = useState({ type: '', text: '' });
   const [isLoading, setIsLoading] = useState(false);
@@ -27,6 +28,8 @@ export default function SettingsPage() {
                   const data = await res.json();
                   setFormData(f => ({ ...f, name: data.name, email: data.email }));
                   setOriginalEmail(data.email);
+                  setOriginalName(data.name);
+                  
               }
           } catch (err) {}
       };
@@ -47,7 +50,11 @@ export default function SettingsPage() {
     match: formData.newPassword !== '' && formData.newPassword === formData.confirmPassword
   };
   
-  const isPasswordValid = formData.newPassword === '' || Object.values(reqs).every(Boolean);
+  const isPasswordValid = Object.values(reqs).every(Boolean);
+  const isPasswordIntended = formData.newPassword !== '';
+  const isNameChanged = formData.name !== originalName && formData.name.trim() !== '';
+
+  const canSave = (isNameChanged && !isPasswordIntended) || (isPasswordIntended && isPasswordValid);
 
   const proceedWithUpdate = async (emailAlreadyUpdated: boolean) => {
     setIsLoading(true);
@@ -194,7 +201,9 @@ export default function SettingsPage() {
           </div>
 
           <div className="flex justify-end pt-4 border-t">
-            <button type="submit" disabled={isLoading || !isPasswordValid} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition disabled:opacity-50">{isLoading ? "Saving..." : "Save Changes"}</button>
+            <button type="submit" disabled={isLoading || !canSave} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition disabled:opacity-50">
+              {isLoading ? "Saving..." : "Save Changes"}
+            </button>
           </div>
         </form>
       </div>

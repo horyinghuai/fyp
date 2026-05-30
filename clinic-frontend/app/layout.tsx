@@ -4,7 +4,7 @@ import './globals.css';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope, ShieldCheck, PlusCircle } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -16,61 +16,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const [userSession, setUserSession] = useState<any>(null);
   const [isSessionLoaded, setIsSessionLoaded] = useState(false);
 
+  const notifRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  // Click Outside Listener
   useEffect(() => {
-    if (pathname !== '/login' && pathname !== '/discovery') {
-      const storedToken = localStorage.getItem('aicas_token');
-      const storedUser = localStorage.getItem('aicas_user');
-      
-      if (!storedToken || !storedUser) {
-          router.push('/login');
-          return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(event.target as Node)) {
+        setShowNotifications(false);
       }
-      
-      const parsedUser = JSON.parse(storedUser);
-      setUserSession(parsedUser);
-      setIsSessionLoaded(true);
-
-      if (parsedUser.role !== 'developer') {
-          const activeClinicId = parsedUser.clinic_id;
-          
-          const initializeData = async () => {
-            try {
-              const res = await fetch(`http://127.0.0.1:8000/clinic/${activeClinicId}`);
-              if (res.ok) {
-                const data = await res.json();
-                setClinicName(data.name || "Smart Admin Portal");
-              } else {
-                setClinicName("Smart Admin Portal");
-              }
-            } catch (error) {
-              setClinicName("Smart Admin Portal");
-            }
-          };
-
-          const fetchPendingChats = async () => {
-            try {
-              const res = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${activeClinicId}`);
-              if (res.ok) {
-                const data = await res.json();
-                if (data && data.count !== undefined) {
-                  setPendingChatCount(data.count);
-                }
-              }
-            } catch (error) {}
-          };
-
-          initializeData();
-          fetchPendingChats();
-          
-          const interval = setInterval(fetchPendingChats, 10000); 
-          return () => clearInterval(interval);
-      } else {
-          setClinicName("AICAS Clinic System");
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setShowUserMenu(false);
       }
-    } else {
-        setIsSessionLoaded(true);
-    }
-  }, [pathname, router]);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   if (!isSessionLoaded) return <html lang="en"><body></body></html>;
   
@@ -141,30 +102,31 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <div className="flex items-center gap-6 relative">
               
               {hasPermission('CHAT_SUPPORT') && (
-                  <div className="relative cursor-pointer" onClick={() => setShowNotifications(!showNotifications)}>
-                    <Bell size={22} className="text-slate-600 hover:text-blue-600 transition" />
-                    {pendingChatCount > 0 && (
-                         <span className="absolute -top-1 -right-1 bg-red-500 w-2.5 h-2.5 rounded-full shadow-sm ring-2 ring-white"></span>
+                  <div className="relative cursor-pointer" ref={notifRef}>
+                    <div onClick={() => setShowNotifications(!showNotifications)}>
+                        <Bell size={22} className="text-slate-600 hover:text-blue-600 transition" />
+                        {pendingChatCount > 0 && (
+                             <span className="absolute -top-1 -right-1 bg-red-500 w-2.5 h-2.5 rounded-full shadow-sm ring-2 ring-white"></span>
+                        )}
+                    </div>
+                    {showNotifications && (
+                        <div className="absolute top-10 right-0 w-64 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden z-50">
+                           <div className="p-3">
+                             <h4 className="font-bold text-sm text-slate-800 mb-2 border-b pb-2">Notifications</h4>
+                             {pendingChatCount > 0 ? (
+                                 <div onClick={() => { setShowNotifications(false); router.push('/bot-replies'); }} className="p-3 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 transition cursor-pointer shadow-sm border border-blue-100">
+                                     You have <span className="font-black">{pendingChatCount}</span> unread message(s) from patients waiting in Bot Replies.
+                                 </div>
+                             ) : (
+                                 <p className="text-sm text-slate-500 text-center py-2">No new notifications.</p>
+                             )}
+                           </div>
+                        </div>
                     )}
                   </div>
               )}
-              
-              {showNotifications && (
-                  <div className="absolute top-10 right-40 w-64 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden z-50">
-                     <div className="p-3">
-                       <h4 className="font-bold text-sm text-slate-800 mb-2 border-b pb-2">Notifications</h4>
-                       {pendingChatCount > 0 ? (
-                           <div onClick={() => { setShowNotifications(false); router.push('/bot-replies'); }} className="p-3 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 transition cursor-pointer shadow-sm border border-blue-100">
-                               You have <span className="font-black">{pendingChatCount}</span> unread message(s) from patients waiting in Bot Replies.
-                           </div>
-                       ) : (
-                           <p className="text-sm text-slate-500 text-center py-2">No new notifications.</p>
-                       )}
-                     </div>
-                  </div>
-              )}
 
-              <div className="relative">
+              <div className="relative" ref={userMenuRef}>
                 <div className="flex items-center gap-3 cursor-pointer" onClick={() => setShowUserMenu(!showUserMenu)}>
                   <div className="text-right">
                       <p className="font-bold text-sm text-slate-800 leading-tight">{userSession?.name}</p>
