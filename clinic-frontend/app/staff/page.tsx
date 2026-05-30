@@ -87,13 +87,6 @@ export default function StaffPage() {
         if (form.status === 'resigned' && !form.resign_reason) return setStatusMsg({ type: 'error', text: 'Please provide a reason for resignation.' });
         if (form.status === 'resigned' && form.resign_reason === 'Others' && !form.custom_resign_reason.trim()) return setStatusMsg({ type: 'error', text: 'Please specify the custom resignation reason.' });
 
-        // Explicit Email Change Confirmation Check
-        if (isEditing !== 'new' && form.email !== originalEmail) {
-            if (!window.confirm("You are changing this staff member's email address. This will overwrite their email globally, reset their password, and send a new temporary password to the new email. Are you sure you want to proceed?")) {
-                return;
-            }
-        }
-
         const activePerms = Object.keys(form.permissions).filter((k) => form.permissions[k as keyof typeof form.permissions]);
         const permissionsStr = activePerms.length === 6 ? 'ALL' : activePerms.join(', ');
         const finalResignReason = form.status === 'resigned' ? (form.resign_reason === 'Others' ? form.custom_resign_reason : form.resign_reason) : null;
@@ -118,7 +111,7 @@ export default function StaffPage() {
                 } else {
                     const err = await res.json();
                     if (err.detail === "EMAIL_MISMATCH" || err.detail?.includes("EMAIL_MISMATCH")) {
-                        if (window.confirm("Are you sure you want to overwrite the email address for this user globally? (This will reset their password and send an email notification)")) { submitPayload(true); } 
+                        if (window.confirm("Are you sure you want to overwrite the email address for this user globally? (This will reset their password and send a new temporary password to the new email)")) { submitPayload(true); } 
                         else { setStatusMsg({ type: 'error', text: 'Action cancelled.' }); }
                     } else { setStatusMsg({ type: 'error', text: err.detail || 'Failed to save staff.' }); }
                 }

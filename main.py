@@ -921,9 +921,11 @@ def update_user(ic: str, data: UserUpdateReq, db: Session = Depends(get_db), cur
     except HTTPException: db.rollback(); raise
     except Exception as e: db.rollback(); raise HTTPException(status_code=400, detail=str(e))
     
-@app.put("/admin/profile")
+@app.get("/admin/profile")
 def get_self_profile(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     user = db.query(models.User).filter(models.User.ic_passport_number == current_user.ic_passport_number).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
     return {"name": user.name, "email": user.email}
 def update_self_profile(data: UserSelfUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     user = db.query(models.User).filter(models.User.ic_passport_number == current_user.ic_passport_number).first()
