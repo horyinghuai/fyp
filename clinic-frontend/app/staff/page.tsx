@@ -17,8 +17,7 @@ export default function StaffPage() {
     });
 
     const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
-    // Added to track original email for confirmation prompt
-    const [originalEmail, setOriginalEmail] = useState('');
+    const [icParts, setIcParts] = useState(['', '', '']);
 
     const fetchStaff = async () => {
         const token = localStorage.getItem('aicas_token');
@@ -38,19 +37,22 @@ export default function StaffPage() {
 
     useEffect(() => { fetchStaff(); }, []);
 
-    const formatIC = (ic: string) => {
-        if (!ic) return '';
-        const digitsOnly = ic.replace(/\D/g, '');
-        if (digitsOnly.length === 12) return `${digitsOnly.substring(0, 6)}-${digitsOnly.substring(6, 8)}-${digitsOnly.substring(8)}`;
-        return ic.toUpperCase();
+    const handleICPartChange = (index: number, val: string) => {
+        const clean = val.replace(/\D/g, '');
+        const newParts = [...icParts]; newParts[index] = clean;
+        setIcParts(newParts);
     };
 
     const handleEdit = (user: any) => {
         setIsEditing(user.ic);
         setStatusMsg({ type: '', text: '' });
-        setOriginalEmail(user.email);
         
         const isMy = user.ic.replace(/\D/g, '').length === 12;
+        if (isMy) {
+            const clean = user.ic.replace(/\D/g, '');
+            setIcParts([clean.substring(0,6), clean.substring(6,8), clean.substring(8,12)]);
+        } else setIcParts(['', '', '']);
+
         const permsArray = user.permissions ? user.permissions.split(', ') : [];
         let initialReason = '', customReason = '';
         const defaultReasons = ["Found Better Opportunity", "Relocation", "Personal Reasons", "Career Change", "System Role Replacement"];
@@ -76,12 +78,16 @@ export default function StaffPage() {
         e.preventDefault();
         setStatusMsg({ type: '', text: '' });
 
-        if (!form.ic || !form.name || !form.email) return setStatusMsg({ type: 'error', text: 'All identity fields are required.' });
+        if (!form.name || !form.email) return setStatusMsg({ type: 'error', text: 'All identity fields are required.' });
         
         let finalIC = form.ic.toUpperCase();
         if (form.is_my) {
-            if (finalIC.replace(/\D/g, '').length !== 12) return setStatusMsg({ type: 'error', text: 'IC must be exactly 12 digits for Malaysians.' });
-            finalIC = formatIC(finalIC);
+            const [p1, p2, p3] = icParts;
+            if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) return setStatusMsg({ type: 'error', text: 'IC must be complete (12 digits).' });
+            if (p1 === '000000' || p2 === '00' || p3 === '0000') return setStatusMsg({ type: 'error', text: 'Invalid IC format. 000000, 00, or 0000 are not allowed.' });
+            const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
+            if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return setStatusMsg({ type: 'error', text: 'Invalid date format in IC.' });
+            finalIC = `${p1}-${p2}-${p3}`;
         }
         
         if (form.status === 'resigned' && !form.resign_reason) return setStatusMsg({ type: 'error', text: 'Please provide a reason for resignation.' });
@@ -111,7 +117,7 @@ export default function StaffPage() {
                 } else {
                     const err = await res.json();
                     if (err.detail === "EMAIL_MISMATCH" || err.detail?.includes("EMAIL_MISMATCH")) {
-                        if (window.confirm("Are you sure you want to overwrite the email address for this user globally? (This will reset their password and send a new temporary password to the new email)")) { submitPayload(true); } 
+                        if (window.confirm("Are you sure you want to overwrite the email address for this user globally?")) { submitPayload(true); } 
                         else { setStatusMsg({ type: 'error', text: 'Action cancelled.' }); }
                     } else { setStatusMsg({ type: 'error', text: err.detail || 'Failed to save staff.' }); }
                 }
@@ -144,7 +150,7 @@ export default function StaffPage() {
                     <p className="text-slate-500 mt-1 text-sm">Manage clinic personnel, permissions, and roles.</p>
                 </div>
                 {!isEditing && (
-                    <button onClick={() => { setIsEditing('new'); setStatusMsg({type:'', text:''}); setOriginalEmail(''); setForm({ic:'', name:'', email:'', is_my: true, status: 'active', resign_reason: '', custom_resign_reason: '', permissions: { APPOINTMENT_MANAGEMENT: false, BLOOD_TEST_MANAGEMENT: false, VACCINE_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, PATIENT_MANAGEMENT: false, CHAT_SUPPORT: false }}); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
+                    <button onClick={() => { setIsEditing('new'); setStatusMsg({type:'', text:''}); setIcParts(['','','']); setForm({ic:'', name:'', email:'', is_my: true, status: 'active', resign_reason: '', custom_resign_reason: '', permissions: { APPOINTMENT_MANAGEMENT: false, BLOOD_TEST_MANAGEMENT: false, VACCINE_MANAGEMENT: false, DOCTOR_MANAGEMENT: false, PATIENT_MANAGEMENT: false, CHAT_SUPPORT: false }}); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
                         <Plus size={18} /> Add New Staff
                     </button>
                 )}
@@ -163,11 +169,20 @@ export default function StaffPage() {
                             <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">Identity Details</h3>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="flex gap-2">
-                                    <select value={form.is_my ? "my" : "non_my"} onChange={e => setForm({...form, is_my: e.target.value === "my", ic: ''})} className="p-3 border rounded-xl outline-none bg-slate-50 w-1/3">
-                                        <option value="my">MyKad</option>
-                                        <option value="non_my">Passport</option>
+                                    <select value={form.is_my ? "my" : "non_my"} onChange={e => { setForm({...form, is_my: e.target.value === "my", ic: ''}); setIcParts(['','','']); }} className="p-3 border rounded-xl outline-none bg-slate-50 w-1/3">
+                                        <option value="my">MyKad</option><option value="non_my">Passport</option>
                                     </select>
-                                    <input type="text" placeholder={form.is_my ? "IC Number" : "Passport Number"} required value={form.ic} onChange={e => setForm({...form, ic: e.target.value})} disabled={isEditing !== 'new'} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-mono flex-1 uppercase disabled:opacity-50" />
+                                    {form.is_my ? (
+                                        <div className={`flex gap-2 flex-1 items-center bg-slate-50 border rounded-xl px-2 ${isEditing === 'new' ? 'focus-within:ring-2 focus-within:ring-blue-500' : 'opacity-60'}`}>
+                                            <input type="text" placeholder="YYMMDD" maxLength={6} value={icParts[0]} onChange={e => handleICPartChange(0, e.target.value)} disabled={isEditing !== 'new'} className="w-[40%] bg-transparent p-2 outline-none font-mono text-center disabled:opacity-100" />
+                                            <span className="text-slate-400 font-bold">-</span>
+                                            <input type="text" placeholder="XX" maxLength={2} value={icParts[1]} onChange={e => handleICPartChange(1, e.target.value)} disabled={isEditing !== 'new'} className="w-[20%] bg-transparent p-2 outline-none font-mono text-center disabled:opacity-100" />
+                                            <span className="text-slate-400 font-bold">-</span>
+                                            <input type="text" placeholder="XXXX" maxLength={4} value={icParts[2]} onChange={e => handleICPartChange(2, e.target.value)} disabled={isEditing !== 'new'} className="w-[40%] bg-transparent p-2 outline-none font-mono text-center disabled:opacity-100" />
+                                        </div>
+                                    ) : (
+                                        <input type="text" placeholder="Passport Number" required value={form.ic} onChange={e => setForm({...form, ic: e.target.value})} disabled={isEditing !== 'new'} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-mono flex-1 uppercase disabled:opacity-50" />
+                                    )}
                                 </div>
                                 <input type="text" placeholder="Full Name" required value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-medium text-slate-800" />
                                 <input type="email" placeholder="Login Email" required value={form.email} onChange={e => setForm({...form, email: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-medium text-slate-800" />

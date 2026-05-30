@@ -33,10 +33,74 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  if (!isSessionLoaded) return <html lang="en"><body></body></html>;
+  useEffect(() => {
+    if (pathname !== '/login' && pathname !== '/discovery') {
+      const storedToken = localStorage.getItem('aicas_token');
+      const storedUser = localStorage.getItem('aicas_user');
+      
+      if (!storedToken || !storedUser) {
+          router.push('/login');
+          return;
+      }
+      
+      const parsedUser = JSON.parse(storedUser);
+      setUserSession(parsedUser);
+      setIsSessionLoaded(true);
+
+      if (parsedUser.role !== 'developer') {
+          const activeClinicId = parsedUser.clinic_id;
+          const initializeData = async () => {
+            try {
+              const res = await fetch(`http://127.0.0.1:8000/clinic/${activeClinicId}`);
+              if (res.ok) {
+                const data = await res.json();
+                setClinicName(data.name || "Smart Admin Portal");
+              } else { setClinicName("Smart Admin Portal"); }
+            } catch (error) { setClinicName("Smart Admin Portal"); }
+          };
+
+          const fetchPendingChats = async () => {
+            try {
+              const res = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${activeClinicId}`);
+              if (res.ok) {
+                const data = await res.json();
+                if (data && data.count !== undefined) setPendingChatCount(data.count);
+              }
+            } catch (error) {}
+          };
+
+          initializeData();
+          fetchPendingChats();
+          const interval = setInterval(fetchPendingChats, 10000); 
+          return () => clearInterval(interval);
+      } else {
+          setClinicName("AICAS Clinic System");
+      }
+    } else {
+        setIsSessionLoaded(true);
+    }
+  }, [pathname, router]);
+
+  // FIX: Prevents React Hydration Crash (Blank Screen)
+  if (!isSessionLoaded) {
+      return (
+          <html lang="en">
+              <body className="m-0 flex h-screen bg-slate-50 font-sans text-slate-800 items-center justify-center">
+                  <div className="animate-pulse font-bold text-slate-400">Loading System...</div>
+              </body>
+          </html>
+      );
+  }
   
-  // Fully Bypass Admin UI Layout for Public / Discovery Layer
-  if (pathname === '/login' || pathname === '/discovery') return <html lang="en"><body>{children}</body></html>;
+  if (pathname === '/login' || pathname === '/discovery') {
+      return (
+          <html lang="en">
+              <body className="m-0 bg-slate-50 font-sans text-slate-800">
+                  {children}
+              </body>
+          </html>
+      );
+  }
 
   const hasPermission = (moduleName: string) => {
       if (!userSession) return false;

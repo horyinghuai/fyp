@@ -29,7 +29,6 @@ export default function SettingsPage() {
                   setFormData(f => ({ ...f, name: data.name, email: data.email }));
                   setOriginalEmail(data.email);
                   setOriginalName(data.name);
-                  
               }
           } catch (err) {}
       };
@@ -44,15 +43,16 @@ export default function SettingsPage() {
       return () => clearInterval(timer);
   }, [resendTimer, emailPhase]);
 
+  const pass = formData.newPassword || '';
   const reqs = {
-    length: formData.newPassword.length >= 8, upper: /[A-Z]/.test(formData.newPassword), lower: /[a-z]/.test(formData.newPassword),
-    number: /[0-9]/.test(formData.newPassword), symbol: /[^A-Za-z0-9]/.test(formData.newPassword),
-    match: formData.newPassword !== '' && formData.newPassword === formData.confirmPassword
+    length: pass.length >= 8, upper: /[A-Z]/.test(pass), lower: /[a-z]/.test(pass),
+    number: /[0-9]/.test(pass), symbol: /[^A-Za-z0-9]/.test(pass),
+    match: pass !== '' && pass === formData.confirmPassword
   };
   
   const isPasswordValid = Object.values(reqs).every(Boolean);
-  const isPasswordIntended = formData.newPassword !== '';
-  const isNameChanged = formData.name !== originalName && formData.name.trim() !== '';
+  const isPasswordIntended = pass !== '';
+  const isNameChanged = (formData.name || '') !== originalName && (formData.name || '').trim() !== '';
 
   const canSave = (isNameChanged && !isPasswordIntended) || (isPasswordIntended && isPasswordValid);
 
@@ -75,6 +75,7 @@ export default function SettingsPage() {
             setStatus({ type: 'success', text: emailAlreadyUpdated ? 'Email and profile updated successfully!' : 'Profile updated successfully.' });
             setFormData(f => ({ ...f, newPassword: '', confirmPassword: '' }));
             setOriginalEmail(formData.email);
+            setOriginalName(data.name);
             window.dispatchEvent(new Event('storage'));
         } else {
             const err = await res.json();
@@ -87,7 +88,7 @@ export default function SettingsPage() {
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatus({ type: '', text: '' });
-    if (!isPasswordValid) return setStatus({ type: 'error', text: 'Password requirements not met.' });
+    if (!canSave) return;
     await proceedWithUpdate(false);
   };
 
@@ -97,9 +98,7 @@ export default function SettingsPage() {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmailTarget)) return setModalError('Invalid email format.');
 
       if (!isResend) {
-          if (!window.confirm("Are you sure you want to overwrite the email address for this user globally?")) {
-              return;
-          }
+          if (!window.confirm("Are you sure you want to overwrite the email address for this user globally?")) return;
       }
 
       setIsLoading(true);
