@@ -2209,7 +2209,53 @@ async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"Thank you for using {clinic_name} AICAS Bot. Have a great day!\n\nIf you want to restart the clinic bot, just type /start.")
         return ConversationHandler.END
 
-# --- bot.py ---
+async def handle_reminder_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    tg_id = update.effective_user.id
+    
+    # Check if context memory was lost, retrieve patient invisibly
+    if not context.user_data.get('ic'):
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(f"{API_BASE}/patient-by-tg/{tg_id}", timeout=5.0)
+                if res.status_code == 200:
+                    p_data = res.json()
+                    context.user_data['ic'] = p_data['ic']
+                    context.user_data['active_clinic_id'] = p_data['clinic_id']
+                    context.user_data['name'] = p_data['name']
+                    context.user_data['is_malaysian'] = True 
+                else:
+                    await query.message.reply_text("Error: Patient record not found. Please type /start to log in.")
+                    return ConversationHandler.END
+            except Exception as e:
+                logger.error(f"Error fetching patient: {e}")
+                await query.message.reply_text("Server error. Please try again later.")
+                return ConversationHandler.END
+                
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+
+    if data.startswith("rem_conf_"):
+        stage_id = data.replace("rem_conf_", "")
+        # Save to chat_messages table making it appear in Bot Replies dashboard
+        await log_chat_to_db(active_cid, tg_id, user_msg="✅ Patient confirmed their appointment.", bot_reply="Thank you for confirming your appointment.")
+        
+        # Remove buttons and append confirmation status
+        await query.edit_message_text(f"{query.message.text}\n\n✅ *Status: Confirmed*", parse_mode="Markdown")
+        await query.message.reply_text("Thank you for confirming your appointment.")
+        return ConversationHandler.END
+        
+    elif data.startswith("rem_mod_"):
+        stage_id = data.replace("rem_mod_", "")
+        query.data = f"modify_appt_{stage_id}"
+        return await appointment_action(update, context) 
+        
+    elif data.startswith("rem_can_"):
+        stage_id = data.replace("rem_can_", "")
+        query.data = f"cancel_appt_{stage_id}"
+        return await appointment_action(update, context)
 
 async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = clean_bot_username(update.message.text)
@@ -2253,7 +2299,8 @@ if __name__ == '__main__':
         entry_points=[
             CommandHandler('start', start),
             CommandHandler('cancel', cancel_command),
-            CallbackQueryHandler(final_help_logic, pattern="^help_")
+            CallbackQueryHandler(final_help_logic, pattern="^help_"),
+            CallbackQueryHandler(handle_reminder_action, pattern="^rem_")
         ],
         states={
             REUSE_PATIENT: [CallbackQueryHandler(handle_reuse_choice, pattern="^reuse_")],

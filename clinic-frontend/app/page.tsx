@@ -204,18 +204,23 @@ export default function AdminDashboard() {
               while (curr.clone().add(duration, 'minutes').isSameOrBefore(end)) {
                   const timeStr = curr.format("HH:mm");
                   
-                  if (isToday && curr.isSameOrBefore(now)) {
+                  // Allow past times if editing an existing event on that exact time
+                  const isCurrentEventTime = selectedEvent && moment(selectedEvent.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${timeStr}`;
+
+                  if (isToday && curr.isSameOrBefore(now) && !isCurrentEventTime) {
                       curr.add(duration, 'minutes');
                       continue;
                   }
 
+                  // Only mark as busy if it belongs to a different appointment
                   const isBusy = events.some(e => 
                       e.doctor_ic === doc.ic_passport_number && 
                       e.status !== 'canceled' && 
+                      (!selectedEvent || e.id !== selectedEvent.id) && 
                       moment(e.start).format("YYYY-MM-DD HH:mm") === `${editDate} ${timeStr}`
                   );
                   
-                  if (!isBusy) {
+                  if (!isBusy || isCurrentEventTime) {
                       timesSet.add(timeStr);
                       if (!docsForTime[timeStr]) docsForTime[timeStr] = [];
                       docsForTime[timeStr].push(doc);

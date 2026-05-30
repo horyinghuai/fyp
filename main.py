@@ -1403,8 +1403,25 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         db.commit()
 
         # Send Booking Summary ONLY if requested from the React Website
-        if getattr(booking, 'source', 'web') == 'web':
+        # Checking 'not booking.skip_notification' completely stops Telegram Bot triggers
+        if getattr(booking, 'source', 'web') == 'web' and not booking.skip_notification:
             try:
+                # Format details nicely
+                details_dict = booking.details
+                items = details_dict.get('items', [])
+                dose = details_dict.get('dose')
+                notes = details_dict.get('general_notes')
+                doc_name = details_dict.get('assigned_doctor_name', details_dict.get('doctor_pref', 'ANY'))
+                
+                if booking.service_type == 'Vaccine':
+                    details_str = f"{items[0] if items else ''} ({dose})" if dose else ", ".join(items)
+                elif booking.service_type == 'Blood Test':
+                    details_str = ", ".join(items) if items else ""
+                else:
+                    details_str = str(notes) if notes else "General Consultation"
+                    
+                doctor_str = f"\nDoctor: {doc_name}" if doc_name else ""
+                
                 summary = (f"✅ Booking Successfully Confirmed!\n\n"
                            f"Name: {patient.name}\n"
                            f"IC/Passport: {patient.ic_passport_number}\n"
@@ -1412,7 +1429,7 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                            f"Date: {start_time.strftime('%Y-%m-%d')}\n"
                            f"Time: {start_time.strftime('%H:%M')}\n"
                            f"Service: {booking.service_type}\n"
-                           f"Details: {booking.details}")
+                           f"Details: {details_str}{doctor_str}")
                            
                 if booking.service_type == "Blood Test":
                     summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."
@@ -1433,6 +1450,13 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+    
+@app.get("/patient-by-tg/{telegram_id}")
+def get_patient_by_tg(telegram_id: int, db: Session = Depends(get_db)):
+    patient = db.query(models.Patient).filter(models.Patient.telegram_id == telegram_id).first()
+    if patient:
+        return {"ic": patient.ic_passport_number, "clinic_id": str(patient.clinic_id), "name": patient.name}
+    raise HTTPException(status_code=404, detail="Patient not found")
 
 @app.post("/update-appointment")
 def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):

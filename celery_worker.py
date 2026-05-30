@@ -96,10 +96,18 @@ def run_reminder_agent():
             msg += "If there are any changes to be made, please contact the clinic ASAP."
 
             if patient.telegram_id:
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "✅ Confirm", "callback_data": f"rem_conf_{stage.id}"}],
+                        [{"text": "✏️ Modify", "callback_data": f"rem_mod_{stage.id}"},
+                         {"text": "❌ Cancel", "callback_data": f"rem_can_{stage.id}"}]
+                    ]
+                }
                 response = httpx.post(TELEGRAM_API_URL, json={
                     "chat_id": patient.telegram_id,
                     "text": msg,
-                    "parse_mode": "Markdown"
+                    "parse_mode": "Markdown",
+                    "reply_markup": keyboard
                 })
                 success = response.status_code == 200
             else:
