@@ -698,7 +698,10 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
 async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data
+    
+    # Read the override data if it exists (from reminders), otherwise fallback to the normal query data
+    data = context.user_data.pop('action_data_override', query.data)
+    
     if data == "back_to_appt_list":
         return await show_patient_appointments(update, context, query=True)
     if data.startswith("modify_appt_"):
@@ -2240,21 +2243,22 @@ async def handle_reminder_action(update: Update, context: ContextTypes.DEFAULT_T
     if data.startswith("rem_conf_"):
         stage_id = data.replace("rem_conf_", "")
         # Save to chat_messages table making it appear in Bot Replies dashboard
-        await log_chat_to_db(active_cid, tg_id, user_msg="✅ Patient confirmed their appointment.", bot_reply="Thank you for confirming your appointment.")
+        await log_chat_to_db(active_cid, tg_id, user_msg="✅ Patient confirmed their appointment.", bot_reply="Thank you for the confirmation.")
         
         # Remove buttons and append confirmation status
         await query.edit_message_text(f"{query.message.text}\n\n✅ *Status: Confirmed*", parse_mode="Markdown")
-        await query.message.reply_text("Thank you for confirming your appointment.")
+        await query.message.reply_text("Thank you for the confirmation.\nIf you want to restart the clinic bot, just type /start.")
         return ConversationHandler.END
         
     elif data.startswith("rem_mod_"):
         stage_id = data.replace("rem_mod_", "")
-        query.data = f"modify_appt_{stage_id}"
+        # Safely pass the spoofed data string via context memory instead of overwriting query.data
+        context.user_data['action_data_override'] = f"modify_appt_{stage_id}"
         return await appointment_action(update, context) 
         
     elif data.startswith("rem_can_"):
         stage_id = data.replace("rem_can_", "")
-        query.data = f"cancel_appt_{stage_id}"
+        context.user_data['action_data_override'] = f"cancel_appt_{stage_id}"
         return await appointment_action(update, context)
 
 async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE):

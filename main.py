@@ -1406,12 +1406,19 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         # Checking 'not booking.skip_notification' completely stops Telegram Bot triggers
         if getattr(booking, 'source', 'web') == 'web' and not booking.skip_notification:
             try:
-                # Format details nicely
                 details_dict = booking.details
+                
+                # Fetch actual doctor name from DB to prevent "ANY", "MALE", "FEMALE"
+                doc_ic = details_dict.get('assigned_doctor_id')
+                actual_doc_name = "ANY"
+                if doc_ic and str(doc_ic).upper() not in ["ANY", "NONE", "NULL", ""]:
+                    doc_model = db.query(models.Doctor).filter_by(ic_passport_number=doc_ic).first()
+                    if doc_model:
+                        actual_doc_name = doc_model.name
+                
                 items = details_dict.get('items', [])
                 dose = details_dict.get('dose')
                 notes = details_dict.get('general_notes')
-                doc_name = details_dict.get('assigned_doctor_name', details_dict.get('doctor_pref', 'ANY'))
                 
                 if booking.service_type == 'Vaccine':
                     details_str = f"{items[0] if items else ''} ({dose})" if dose else ", ".join(items)
@@ -1420,7 +1427,7 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 else:
                     details_str = str(notes) if notes else "General Consultation"
                     
-                doctor_str = f"\nDoctor: {doc_name}" if doc_name else ""
+                doctor_str = f"\nDoctor: {actual_doc_name}"
                 
                 summary = (f"✅ Booking Successfully Confirmed!\n\n"
                            f"Name: {patient.name}\n"
@@ -1435,9 +1442,24 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."
                 
                 if patient.telegram_id:
+                    # Fetch first stage ID to link the modify/confirm buttons directly to this appointment
+                    first_stage = db.query(models.ApptStage).filter_by(appointment_id=new_appt.id).order_by(models.ApptStage.scheduled_time.asc()).first()
+                    stage_id_str = str(first_stage.id) if first_stage else ""
+                    
+                    keyboard = {
+                        "inline_keyboard": [
+                            [{"text": "✅ Yes, confirmed", "callback_data": f"rem_conf_{stage_id_str}"}],
+                            [{"text": "✏️ No, need to modify", "callback_data": f"rem_mod_{stage_id_str}"}]
+                        ]
+                    }
+                    
                     token = os.getenv("TELEGRAM_BOT_TOKEN")
                     async with httpx.AsyncClient() as client:
-                        await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": patient.telegram_id, "text": summary})
+                        await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                            "chat_id": patient.telegram_id, 
+                            "text": summary,
+                            "reply_markup": keyboard
+                        })
                 else:
                     await send_sms_async(patient.phone, summary)
             except Exception as e:
