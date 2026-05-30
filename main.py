@@ -2523,10 +2523,11 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
     # 2. Calculate Workload (Scheduled & Upcoming Only)
     workloads = {}
     for doc in doctors:
-        count = db.query(models.AppointmentStage).join(models.Appointment).filter(
+        # FIX: Changed to models.ApptStage
+        count = db.query(models.ApptStage).join(models.Appointment).filter(
             models.Appointment.doctor_ic == doc.ic_passport_number,
-            models.AppointmentStage.status == 'scheduled',
-            models.AppointmentStage.scheduled_time >= datetime.now()
+            models.ApptStage.status == 'scheduled',
+            models.ApptStage.scheduled_time >= datetime.now()
         ).count()
         workloads[doc.ic_passport_number] = count
 
@@ -2553,10 +2554,11 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                 
                 while t + timedelta(minutes=req.duration) <= end_t:
                     if t > datetime.now():
-                        conflict = db.query(models.AppointmentStage).join(models.Appointment).filter(
+                        # FIX: Changed to models.ApptStage
+                        conflict = db.query(models.ApptStage).join(models.Appointment).filter(
                             models.Appointment.doctor_ic == doc.ic_passport_number,
-                            models.AppointmentStage.scheduled_time == t,
-                            models.AppointmentStage.status == 'scheduled'
+                            models.ApptStage.scheduled_time == t,
+                            models.ApptStage.status == 'scheduled'
                         ).first()
                         
                         if not conflict:
@@ -2599,7 +2601,6 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
         if len(alts) >= 3:
             break
             
-    # Reasoning logic based on specific constraint
     reason = "Lowest workload period for this doctor." if req.doctor_pref not in ['ANY', 'MALE', 'FEMALE'] else "Optimal workload distribution among available doctors."
     
     return {
