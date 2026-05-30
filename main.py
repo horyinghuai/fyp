@@ -1480,6 +1480,20 @@ def get_patient_by_tg(telegram_id: int, db: Session = Depends(get_db)):
         return {"ic": patient.ic_passport_number, "clinic_id": str(patient.clinic_id), "name": patient.name}
     raise HTTPException(status_code=404, detail="Patient not found")
 
+@app.get("/appointment-context/{stage_id}")
+def get_appointment_context(stage_id: str, db: Session = Depends(get_db)):
+    stage = db.query(models.ApptStage).filter(models.ApptStage.id == stage_id).first()
+    if not stage:
+        raise HTTPException(status_code=404, detail="Stage not found")
+    appt = db.query(models.Appointment).filter(models.Appointment.id == stage.appointment_id).first()
+    patient = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
+    
+    return {
+        "ic": patient.ic_passport_number, 
+        "clinic_id": str(patient.clinic_id), 
+        "name": patient.name
+    }
+
 @app.post("/update-appointment")
 def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
     try:
