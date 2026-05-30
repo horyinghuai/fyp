@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
-import { Camera, FileUp, Smartphone } from 'lucide-react';
+import { Camera, FileUp } from 'lucide-react';
 
 const COUNTRIES = [
   "Malaysia", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia", "Australia", 
@@ -23,8 +22,7 @@ export default function PatientsPage() {
   const [isMyKadUploaded, setIsMyKadUploaded] = useState(false);
   const [formData, setFormData] = useState({ ic: '', name: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
 
-  const [ocrMode, setOcrMode] = useState<'none'|'pc'|'mobile'>('none');
-  const [mobileSessionId, setMobileSessionId] = useState<string | null>(null);
+  const [ocrMode, setOcrMode] = useState<'none'|'pc'>('none');
   const [ocrProcessing, setOcrProcessing] = useState(false);
   const pcVideoRef = useRef<HTMLVideoElement>(null);
   const pcCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -90,12 +88,45 @@ export default function PatientsPage() {
       if (e.target.files && e.target.files[0]) handleOcrFileResponse(e.target.files[0]);
   };
 
+  const restartPcCamera = async () => {
+      if (pcVideoRef.current) {
+          const oldStream = pcVideoRef.current.srcObject as MediaStream;
+          oldStream?.getTracks().forEach(t => t.stop());
+          pcVideoRef.current.srcObject = null;
+      }
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+          if (pcVideoRef.current) {
+              pcVideoRef.current.srcObject = stream;
+              await new Promise(resolve => {
+                  pcVideoRef.current!.onloadedmetadata = resolve;
+              });
+          }
+      } catch(e) {
+          alert("Failed to restart camera. Please try again.");
+      }
+  };
+
   const startPcCamera = async () => {
       setOcrMode('pc');
       try {
+          // Stop any existing stream first
+          if (pcVideoRef.current) {
+              const oldStream = pcVideoRef.current.srcObject as MediaStream;
+              oldStream?.getTracks().forEach(t => t.stop());
+              pcVideoRef.current.srcObject = null;
+          }
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-          if (pcVideoRef.current) pcVideoRef.current.srcObject = stream;
-      } catch(e) { alert("Camera access denied."); setOcrMode('none'); }
+          if (pcVideoRef.current) {
+              pcVideoRef.current.srcObject = stream;
+              await new Promise(resolve => {
+                  pcVideoRef.current!.onloadedmetadata = resolve;
+              });
+          }
+      } catch(e) { 
+          alert("Camera access denied."); 
+          setOcrMode('none'); 
+      }
   };
 
   const capturePcCamera = () => {
@@ -123,34 +154,23 @@ export default function PatientsPage() {
                     setIsMyKadUploaded(true);
                     setOcrMode('none');
                     alert("MyKad scanned successfully!");
-                } else { alert("Failed to read MyKad cleanly. Please adjust lighting and tap Capture again."); }
+                } else { 
+                    alert("Failed to read MyKad cleanly. Please adjust lighting and tap Capture again.");
+                    // Ensure camera is active again after alert is dismissed
+                    if (video.paused) {
+                        video.play().catch(err => console.log("Could not resume video:", err));
+                    }
+                }
             })
-            .catch(e => alert("OCR Failed due to network connection."))
+            .catch(e => {
+                alert("OCR Failed due to network connection.");
+                // Ensure camera is active again after alert is dismissed
+                if (video.paused) {
+                    video.play().catch(err => console.log("Could not resume video:", err));
+                }
+            })
             .finally(() => setOcrProcessing(false));
       }, 'image/jpeg');
-  };
-
-  const startMobileScan = async () => {
-      const sessionId = Math.random().toString(36).substring(2, 15);
-      setMobileSessionId(sessionId);
-      setOcrMode('mobile');
-      await fetch(`http://127.0.0.1:8000/admin/ocr-session/${sessionId}/generate`);
-      
-      const poll = setInterval(async () => {
-          try {
-              const res = await fetch(`http://127.0.0.1:8000/admin/ocr-session/${sessionId}`);
-              const data = await res.json();
-              if (data.status === 'completed') {
-                  clearInterval(poll);
-                  setICFromBackend(data.data.ic);
-                  setFormData({...formData, ic: data.data.ic, name: data.data.name, address: data.data.address, gender: data.data.gender, nationality: 'MALAYSIA'});
-                  setIsMyKadUploaded(true);
-                  setOcrMode('none');
-                  setMobileSessionId(null);
-                  alert("Mobile scan successful!");
-              }
-          } catch(e) {}
-      }, 2000);
   };
 
   const cancelOcr = () => {
@@ -159,7 +179,6 @@ export default function PatientsPage() {
           stream?.getTracks().forEach(t => t.stop());
       }
       setOcrMode('none');
-      setMobileSessionId(null);
   };
 
   const handleSave = async () => {
@@ -307,9 +326,6 @@ export default function PatientsPage() {
                             <button onClick={startPcCamera} type="button" className="flex-1 p-2 bg-white border border-slate-300 text-slate-700 font-bold text-sm rounded-lg hover:bg-slate-100 flex items-center justify-center gap-2">
                                 <Camera size={16}/> PC Scan
                             </button>
-                            <button onClick={startMobileScan} type="button" className="flex-1 p-2 bg-white border border-blue-300 text-blue-700 font-bold text-sm rounded-lg hover:bg-blue-50 flex items-center justify-center gap-2">
-                                <Smartphone size={16}/> Mobile Scan
-                            </button>
                         </div>
                     )}
                     {ocrProcessing && <p className="text-blue-600 font-bold text-sm text-center py-4 animate-pulse">Analyzing MyKad with AI...</p>}
@@ -319,17 +335,12 @@ export default function PatientsPage() {
                             <canvas ref={pcCanvasRef} className="hidden" />
                             <div className="flex gap-2 w-full">
                                 <button type="button" onClick={capturePcCamera} className="flex-1 bg-blue-600 text-white font-bold py-2 rounded-lg">Capture</button>
+                                <button type="button" onClick={restartPcCamera} className="flex-1 bg-amber-500 text-white font-bold py-2 rounded-lg">Refresh</button>
                                 <button type="button" onClick={cancelOcr} className="px-4 bg-slate-300 text-slate-700 font-bold rounded-lg">Cancel</button>
                             </div>
                         </div>
                     )}
-                    {ocrMode === 'mobile' && mobileSessionId && (
-                        <div className="flex flex-col items-center">
-                            <p className="text-xs font-bold text-slate-500 mb-3 text-center">Scan with your phone to upload securely</p>
-                            <div className="bg-white p-2 rounded-xl shadow-sm mb-3"><QRCodeSVG value={`http://192.168.1.9:3000/mobile-ocr/${mobileSessionId}`} size={120} /></div>
-                            <button type="button" onClick={cancelOcr} className="text-xs text-red-500 font-bold mt-2">Cancel Mobile Scan</button>
-                        </div>
-                    )}
+
                 </div>
             )}
 

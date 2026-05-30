@@ -2508,14 +2508,6 @@ def check_ocr_session(session_id: str):
         return {"status": "completed", "data": data}
     return {"status": "pending"}
 
-@app.post("/admin/ocr-session/{session_id}/upload")
-async def upload_mobile_ocr(session_id: str, file: UploadFile = File(...)):
-    if session_id not in ocr_sessions: raise HTTPException(status_code=404)
-    # Process it using your existing logic
-    result = await process_mykad_ocr(file) 
-    ocr_sessions[session_id] = {"status": "completed", "data": result["data"]}
-    return {"status": "success"}
-
 @app.post("/register-patient")
 def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
     try:
