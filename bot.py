@@ -1688,25 +1688,30 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
                         f"_You may still choose any available slot._"
                     )
 
+                    # FIX: Format time to 24-hour HH:MM:SS for backend validation
+                    time_obj = dt.datetime.strptime(data['raw_time'], "%I:%M %p")
+                    formatted_time = time_obj.strftime("%H:%M:%S")
+
                     # Build Inline Keyboard buttons for the recommendations
-                    # Reusing the existing time/sug callback format so handle_date_time_selection catches it.
-                    # Best slot:
-                    best_slot_callback = f"sug_{data['raw_date']} {data['raw_time']}"
+                    best_slot_callback = f"sug_{data['raw_date']} {formatted_time}"
                     rec_keyboard.append([InlineKeyboardButton(f"⭐ {data['recommended_slot']}", callback_data=best_slot_callback)])
                     
                     # Alternatives:
                     for alt in data['alternative_slots']:
-                        # Format is "DD/MM/YYYY Day HH:MM PM" - need to convert to "YYYY-MM-DD HH:MM PM" for callback
-                        # E.g., "05/06/2026 Friday 10:00 AM" -> "2026-06-05 10:00 AM"
                         try:
+                            # e.g., "05/06/2026 Friday 10:00 AM"
                             parts = alt.split(" ")
-                            date_part = parts[0] # DD/MM/YYYY
+                            date_part = parts[0] # "05/06/2026"
                             d_obj = dt.datetime.strptime(date_part, "%d/%m/%Y")
                             new_date_str = d_obj.strftime("%Y-%m-%d")
-                            time_part = " ".join(parts[2:]) # HH:MM PM
-                            alt_callback = f"sug_{new_date_str} {time_part}"
+                            
+                            time_part = " ".join(parts[2:]) # "10:00 AM"
+                            t_obj = dt.datetime.strptime(time_part, "%I:%M %p")
+                            new_time_str = t_obj.strftime("%H:%M:%S")
+                            
+                            alt_callback = f"sug_{new_date_str} {new_time_str}"
                             rec_keyboard.append([InlineKeyboardButton(alt, callback_data=alt_callback)])
-                        except:
+                        except Exception as e:
                             pass
         except Exception as e:
             logger.error(f"Scheduling Agent Error: {e}")
@@ -1717,7 +1722,6 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     
     if rec_msg and rec_keyboard:
         # If we have AI recommendations, show them first with their buttons
-        # Add the 'Choose Other Available Slots' button to trigger the standard date picker
         rec_keyboard.append([InlineKeyboardButton("Choose Other Available Slots", callback_data="show_standard_dates")])
         final_markup = InlineKeyboardMarkup(rec_keyboard)
         msg = rec_msg
