@@ -2542,43 +2542,48 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
     if not doctors:
         return {"error": "No doctors found matching criteria."}
         
-    # 2. Calculate Workload (Scheduled & Upcoming Only)
-    workloads = {}
-    for doc in doctors:
-        count = db.query(models.ApptStage).join(models.Appointment).filter(
-            models.Appointment.doctor_ic == doc.ic_passport_number,
-            models.ApptStage.status == 'scheduled',
-            models.ApptStage.scheduled_time >= datetime.now()
-        ).count()
-        workloads[doc.ic_passport_number] = count
-
-    max_wl = max(workloads.values()) if workloads.values() else 1
-    if max_wl == 0: max_wl = 1
-
-    # 3. Calculate Time Slot Density Map for Congestion Evaluation
+    # 2. Calculate Overall & Daily Workload (Scheduled & Upcoming Only)
+    doc_ics = [d.ic_passport_number for d in doctors]
+    
     start_of_period = datetime.combine(start_date, datetime.min.time())
     end_of_period = start_of_period + timedelta(days=8)
     
-    clinic_appts = db.query(models.ApptStage.scheduled_time).join(models.Appointment).join(models.Patient).filter(
-        models.Patient.clinic_id == req.clinic_id,
+    # PROBLEM 2 FIX: Strictly querying upcoming 'scheduled' appointments only
+    period_appts = db.query(models.Appointment.doctor_ic, models.ApptStage.scheduled_time).join(
+        models.ApptStage, models.Appointment.id == models.ApptStage.appointment_id
+    ).filter(
+        models.Appointment.doctor_ic.in_(doc_ics),
         models.ApptStage.status == 'scheduled',
-        models.ApptStage.scheduled_time >= start_of_period,
+        models.ApptStage.scheduled_time >= datetime.now(),
         models.ApptStage.scheduled_time <= end_of_period
     ).all()
     
+    workloads = {d.ic_passport_number: 0 for d in doctors}
+    daily_workloads = {}
     time_density = {}
-    for (sch_time,) in clinic_appts:
-        if sch_time:
-            time_density[sch_time] = time_density.get(sch_time, 0) + 1
+    
+    for dic, stime in period_appts:
+        if stime:
+            workloads[dic] += 1
+            d_str = stime.strftime("%Y-%m-%d")
+            daily_workloads[(dic, d_str)] = daily_workloads.get((dic, d_str), 0) + 1
+            time_density[stime] = time_density.get(stime, 0) + 1
+
+    max_wl = max(workloads.values()) if workloads.values() else 1
+    if max_wl == 0: max_wl = 1
+    
+    max_daily = max(daily_workloads.values()) if daily_workloads else 1
+    if max_daily == 0: max_daily = 1
             
     max_density = max(time_density.values()) if time_density else 1
     if max_density == 0: max_density = 1
 
-    # 4. Generate and Rank Slots (7-Day Window)
+    # 3. Generate and Rank Slots (7-Day Window)
     all_slots = []
     for i in range(8):
         curr_date = start_date + timedelta(days=i)
         day_str = curr_date.strftime("%a").lower()
+        date_str_key = curr_date.strftime("%Y-%m-%d")
         
         for doc in doctors:
             avails = db.query(models.DoctorClinicAvailability).filter(
@@ -2587,6 +2592,11 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                 models.DoctorClinicAvailability.day_of_week == day_str,
                 models.DoctorClinicAvailability.status == 'active'
             ).all()
+            
+            # Sub-score: Overall vs Daily Workload
+            wl_score = 1.0 - (workloads[doc.ic_passport_number] / max_wl)
+            daily_count = daily_workloads.get((doc.ic_passport_number, date_str_key), 0)
+            daily_score = 1.0 - (daily_count / max_daily)
             
             for a in avails:
                 t = datetime.combine(curr_date, a.start_time)
@@ -2601,19 +2611,18 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                         ).first()
                         
                         if not conflict:
-                            # 80% Doctor Workload Score (Lower workload = closer to 1.0)
-                            wl_score = 1.0 - (workloads[doc.ic_passport_number] / max_wl) 
-                            
-                            # 20% Time Slot Density Score (Lower density = closer to 1.0)
+                            # 20% Time Slot Density Score
                             slot_density = time_density.get(t, 0)
                             density_score = 1.0 - (slot_density / max_density) 
                             
-                            final_score = (wl_score * 0.80) + (density_score * 0.20)
+                            # 80% Doctor Workload Score (60% Overall + 20% Daily to prevent clumping on a single day)
+                            final_score = (wl_score * 0.60) + (daily_score * 0.20) + (density_score * 0.20)
                             
                             all_slots.append({
                                 "doctor": doc.name,
-                                "date_str": curr_date.strftime("%Y-%m-%d"),
+                                "date_str": date_str_key,
                                 "time_str": t.strftime("%I:%M %p"),
+                                "formatted_time": t.strftime("%H:%M:%S"),
                                 "display": f"{curr_date.strftime('%d/%m/%Y')} {t.strftime('%A')} {t.strftime('%I:%M %p')}",
                                 "score": final_score,
                                 "t_val": t
@@ -2623,27 +2632,37 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
     if not all_slots:
         return {"error": "No available slots within the next 7 days."}
         
-    # Sort deterministically by Score (Descending), then Chronologically
-    all_slots.sort(key=lambda x: (x["score"], -x["t_val"].timestamp()), reverse=True)
+    # PROBLEM 1 & 4 FIX: Deterministic sorting, highest score first, ties broken by earliest chronological slot
+    all_slots.sort(key=lambda x: (-x["score"], x["t_val"]))
     best = all_slots[0]
     
-    # 5. Extract 3 Unique Alternatives
+    # PROBLEM 3 FIX: Structured output for Alternatives
     alts = []
     seen = set([best["display"]])
     for s in all_slots[1:]:
         if s["display"] not in seen:
-            alts.append(s["display"])
+            alts.append({
+                "doctor": s["doctor"],
+                "display": s["display"],
+                "date_str": s["date_str"],
+                "formatted_time": s["formatted_time"]
+            })
             seen.add(s["display"])
         if len(alts) >= 3:
             break
             
-    reason = "Lowest workload period for this doctor." if req.doctor_pref not in ['ANY', 'MALE', 'FEMALE'] else "Optimal workload distribution among available doctors."
+    # PROBLEM 4 FIX: Patient-Friendly Reasons
+    if req.doctor_pref in ['ANY', 'MALE', 'FEMALE']:
+        reason = "Recommended based on doctor availability."
+    else:
+        reason = "Recommended for faster availability."
     
     return {
         "recommended_doctor": best["doctor"],
         "recommended_slot": best["display"],
         "raw_date": best["date_str"],
         "raw_time": best["time_str"],
+        "formatted_time": best["formatted_time"],
         "reasoning": reason,
         "alternative_slots": alts
     }

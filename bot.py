@@ -1663,20 +1663,10 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
             if res.status_code == 200:
                 data = res.json()
                 if "error" not in data:
-                    raw_reason = data.get('reasoning', '')
+                    patient_friendly_reason = data.get('reasoning', "Recommended for faster availability.")
                     
-                    # Map internal logic to patient-friendly phrasing
-                    patient_friendly_reason = "Recommended based on doctor availability."
-                    if "Lowest workload" in raw_reason:
-                        patient_friendly_reason = "Recommended for faster availability."
-                    elif "Optimal workload distribution" in raw_reason:
-                        patient_friendly_reason = "Recommended for faster availability."
-                    elif "Reduced appointment congestion" in raw_reason:
-                        patient_friendly_reason = "Recommended to reduce waiting time."
-                    elif "Best available slot" in raw_reason:
-                        patient_friendly_reason = "Recommended appointment within your preferred period."
-                        
-                    alts_display = "\n".join([f"• {a}" for a in data['alternative_slots']])
+                    # Display the Doctor's name in the Alternative list
+                    alts_display = "\n".join([f"• {a['doctor']} - {a['display']}" for a in data['alternative_slots']])
                     
                     rec_msg = (
                         f"⭐ *Recommended Appointment*\n"
@@ -1688,37 +1678,16 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
                         f"_You may still choose any available slot._"
                     )
 
-                    # FIX: Format time to 24-hour HH:MM:SS for backend validation
-                    time_obj = dt.datetime.strptime(data['raw_time'], "%I:%M %p")
-                    formatted_time = time_obj.strftime("%H:%M:%S")
-
                     # Build Inline Keyboard buttons for the recommendations
-                    best_slot_callback = f"sug_{data['raw_date']} {formatted_time}"
-                    
-                    # --- ADD THESE TWO LINES TO TRACK THE AI DOCTOR ---
-                    context.user_data['ai_rec_slot'] = best_slot_callback.replace("sug_", "")
+                    best_slot_callback = f"sug_{data['raw_date']} {data['formatted_time']}"
                     context.user_data['ai_rec_doc'] = data['recommended_doctor']
-                    # --------------------------------------------------
+                    rec_keyboard.append([InlineKeyboardButton(f"⭐ {data['recommended_doctor']} - {data['recommended_slot']}", callback_data=best_slot_callback)])
                     
-                    rec_keyboard.append([InlineKeyboardButton(f"⭐ {data['recommended_slot']}", callback_data=best_slot_callback)])
-                    
-                    # Alternatives:
-                    for alt in data['alternative_slots']:
-                        try:
-                            # e.g., "05/06/2026 Friday 10:00 AM"
-                            parts = alt.split(" ")
-                            date_part = parts[0] # "05/06/2026"
-                            d_obj = dt.datetime.strptime(date_part, "%d/%m/%Y")
-                            new_date_str = d_obj.strftime("%Y-%m-%d")
-                            
-                            time_part = " ".join(parts[2:]) # "10:00 AM"
-                            t_obj = dt.datetime.strptime(time_part, "%I:%M %p")
-                            new_time_str = t_obj.strftime("%H:%M:%S")
-                            
-                            alt_callback = f"sug_{new_date_str} {new_time_str}"
-                            rec_keyboard.append([InlineKeyboardButton(alt, callback_data=alt_callback)])
-                        except Exception as e:
-                            pass
+                    # Alternatives (Using the raw strings from the backend payload)
+                    for idx, alt in enumerate(data['alternative_slots']):
+                        alt_callback = f"suga_{idx}_{alt['date_str']} {alt['formatted_time']}"
+                        context.user_data[f"ai_alt_doc_{idx}"] = alt['doctor']
+                        rec_keyboard.append([InlineKeyboardButton(f"{alt['doctor']} - {alt['display']}", callback_data=alt_callback)])
         except Exception as e:
             logger.error(f"Scheduling Agent Error: {e}")
             pass
@@ -1727,12 +1696,10 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
     
     if rec_msg and rec_keyboard:
-        # If we have AI recommendations, show them first with their buttons
         rec_keyboard.append([InlineKeyboardButton("Choose Other Available Slots", callback_data="show_standard_dates")])
         final_markup = InlineKeyboardMarkup(rec_keyboard)
         msg = rec_msg
     else:
-        # Fallback to standard picker if AI fails or finds no slots
         if service in ['Vaccine', 'Blood Test']:
             msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
         else:
@@ -1774,16 +1741,25 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             full_time_str = f"{context.user_data['book_date']} {time_str}"
             return await process_availability(update, context, full_time_str)
 
-        elif data.startswith("sug_"):
-            full_time_str = data.replace("sug_", "")
+        elif data.startswith("sug_") or data.startswith("suga_"):
+            is_alt = data.startswith("suga_")
+            
+            if is_alt:
+                # Format: "suga_0_2026-06-03 10:00:00"
+                parts = data.replace("suga_", "").split("_", 1)
+                idx = parts[0]
+                full_time_str = parts[1]
+                target_doc = context.user_data.get(f"ai_alt_doc_{idx}")
+            else:
+                # Format: "sug_2026-06-03 10:00:00"
+                full_time_str = data.replace("sug_", "")
+                target_doc = context.user_data.get('ai_rec_doc')
+
             await query.edit_message_text(f"You selected: {full_time_str}")
             context.user_data['book_date'] = full_time_str.split(" ")[0]
             
-            # FORCE the recommended doctor if this is the AI recommended slot
-            if full_time_str == context.user_data.get('ai_rec_slot'):
-                context.user_data['temp_doctor_pref'] = context.user_data.get('ai_rec_doc')
-            else:
-                context.user_data.pop('temp_doctor_pref', None)
+            # Force the specific doctor picked by the AI suggestion
+            context.user_data['temp_doctor_pref'] = target_doc
                 
             return await process_availability(update, context, full_time_str)
         
