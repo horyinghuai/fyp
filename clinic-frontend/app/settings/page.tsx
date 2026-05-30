@@ -17,6 +17,7 @@ export default function SettingsPage() {
   const [verifyCode, setVerifyCode] = useState('');
   const [modalError, setModalError] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
+  const [originalName, setOriginalName] = useState('');
 
   useEffect(() => {
       const fetchProfile = async () => {
@@ -28,7 +29,7 @@ export default function SettingsPage() {
                   const data = await res.json();
                   setFormData(f => ({ ...f, name: data.name, email: data.email }));
                   setOriginalEmail(data.email);
-                  setOriginalName(data.name);
+                  setOriginalName(data.name); // <--- Added this
               }
           } catch (err) {}
       };
@@ -52,8 +53,9 @@ export default function SettingsPage() {
   
   const isPasswordValid = Object.values(reqs).every(Boolean);
   const isPasswordIntended = pass !== '';
-  const isNameChanged = (formData.name || '') !== originalName && (formData.name || '').trim() !== '';
+  const isNameChanged = (formData.name || '').trim().toUpperCase() !== (originalName || '').trim().toUpperCase();
 
+  // Exactly as requested: Name changed OR Password correctly verified OR Both
   const canSave = (isNameChanged && !isPasswordIntended) || (isPasswordIntended && isPasswordValid);
 
   const proceedWithUpdate = async (emailAlreadyUpdated: boolean) => {
@@ -75,7 +77,7 @@ export default function SettingsPage() {
             setStatus({ type: 'success', text: emailAlreadyUpdated ? 'Email and profile updated successfully!' : 'Profile updated successfully.' });
             setFormData(f => ({ ...f, newPassword: '', confirmPassword: '' }));
             setOriginalEmail(formData.email);
-            setOriginalName(data.name);
+            setOriginalName(formData.name.toUpperCase());
             window.dispatchEvent(new Event('storage'));
         } else {
             const err = await res.json();

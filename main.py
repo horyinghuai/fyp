@@ -363,6 +363,11 @@ class PassToBotReq(BaseModel):
     clinic_id: str
     telegram_id: int
 
+class ProfileUpdateReq(BaseModel):
+    name: str
+    email: str
+    password: Optional[str] = None
+
 # --- Helper Functions ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
@@ -927,14 +932,17 @@ def get_self_profile(db: Session = Depends(get_db), current_user: models.User = 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return {"name": user.name, "email": user.email}
-def update_self_profile(data: UserSelfUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    user = db.query(models.User).filter(models.User.ic_passport_number == current_user.ic_passport_number).first()
-    user.name = data.name.upper()
-    user.email = data.email
-    if data.password:
-        user.password_hash = get_password_hash(data.password)
+def update_self_profile(req: ProfileUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.name = req.name.upper()
+    if req.password:
+        user.password_hash = get_password_hash(req.password)
+        
     db.commit()
-    return {"status": "success", "name": user.name}
+    return {"name": user.name, "email": user.email}
 
 @app.post("/admin/request-email-change")
 async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):

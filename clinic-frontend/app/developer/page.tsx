@@ -216,12 +216,12 @@ export default function DeveloperPage() {
                         <div>
                             <label className="block text-sm font-semibold mb-2">{devForm.admin_is_my ? "IC Number" : "Passport Number"} *</label>
                             {devForm.admin_is_my ? (
-                                <div className="flex gap-2 items-center bg-slate-50 border rounded-xl px-2 focus-within:ring-2 focus-within:ring-purple-500">
-                                    <input type="text" placeholder="YYMMDD" maxLength={6} value={adminIcParts[0]} onChange={e => handleAdminICPart(0, e.target.value)} className="w-[40%] bg-transparent p-2 outline-none font-mono text-center" />
+                                <div className="flex gap-1 items-center bg-slate-50 border rounded-xl px-2 focus-within:ring-2 focus-within:ring-blue-500">
+                                    <input type="text" placeholder="YYMMDD" maxLength={6} value={adminIcParts[0]} onChange={e => handleICPartChange(0, e.target.value)} className="w-[45%] bg-transparent py-2 px-1 outline-none font-mono text-center text-sm" />
                                     <span className="text-slate-400 font-bold">-</span>
-                                    <input type="text" placeholder="XX" maxLength={2} value={adminIcParts[1]} onChange={e => handleAdminICPart(1, e.target.value)} className="w-[20%] bg-transparent p-2 outline-none font-mono text-center" />
+                                    <input type="text" placeholder="XX" maxLength={2} value={adminIcParts[1]} onChange={e => handleICPartChange(1, e.target.value)} className="w-[15%] bg-transparent py-2 px-1 outline-none font-mono text-center text-sm" />
                                     <span className="text-slate-400 font-bold">-</span>
-                                    <input type="text" placeholder="XXXX" maxLength={4} value={adminIcParts[2]} onChange={e => handleAdminICPart(2, e.target.value)} className="w-[40%] bg-transparent p-2 outline-none font-mono text-center" />
+                                    <input type="text" placeholder="XXXX" maxLength={4} value={adminIcParts[2]} onChange={e => handleICPartChange(2, e.target.value)} className="w-[40%] bg-transparent py-2 px-1 outline-none font-mono text-center text-sm" />
                                 </div>
                             ) : (
                                 <input type="text" required value={devForm.admin_ic} onChange={e => setDevForm({...devForm, admin_ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase" />
@@ -242,12 +242,12 @@ export default function DeveloperPage() {
                         <div>
                             <label className="block text-sm font-semibold mb-2">{devForm.temp_admin_is_my ? "IC Number" : "Passport Number"} *</label>
                             {devForm.temp_admin_is_my ? (
-                                <div className="flex gap-2 items-center bg-slate-50 border rounded-xl px-2 focus-within:ring-2 focus-within:ring-emerald-500">
-                                    <input type="text" placeholder="YYMMDD" maxLength={6} value={tempAdminIcParts[0]} onChange={e => handleTempAdminICPart(0, e.target.value)} className="w-[40%] bg-transparent p-2 outline-none font-mono text-center" />
+                                <div className="flex gap-1 items-center bg-slate-50 border rounded-xl px-2 focus-within:ring-2 focus-within:ring-blue-500">
+                                    <input type="text" placeholder="YYMMDD" maxLength={6} value={tempAdminIcParts[0]} onChange={e => handleICPartChange(0, e.target.value)} className="w-[45%] bg-transparent py-2 px-1 outline-none font-mono text-center text-sm" />
                                     <span className="text-slate-400 font-bold">-</span>
-                                    <input type="text" placeholder="XX" maxLength={2} value={tempAdminIcParts[1]} onChange={e => handleTempAdminICPart(1, e.target.value)} className="w-[20%] bg-transparent p-2 outline-none font-mono text-center" />
+                                    <input type="text" placeholder="XX" maxLength={2} value={tempAdminIcParts[1]} onChange={e => handleICPartChange(1, e.target.value)} className="w-[15%] bg-transparent py-2 px-1 outline-none font-mono text-center text-sm" />
                                     <span className="text-slate-400 font-bold">-</span>
-                                    <input type="text" placeholder="XXXX" maxLength={4} value={tempAdminIcParts[2]} onChange={e => handleTempAdminICPart(2, e.target.value)} className="w-[40%] bg-transparent p-2 outline-none font-mono text-center" />
+                                    <input type="text" placeholder="XXXX" maxLength={4} value={tempAdminIcParts[2]} onChange={e => handleICPartChange(2, e.target.value)} className="w-[40%] bg-transparent py-2 px-1 outline-none font-mono text-center text-sm" />
                                 </div>
                             ) : (
                                 <input type="text" required value={devForm.temp_admin_ic} onChange={e => setDevForm({...devForm, temp_admin_ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase" />

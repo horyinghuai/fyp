@@ -510,36 +510,6 @@ export default function AdminDashboard() {
         
         <div className="flex flex-col items-end gap-2">
             <div className="flex items-center gap-4">
-                {/* NOTIFICATIONS */}
-                <div className="relative">
-                    <button onClick={() => setShowNotifications(!showNotifications)} className="p-2 bg-white rounded-xl shadow-sm border border-slate-100 hover:bg-slate-50 relative">
-                        <Bell size={20} className="text-slate-600" />
-                        {vaccinesList.filter(v => v.is_low_stock).length > 0 && (
-                            <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
-                        )}
-                    </button>
-                    {showNotifications && (
-                        <div className="absolute right-0 mt-2 w-80 bg-white border border-slate-100 shadow-xl rounded-xl z-50 overflow-hidden">
-                            <div className="p-3 bg-slate-50 border-b font-bold text-slate-700 text-sm">Low Stock Alerts</div>
-                            <div className="max-h-60 overflow-y-auto">
-                                {vaccinesList.filter(v => v.is_low_stock).length === 0 ? (
-                                    <div className="p-4 text-center text-sm text-slate-500">No stock alerts.</div>
-                                ) : (
-                                    vaccinesList.filter(v => v.is_low_stock).map((v, i) => (
-                                        <div key={i} className="p-3 border-b border-slate-100 flex items-start gap-3">
-                                            <AlertTriangle size={16} className="text-red-500 mt-0.5 shrink-0" />
-                                            <div>
-                                                <p className="text-sm font-bold text-slate-800">{v.name}</p>
-                                                <p className="text-xs text-red-600">Stock: {v.stock_quantity} (Held: {v.held_quantity})</p>
-                                            </div>
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        </div>
-                    )}
-                </div>
-
                 <select value={selectedDoctorFilter} onChange={(e) => setSelectedDoctorFilter(e.target.value)} className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-xl font-bold text-sm shadow-sm outline-none">
                     <option value="ALL">All Doctors</option>
                     {doctors.map(d => <option key={d.ic_passport_number} value={d.ic_passport_number}>{d.name}</option>)}

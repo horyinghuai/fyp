@@ -13,6 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [clinicName, setClinicName] = useState("Loading...");
   const [pendingChatCount, setPendingChatCount] = useState(0);
+  const [lowStockAlerts, setLowStockAlerts] = useState<any[]>([]);
   const [userSession, setUserSession] = useState<any>(null);
   const [isSessionLoaded, setIsSessionLoaded] = useState(false);
 
@@ -69,9 +70,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             } catch (error) {}
           };
 
+          const fetchAlertsAndChats = async () => {
+            try {
+              const resChats = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${activeClinicId}`);
+              if (resChats.ok) {
+                const data = await resChats.json();
+                if (data && data.count !== undefined) setPendingChatCount(data.count);
+              }
+              
+              const resAlerts = await fetch(`http://127.0.0.1:8000/admin/inventory-alerts/${activeClinicId}`);
+              if (resAlerts.ok) setLowStockAlerts(await resAlerts.json());
+            } catch (error) {}
+          };
+
           initializeData();
-          fetchPendingChats();
-          const interval = setInterval(fetchPendingChats, 10000); 
+          fetchAlertsAndChats();
+          const interval = setInterval(fetchAlertsAndChats, 10000); 
           return () => clearInterval(interval);
       } else {
           setClinicName("AICAS Clinic System");
@@ -169,20 +183,47 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <div className="relative cursor-pointer" ref={notifRef}>
                     <div onClick={() => setShowNotifications(!showNotifications)}>
                         <Bell size={22} className="text-slate-600 hover:text-blue-600 transition" />
-                        {pendingChatCount > 0 && (
-                             <span className="absolute -top-1 -right-1 bg-red-500 w-2.5 h-2.5 rounded-full shadow-sm ring-2 ring-white"></span>
+                        {(pendingChatCount > 0 || lowStockAlerts.length > 0) && (
+                             <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] font-bold w-4 h-4 flex items-center justify-center rounded-full shadow-sm ring-2 ring-white">
+                                 {pendingChatCount + lowStockAlerts.length}
+                             </span>
                         )}
                     </div>
                     {showNotifications && (
-                        <div className="absolute top-10 right-0 w-64 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden z-50">
-                           <div className="p-3">
+                        <div className="absolute top-10 right-0 w-80 bg-white shadow-2xl rounded-xl border border-slate-100 overflow-hidden z-50">
+                           <div className="p-3 max-h-[70vh] overflow-y-auto">
                              <h4 className="font-bold text-sm text-slate-800 mb-2 border-b pb-2">Notifications</h4>
-                             {pendingChatCount > 0 ? (
-                                 <div onClick={() => { setShowNotifications(false); router.push('/bot-replies'); }} className="p-3 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 transition cursor-pointer shadow-sm border border-blue-100">
-                                     You have <span className="font-black">{pendingChatCount}</span> unread message(s) from patients waiting in Bot Replies.
-                                 </div>
+                             
+                             {(pendingChatCount === 0 && lowStockAlerts.length === 0) ? (
+                                 <p className="text-sm text-slate-500 text-center py-4">No new notifications.</p>
                              ) : (
-                                 <p className="text-sm text-slate-500 text-center py-2">No new notifications.</p>
+                                 <div className="space-y-4">
+                                     {pendingChatCount > 0 && (
+                                         <div>
+                                             <h5 className="text-xs font-bold text-slate-500 uppercase mb-2">Messages</h5>
+                                             <div onClick={() => { setShowNotifications(false); router.push('/bot-replies'); }} className="p-3 bg-blue-50 text-blue-700 text-sm rounded-lg hover:bg-blue-100 transition cursor-pointer shadow-sm border border-blue-100">
+                                                 You have <span className="font-black">{pendingChatCount}</span> unread message(s) from patients.
+                                             </div>
+                                         </div>
+                                     )}
+                                     
+                                     {lowStockAlerts.length > 0 && (
+                                         <div>
+                                             <h5 className="text-xs font-bold text-slate-500 uppercase mb-2">Low Stock Alerts</h5>
+                                             <div className="space-y-2">
+                                                 {lowStockAlerts.map((alert: any, idx: number) => (
+                                                     <div key={idx} className="p-3 bg-red-50 border border-red-100 rounded-lg shadow-sm">
+                                                         <p className="text-sm font-bold text-red-700">{alert.name}</p>
+                                                         <p className="text-xs text-red-600 font-medium mt-1">
+                                                             Current Stock: {alert.current_stock} {alert.unit} <br/>
+                                                             <span className="text-red-400">Min. Threshold: {alert.min_stock_level}</span>
+                                                         </p>
+                                                     </div>
+                                                 ))}
+                                             </div>
+                                         </div>
+                                     )}
+                                 </div>
                              )}
                            </div>
                         </div>
