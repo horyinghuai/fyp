@@ -1742,6 +1742,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             return await process_availability(update, context, full_time_str)
 
         elif data.startswith("sug_") or data.startswith("suga_"):
+            await query.answer() # Acknowledge the button click immediately
             is_alt = data.startswith("suga_")
             
             if is_alt:
@@ -2347,9 +2348,9 @@ if __name__ == '__main__':
                 CallbackQueryHandler(show_doctor_preference, pattern="^back_doc_pref$")
             ],
             BOOK_DATE_TIME: [
-                CallbackQueryHandler(show_doctor_preference, pattern="^back_doc_pref$") ,
-                CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$") ,
-                CallbackQueryHandler(handle_date_time_selection, pattern="^(date_|time_|back_date|sug_|show_standard_dates)"),
+                CallbackQueryHandler(show_doctor_preference, pattern="^back_doc_pref$"),
+                CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
+                CallbackQueryHandler(handle_date_time_selection, pattern="^(date_|time_|back_date|sug_|suga_|show_standard_dates)"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_time_selection)
             ],
             CONFIRM_BOOK: [CallbackQueryHandler(confirm_booking_logic, pattern="^conf_")],
