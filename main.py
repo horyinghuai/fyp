@@ -944,6 +944,28 @@ def update_self_profile(req: ProfileUpdateReq, db: Session = Depends(get_db), cu
     db.commit()
     return {"name": user.name, "email": user.email}
 
+@app.get("/admin/inventory-alerts/{clinic_id}")
+def get_inventory_alerts(clinic_id: str, db: Session = Depends(get_db)):
+    alerts = []
+    try:
+        # Dynamically checks the vaccines table for low stock
+        vaccines = db.query(models.Vaccine).filter(models.Vaccine.clinic_id == clinic_id).all()
+        for v in vaccines:
+            stock = getattr(v, 'stock', getattr(v, 'quantity', None))
+            min_stock = getattr(v, 'min_stock', getattr(v, 'minimum_stock', getattr(v, 'min_stock_level', 10)))
+            
+            if stock is not None and stock <= min_stock:
+                alerts.append({
+                    "name": getattr(v, 'name', 'Unknown Item'),
+                    "current_stock": stock,
+                    "min_stock_level": min_stock,
+                    "unit": "doses"
+                })
+    except Exception as e:
+        print(f"Inventory Alert Error: {e}")
+        
+    return alerts
+
 @app.post("/admin/request-email-change")
 async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     import random, string, httpx, os

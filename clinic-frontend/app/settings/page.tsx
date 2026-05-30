@@ -17,7 +17,6 @@ export default function SettingsPage() {
   const [verifyCode, setVerifyCode] = useState('');
   const [modalError, setModalError] = useState('');
   const [resendTimer, setResendTimer] = useState(0);
-  const [originalName, setOriginalName] = useState('');
 
   useEffect(() => {
       const fetchProfile = async () => {
@@ -29,7 +28,7 @@ export default function SettingsPage() {
                   const data = await res.json();
                   setFormData(f => ({ ...f, name: data.name, email: data.email }));
                   setOriginalEmail(data.email);
-                  setOriginalName(data.name); // <--- Added this
+                  setOriginalName(data.name);
               }
           } catch (err) {}
       };
@@ -55,7 +54,6 @@ export default function SettingsPage() {
   const isPasswordIntended = pass !== '';
   const isNameChanged = (formData.name || '').trim().toUpperCase() !== (originalName || '').trim().toUpperCase();
 
-  // Exactly as requested: Name changed OR Password correctly verified OR Both
   const canSave = (isNameChanged && !isPasswordIntended) || (isPasswordIntended && isPasswordValid);
 
   const proceedWithUpdate = async (emailAlreadyUpdated: boolean) => {
@@ -77,7 +75,7 @@ export default function SettingsPage() {
             setStatus({ type: 'success', text: emailAlreadyUpdated ? 'Email and profile updated successfully!' : 'Profile updated successfully.' });
             setFormData(f => ({ ...f, newPassword: '', confirmPassword: '' }));
             setOriginalEmail(formData.email);
-            setOriginalName(formData.name.toUpperCase());
+            setOriginalName(data.name);
             window.dispatchEvent(new Event('storage'));
         } else {
             const err = await res.json();
@@ -202,9 +200,7 @@ export default function SettingsPage() {
           </div>
 
           <div className="flex justify-end pt-4 border-t">
-            <button type="submit" disabled={isLoading || !canSave} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition disabled:opacity-50">
-              {isLoading ? "Saving..." : "Save Changes"}
-            </button>
+            <button type="submit" disabled={isLoading || !canSave} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700 transition disabled:opacity-50">{isLoading ? "Saving..." : "Save Changes"}</button>
           </div>
         </form>
       </div>
