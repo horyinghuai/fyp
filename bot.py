@@ -1694,6 +1694,12 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
 
                     # Build Inline Keyboard buttons for the recommendations
                     best_slot_callback = f"sug_{data['raw_date']} {formatted_time}"
+                    
+                    # --- ADD THESE TWO LINES TO TRACK THE AI DOCTOR ---
+                    context.user_data['ai_rec_slot'] = best_slot_callback.replace("sug_", "")
+                    context.user_data['ai_rec_doc'] = data['recommended_doctor']
+                    # --------------------------------------------------
+                    
                     rec_keyboard.append([InlineKeyboardButton(f"⭐ {data['recommended_slot']}", callback_data=best_slot_callback)])
                     
                     # Alternatives:
@@ -1772,6 +1778,13 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             full_time_str = data.replace("sug_", "")
             await query.edit_message_text(f"You selected: {full_time_str}")
             context.user_data['book_date'] = full_time_str.split(" ")[0]
+            
+            # FORCE the recommended doctor if this is the AI recommended slot
+            if full_time_str == context.user_data.get('ai_rec_slot'):
+                context.user_data['temp_doctor_pref'] = context.user_data.get('ai_rec_doc')
+            else:
+                context.user_data.pop('temp_doctor_pref', None)
+                
             return await process_availability(update, context, full_time_str)
         
         elif data == "show_standard_dates":
@@ -1850,7 +1863,10 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
 async def process_availability(update, context, full_time_str):
     service = context.user_data['service']
     duration = 15 if service == 'Vaccine' else 30
-    doctor_pref = context.user_data.get('doctor_pref', 'ANY')
+    
+    # FIX: Prioritize the AI recommended doctor for this specific slot
+    doctor_pref = context.user_data.pop('temp_doctor_pref', context.user_data.get('doctor_pref', 'ANY'))
+    
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
     
     payload = {

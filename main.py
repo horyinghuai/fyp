@@ -1173,10 +1173,14 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
 def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db)):
     stage = db.query(models.ApptStage).filter_by(id=stage_id).first()
     if not stage: raise HTTPException(status_code=404)
+    
+    original_status = stage.status
+    
     if 'status' in data: 
         stage.status = data['status']
         if data['status'] == 'canceled' and 'cancel_reason' in data:
             stage.cancel_reason = data['cancel_reason']
+            
     if 'scheduled_time' in data:
         dt_str = data['scheduled_time'].replace("T", " ")
         if len(dt_str) == 16: dt_str += ":00"
@@ -1185,9 +1189,14 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
     if 'doctor_ic' in data:
         appt = db.query(models.Appointment).filter_by(id=stage.appointment_id).first()
         if appt:
-            appt.doctor_ic = data['doctor_ic'] if data['doctor_ic'] else None
+            doc_val = data['doctor_ic']
+            # FIX: Safely handle "ANY" or empty assignments to prevent Foreign Key crashes
+            if not doc_val or str(doc_val).upper() in ["ANY", "NONE", "NULL", ""]:
+                appt.doctor_ic = None
+            else:
+                appt.doctor_ic = doc_val
 
-    if data.get('status') == 'completed' and stage.status != 'completed':
+    if data.get('status') == 'completed' and original_status != 'completed':
         # Check if it's a vaccine that needs stock deduction
         if stage.stage_name in ['Dose 1', 'Single Dose']:
             appt_vac = db.query(models.AppointmentVaccine).filter_by(appointment_id=stage.appointment_id).first()
