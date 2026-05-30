@@ -951,19 +951,21 @@ def update_self_profile(req: ProfileUpdateReq, db: Session = Depends(get_db), cu
 def get_inventory_alerts(clinic_id: str, db: Session = Depends(get_db)):
     alerts = []
     try:
-        # Dynamically checks the vaccines table for low stock
-        vaccines = db.query(models.Vaccine).filter(models.Vaccine.clinic_id == clinic_id).all()
-        for v in vaccines:
-            stock = getattr(v, 'stock', getattr(v, 'quantity', None))
-            min_stock = getattr(v, 'min_stock', getattr(v, 'minimum_stock', getattr(v, 'min_stock_level', 10)))
-            
-            if stock is not None and stock <= min_stock:
-                alerts.append({
-                    "name": getattr(v, 'name', 'Unknown Item'),
-                    "current_stock": stock,
-                    "min_stock_level": min_stock,
-                    "unit": "doses"
-                })
+        # Correctly queries the vaccine_clinic table and joins with vaccines to get the name
+        low_stock_items = db.query(models.VaccineClinic, models.Vaccine).join(
+            models.Vaccine, models.VaccineClinic.vaccine_id == models.Vaccine.id
+        ).filter(
+            models.VaccineClinic.clinic_id == clinic_id,
+            models.VaccineClinic.stock_quantity <= models.VaccineClinic.low_stock_threshold
+        ).all()
+
+        for vc, v in low_stock_items:
+            alerts.append({
+                "name": v.name,
+                "current_stock": vc.stock_quantity,
+                "min_stock_level": vc.low_stock_threshold,
+                "unit": "doses"
+            })
     except Exception as e:
         print(f"Inventory Alert Error: {e}")
         
