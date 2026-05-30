@@ -932,6 +932,8 @@ def get_self_profile(db: Session = Depends(get_db), current_user: models.User = 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return {"name": user.name, "email": user.email}
+
+@app.put("/admin/profile")
 def update_self_profile(req: ProfileUpdateReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     user = db.query(models.User).filter_by(ic_passport_number=current_user.ic_passport_number).first()
     if not user:
