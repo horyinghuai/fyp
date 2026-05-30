@@ -71,14 +71,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           };
 
           const fetchAlertsAndChats = async () => {
+            const token = localStorage.getItem('aicas_token');
             try {
-              const resChats = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${activeClinicId}`);
+              const resChats = await fetch(`http://127.0.0.1:8000/admin/chat-pending-count/${activeClinicId}`, {
+                  headers: { 'Authorization': `Bearer ${token}` }
+              });
               if (resChats.ok) {
                 const data = await resChats.json();
                 if (data && data.count !== undefined) setPendingChatCount(data.count);
               }
               
-              const resAlerts = await fetch(`http://127.0.0.1:8000/admin/inventory-alerts/${activeClinicId}`);
+              const resAlerts = await fetch(`http://127.0.0.1:8000/admin/inventory-alerts/${activeClinicId}`, {
+                  headers: { 'Authorization': `Bearer ${token}` }
+              });
               if (resAlerts.ok) setLowStockAlerts(await resAlerts.json());
             } catch (error) {}
           };

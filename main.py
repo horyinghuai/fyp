@@ -937,6 +937,7 @@ def update_self_profile(req: ProfileUpdateReq, db: Session = Depends(get_db), cu
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    # Updates name, and conditionally updates password if provided
     user.name = req.name.upper()
     if req.password:
         user.password_hash = get_password_hash(req.password)
