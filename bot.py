@@ -1638,7 +1638,7 @@ async def handle_doc_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BOOK_DATE_TIME
 
 async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    service = context.user_data['service']
+    service = context.user_data.get('service', 'General Appointment')
     doctor_pref = context.user_data.get('doctor_pref', 'ANY')
     is_editing = context.user_data.get('is_editing', False)
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
@@ -1647,8 +1647,10 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     import datetime as dt
     today_str = dt.datetime.now().strftime("%Y-%m-%d")
 
-    # ----- SCHEDULING AGENT RECOMMENDATION BLOCK -----
     rec_msg = ""
+    rec_keyboard = []
+
+    # ----- SCHEDULING AGENT (PATIENT-FRIENDLY DISPLAY WITH BUTTONS) -----
     async with httpx.AsyncClient() as client:
         try:
             res = await client.post(f"{API_BASE}/recommend-slots", json={
@@ -1661,34 +1663,76 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
             if res.status_code == 200:
                 data = res.json()
                 if "error" not in data:
-                    alts = "\n".join([f"• {a}" for a in data['alternative_slots']])
+                    raw_reason = data.get('reasoning', '')
+                    
+                    # Map internal logic to patient-friendly phrasing
+                    patient_friendly_reason = "Recommended based on doctor availability."
+                    if "Lowest workload" in raw_reason:
+                        patient_friendly_reason = "Recommended for faster availability."
+                    elif "Optimal workload distribution" in raw_reason:
+                        patient_friendly_reason = "Recommended for faster availability."
+                    elif "Reduced appointment congestion" in raw_reason:
+                        patient_friendly_reason = "Recommended to reduce waiting time."
+                    elif "Best available slot" in raw_reason:
+                        patient_friendly_reason = "Recommended appointment within your preferred period."
+                        
+                    alts_display = "\n".join([f"• {a}" for a in data['alternative_slots']])
+                    
                     rec_msg = (
-                        f"\n\n⭐ *AI Recommended*\n"
+                        f"⭐ *Recommended Appointment*\n"
                         f"Doctor: {data['recommended_doctor']}\n"
                         f"Date: {data['raw_date']}\n"
                         f"Time: {data['raw_time']}\n"
-                        f"Reason: {data['reasoning']}\n\n"
-                        f"*Alternative Recommendations:*\n{alts}\n\n"
-                        f"_Patients may still choose any available slot._"
+                        f"Reason: {patient_friendly_reason}\n\n"
+                        f"*Other Available Options:*\n{alts_display}\n\n"
+                        f"_You may still choose any available slot._"
                     )
+
+                    # Build Inline Keyboard buttons for the recommendations
+                    # Reusing the existing time/sug callback format so handle_date_time_selection catches it.
+                    # Best slot:
+                    best_slot_callback = f"sug_{data['raw_date']} {data['raw_time']}"
+                    rec_keyboard.append([InlineKeyboardButton(f"⭐ {data['recommended_slot']}", callback_data=best_slot_callback)])
+                    
+                    # Alternatives:
+                    for alt in data['alternative_slots']:
+                        # Format is "DD/MM/YYYY Day HH:MM PM" - need to convert to "YYYY-MM-DD HH:MM PM" for callback
+                        # E.g., "05/06/2026 Friday 10:00 AM" -> "2026-06-05 10:00 AM"
+                        try:
+                            parts = alt.split(" ")
+                            date_part = parts[0] # DD/MM/YYYY
+                            d_obj = dt.datetime.strptime(date_part, "%d/%m/%Y")
+                            new_date_str = d_obj.strftime("%Y-%m-%d")
+                            time_part = " ".join(parts[2:]) # HH:MM PM
+                            alt_callback = f"sug_{new_date_str} {time_part}"
+                            rec_keyboard.append([InlineKeyboardButton(alt, callback_data=alt_callback)])
+                        except:
+                            pass
         except Exception as e:
             logger.error(f"Scheduling Agent Error: {e}")
             pass
-    # --------------------------------------------------
+    # ----------------------------------------------------------------------
 
     markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
     
-    if service in ['Vaccine', 'Blood Test']:
-        msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
+    if rec_msg and rec_keyboard:
+        # If we have AI recommendations, show them first with their buttons
+        # Add the 'Choose Other Available Slots' button to trigger the standard date picker
+        rec_keyboard.append([InlineKeyboardButton("Choose Other Available Slots", callback_data="show_standard_dates")])
+        final_markup = InlineKeyboardMarkup(rec_keyboard)
+        msg = rec_msg
     else:
-        msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
-        
-    msg += rec_msg
-        
+        # Fallback to standard picker if AI fails or finds no slots
+        if service in ['Vaccine', 'Blood Test']:
+            msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
+        else:
+            msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
+        final_markup = markup
+
     if update.callback_query: 
-        await update.callback_query.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
+        await update.callback_query.message.reply_text(msg, reply_markup=final_markup, parse_mode="Markdown")
     elif update.message: 
-        await update.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
+        await update.message.reply_text(msg, reply_markup=final_markup, parse_mode="Markdown")
 
 async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = context.user_data['service']
@@ -1725,6 +1769,14 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             await query.edit_message_text(f"You selected: {full_time_str}")
             context.user_data['book_date'] = full_time_str.split(" ")[0]
             return await process_availability(update, context, full_time_str)
+        
+        elif data == "show_standard_dates":
+            is_editing = context.user_data.get('is_editing', False)
+            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
+            if service in ['Vaccine', 'Blood Test']: msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
+            else: msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
+            await query.edit_message_text(msg, reply_markup=markup)
+            return BOOK_DATE_TIME
 
     elif update.message and update.message.text:
         text = clean_bot_username(update.message.text)
@@ -2301,7 +2353,7 @@ if __name__ == '__main__':
             BOOK_DATE_TIME: [
                 CallbackQueryHandler(show_doctor_preference, pattern="^back_doc_pref$") ,
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$") ,
-                CallbackQueryHandler(handle_date_time_selection, pattern="^(date_|time_|back_date|sug_)"),
+                CallbackQueryHandler(handle_date_time_selection, pattern="^(date_|time_|back_date|sug_|show_standard_dates)"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_time_selection)
             ],
             CONFIRM_BOOK: [CallbackQueryHandler(confirm_booking_logic, pattern="^conf_")],
