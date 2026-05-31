@@ -2342,7 +2342,7 @@ async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['is_editing'] = False
         return await proceed_with_start(update, context, query=True)
     else:
-        await query.edit_message_text("No, I'm done")
+        await query.edit_message_text("You selected: No, I'm done")
         clinic_name = context.user_data.get('clinic_name', 'our Clinic')
         await query.message.reply_text(f"Thank you for using {clinic_name} AICAS Bot. Have a great day!\n\nIf you want to restart the clinic bot, just type /start.")
         return ConversationHandler.END
