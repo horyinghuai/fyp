@@ -2750,7 +2750,7 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
     if not vaccine: return {"missing_doses": []}
 
-    # Determine required previous doses based on the target dose
+    # Dynamically determine required previous doses
     required_doses = []
     if req.target_dose.startswith("Dose "):
         try:
@@ -2758,12 +2758,15 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
             required_doses = [f"Dose {i}" for i in range(1, d_num)]
         except: pass
     elif req.target_dose == "Booster":
-        required_doses = [f"Dose {i}" for i in range(1, vaccine.total_doses + 1)]
+        if vaccine.total_doses == 1:
+            required_doses = ["Single Dose"]
+        else:
+            required_doses = [f"Dose {i}" for i in range(1, vaccine.total_doses + 1)]
 
     if not required_doses: return {"missing_doses": []}
 
     # Query existing history from the clinic database
-    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time)\
+    past_stages = db.query(models.ApptStage.stage_name)\
         .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
         .filter(
             models.Patient.ic_passport_number == req.ic,
@@ -2771,7 +2774,7 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
             models.ApptStage.status != 'canceled'
         ).all()
 
-    found_doses = {s[0]: s[1] for s in past_stages}
+    found_doses = {s[0] for s in past_stages}
     
     # Identify what is missing from the database
     missing = [d for d in required_doses if d not in found_doses]
@@ -2782,62 +2785,69 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
     if not vaccine: return {"is_valid": True}
 
-    # Identify immediate previous dose
-    prev_dose_name = None
+    # 1. Gather all existing history from the database
+    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time)\
+        .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
+        .filter(
+            models.Patient.ic_passport_number == req.ic,
+            models.AppointmentVaccine.vaccine_id == vaccine.id,
+            models.ApptStage.status != 'canceled'
+        ).order_by(models.ApptStage.scheduled_time.asc()).all()
+
+    all_dates = {}
+    for s in past_stages:
+        all_dates[s[0]] = s[1].date() if isinstance(s[1], datetime) else s[1]
+
+    # 2. Add manual dates entered by the user
+    for d_name, d_str in req.manual_dates.items():
+        try: 
+            all_dates[d_name] = datetime.strptime(d_str, "%Y-%m-%d").date()
+        except: 
+            pass
+
+    # 3. Add the target requested time
+    try:
+        req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
+        all_dates[req.target_dose] = req_dt.date()
+    except:
+        return {"is_valid": False, "reason": "Invalid requested time format."}
+
+    # Determine target_num
     target_num = 1
-    
     if req.target_dose.startswith("Dose "):
-        try:
-            target_num = int(req.target_dose.split(" ")[1])
-            if target_num > 1: prev_dose_name = f"Dose {target_num - 1}"
+        try: target_num = int(req.target_dose.split(" ")[1])
         except: pass
     elif req.target_dose == "Booster":
         target_num = vaccine.total_doses + 1
-        prev_dose_name = f"Dose {vaccine.total_doses}" if vaccine.total_doses > 1 else "Single Dose"
-        if prev_dose_name == "Single Dose" and vaccine.total_doses == 1:
-            prev_dose_name = "Dose 1"
 
-    if not prev_dose_name: return {"is_valid": True}
+    # 4. Fetch all interval schedules for this vaccine
+    schedules = {s.dose_number: s.interval_days for s in db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id).all()}
 
-    # Retrieve the date of the previous dose (Prioritize Manual Entry, then DB)
-    prev_date_obj = None
-    if prev_dose_name in req.manual_dates:
-        try: prev_date_obj = datetime.strptime(req.manual_dates[prev_dose_name], "%Y-%m-%d")
-        except: pass
-        
-    if not prev_date_obj:
-        past_stage = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time)\
-            .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
-            .filter(
-                models.Patient.ic_passport_number == req.ic,
-                models.AppointmentVaccine.vaccine_id == vaccine.id,
-                models.ApptStage.status != 'canceled',
-                models.ApptStage.stage_name.in_([prev_dose_name, "Single Dose"])
-            ).order_by(models.ApptStage.scheduled_time.desc()).first()
-        if past_stage: prev_date_obj = past_stage[1]
+    # 5. Validate the ENTIRE sequence chain
+    for d_num in range(2, target_num + 1):
+        # Dynamically map names based on the dose sequence
+        if d_num <= vaccine.total_doses:
+            curr_name = f"Dose {d_num}"
+            prev_name = f"Dose {d_num - 1}"
+        else:
+            curr_name = "Booster"
+            prev_name = f"Dose {vaccine.total_doses}" if vaccine.total_doses > 1 else "Single Dose"
 
-    if not prev_date_obj: return {"is_valid": True}
+        # Check the interval constraint if both sequential dates exist
+        if curr_name in all_dates and prev_name in all_dates:
+            prev_date = all_dates[prev_name]
+            curr_date = all_dates[curr_name]
+            
+            interval_days = schedules.get(d_num)
+            if interval_days is not None:
+                min_allowed_date = prev_date + timedelta(days=interval_days)
+                if curr_date < min_allowed_date:
+                    reason = f"Based on dependency rules, {curr_name} must be at least {interval_days} days after {prev_name}. Earliest allowed date for {curr_name}: {min_allowed_date.strftime('%Y-%m-%d')}."
+                    
+                    # Log rejection
+                    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {curr_name} on {curr_date.strftime('%Y-%m-%d')} is before minimum date {min_allowed_date.strftime('%Y-%m-%d')} (from {prev_name})")
+                    return {"is_valid": False, "reason": reason}
 
-    # Fetch interval rule from Vaccine Dose Schedules
-    sched = db.query(models.VaccineDoseSchedule).filter(
-        models.VaccineDoseSchedule.vaccine_id == vaccine.id,
-        models.VaccineDoseSchedule.dose_number == target_num
-    ).first()
-
-    if not sched or sched.interval_days is None: return {"is_valid": True}
-
-    # Calculate minimum allowed date
-    min_allowed_date = prev_date_obj + timedelta(days=sched.interval_days)
-
-    req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
-
-    # Validate Request vs Interval Rules
-    if req_dt.date() < min_allowed_date.date():
-        reason = f"Based on dependency rules, {req.target_dose} must be at least {sched.interval_days} days after your previous dose. Earliest allowed date: {min_allowed_date.strftime('%Y-%m-%d')}."
-        # Log Rejection
-        logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {req.target_dose} on {req_dt.strftime('%Y-%m-%d')} is before minimum date {min_allowed_date.strftime('%Y-%m-%d')}")
-        return {"is_valid": False, "reason": reason}
-
-    # Log Acceptance
-    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Accepted: Interval requirement met for {req.target_dose}")
+    # Log sequence acceptance
+    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Accepted: Sequence requirement met up to {req.target_dose}")
     return {"is_valid": True}
