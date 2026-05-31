@@ -351,13 +351,18 @@ async def execute_cancellation(message, context, reason):
         try:
             await client.post(f"{API_BASE}/cancel-appointment/{appt_id}", json={"cancel_reason": reason}, timeout=5.0)
             text = "✅ Booking is cancelled successfully"
-            if hasattr(message, 'edit_text'): await message.edit_text(text)
-            else: await message.reply_text(text)
         except Exception as e:
             logger.error(f"Cancel error: {e}")
             text = "⚠️ Failed to cancel appointment. Please try again."
-            if hasattr(message, 'edit_text'): await message.edit_text(text)
-            else: await message.reply_text(text)
+
+    # Fix: Safely determine if the message belongs to the bot before attempting an edit
+    try:
+        if getattr(message.from_user, 'is_bot', False):
+            await message.edit_text(text)
+        else:
+            await message.reply_text(text)
+    except Exception:
+        await message.reply_text(text)
 
     # ONLY trigger modification loop for the Check Appointment flow
     if context.user_data.get('for_check'):
