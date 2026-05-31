@@ -349,7 +349,7 @@ async def execute_cancellation(message, context, reason):
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/cancel-appointment/{appt_id}", json={"cancel_reason": reason}, timeout=5.0)
-            text = "Booking is cancelled successfully"
+            text = "✅ Booking is cancelled successfully"
             if hasattr(message, 'edit_text'): await message.edit_text(text)
             else: await message.reply_text(text)
         except Exception as e:
@@ -358,9 +358,18 @@ async def execute_cancellation(message, context, reason):
             if hasattr(message, 'edit_text'): await message.edit_text(text)
             else: await message.reply_text(text)
 
-    btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
-    await message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
-    return FINAL_HELP
+    # ONLY trigger modification loop for the Check Appointment flow
+    if context.user_data.get('for_check'):
+        btns = [
+            [InlineKeyboardButton("Yes, modify another", callback_data="modify_another")],
+            [InlineKeyboardButton("No, I'm done", callback_data="help_no")]
+        ]
+        await message.reply_text("Do you want to modify another appointment?", reply_markup=InlineKeyboardMarkup(btns))
+        return MODIFY_ANOTHER
+    else:
+        btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+        await message.reply_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+        return FINAL_HELP
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
@@ -683,7 +692,7 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
                             btns.append([
                                 InlineKeyboardButton(
                                     "❌ Cancel Appointment",
-                                    callback_data=f"cancel_appt_{appt['stage_id']}"
+                                    callback_data=f"cancel_appt_{appt['appt_id']}"
                                 )
                             ])
                         btns.append([InlineKeyboardButton("🔙 Back to List", callback_data="back_to_appt_list")])
@@ -725,7 +734,7 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         context.user_data['book_date'] = appt['date']
                         context.user_data['book_time'] = f"{appt['date']} {appt['time']}"
                         context.user_data['is_editing'] = True
-                        context.user_data['original_appt_id'] = stage_id
+                        context.user_data['original_appt_id'] = appt['appt_id'] 
                         # Show the edit menu (will use handle_edit_menu_routing)
                         return await handle_edit_menu_routing(update, context)
             except Exception:
@@ -970,6 +979,10 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 res = await client.get(f"{API_BASE}/patient/{active_cid}/id/{context.user_data['ic']}", timeout=5.0)
                 if res.status_code == 200:
+                    # Load patient details into context so editing won't crash
+                    patient_data = res.json()
+                    context.user_data['name'] = patient_data.get('name', 'N/A')
+                    context.user_data['phone'] = patient_data.get('phone', 'N/A')
                     # IC found, go to show_patient_appointments
                     return await show_patient_appointments(update, context, query=False)
                 else:
@@ -1935,13 +1948,27 @@ async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     
-    base_btns = [
-        [InlineKeyboardButton("Change Service", callback_data="editbook_service")],
-        [InlineKeyboardButton("Change Vaccine/Test Details", callback_data="editbook_details")],
-        [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
-        [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
-        [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")],
-    ]
+    service = context.user_data.get('service')
+    dose = context.user_data.get('dose', '')
+    
+    # If it is a follow up dose, lock the service and details options
+    is_follow_up_dose = context.user_data.get('editing_existing') and service == 'Vaccine' and dose not in ['Dose 1', 'Single Dose', None, '']
+    
+    if is_follow_up_dose:
+        base_btns = [
+            [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
+            [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
+            [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")],
+        ]
+    else:
+        base_btns = [
+            [InlineKeyboardButton("Change Service", callback_data="editbook_service")],
+            [InlineKeyboardButton("Change Vaccine/Test Details", callback_data="editbook_details")],
+            [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
+            [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
+            [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")],
+        ]
+
     if not context.user_data.get('editing_existing'):
         # In create booking flow, show Cancel Draft Booking button
         base_btns.append([InlineKeyboardButton("❌ Cancel Draft Booking", callback_data="editbook_cancel")])
@@ -2311,7 +2338,7 @@ if __name__ == '__main__':
                     pattern="^(view_appt_|back_to_main|reenter_ic)"
                 )
             ],
-            APPOINTMENT_ACTION: [CallbackQueryHandler(appointment_action, pattern="^(modify_appt_|cancel_appt_|back_to_appt_list)")],
+            APPOINTMENT_ACTION: [CallbackQueryHandler(appointment_action, pattern="^(modify_appt_|cancel_appt_|back_to_appt_list|contact_clinic_admin)")],
             START_CLINIC_SELECT: [CallbackQueryHandler(handle_start_clinic_select, pattern="^startclinic_")],
             NAT_CHOICE: [CallbackQueryHandler(nat_choice_logic, pattern="^nat_")],
             MY_METHOD_CHOICE: [CallbackQueryHandler(my_method_logic, pattern="^meth_")],
