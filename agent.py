@@ -170,9 +170,9 @@ async def generate_vaccine_schedule_ai(search_query: str):
     
     1. If it is a generic disease (e.g., "COVID", "Flu", "Hepatitis"): Return status "multiple_options" and a list of 3-5 specific vaccine brand names in "options".
     2. If it is a specific vaccine brand (e.g., "Pfizer", "Twinrix"): Return status "exact_match", and provide its medical type, total doses, booster status, and interval schedules. Also determine:
-       - allow_new_series: Can the patient start another vaccine series after completing one?
-       - new_series_delay_days: If yes, how many days to wait before starting a new one? (Integer or null)
-       - must_restart_after_interruption: Must the vaccine series restart after a long interruption?
+       - allow_repeat_series: Can the patient start another vaccine series after completing one?
+       - repeat_interval_days: If yes, how many days to wait before starting a new one? (Integer or null)
+       - restart_if_interrupted: Must the vaccine series restart after a long interruption?
        - interruption_restart_days: How long before restart becomes necessary? (Integer in days or null)
     3. If it is unrecognized or fake: Return status "invalid".
     
@@ -183,16 +183,26 @@ async def generate_vaccine_schedule_ai(search_query: str):
         "type": "mRNA", 
         "total_doses": 2, 
         "has_booster": true, 
-        "allow_new_series": false,
-        "new_series_delay_days": null,
-        "must_restart_after_interruption": true,
+        "allow_repeat_series": false,
+        "repeat_interval_days": null,
+        "restart_if_interrupted": true,
         "interruption_restart_days": 365,
         "schedules": [
-            {"dose_number": 2, "interval_days": 30}
+            {{
+                "dose_number": 2, 
+                "interval_days": 30
+            }}
         ] 
     }}
     """
-
+    try:
+        raw_text = await run_llm_race(prompt)
+        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        return json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
+    except Exception as e:
+        print(f"AI Extraction Error: {e}")
+        return {"status": "invalid"}
+    
 class AgentState(TypedDict):
     requested_time: str
     is_valid: bool
