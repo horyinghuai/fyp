@@ -400,14 +400,28 @@ def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
 
 def normalize_vaccine_type(db: Session, given_type: str):
     if not given_type: return "Other"
-    given_lower = given_type.lower().strip()
+    
+    # 1. Remove any text inside brackets, including the brackets themselves e.g., "(Recombinant)"
+    cleaned = re.sub(r'\([^)]*\)|\[[^]]*\]', '', given_type)
+    
+    # 2. Remove 'Inactivated', 'Activated', 'Vaccine' case-insensitively
+    cleaned = re.sub(r'(?i)\b(inactivated|activated|vaccine)\b', '', cleaned)
+    
+    # 3. Clean up any extra spaces left behind from the removals
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    
+    if not cleaned: return "Other"
+    
+    given_lower = cleaned.lower()
     existing_types = db.query(models.Vaccine.type).distinct().all()
+    
+    # 4. Exact Match Check (Ensures it groups into the same type without forcing partial matches)
     for (t,) in existing_types:
-        if t:
-            t_lower = t.lower().strip()
-            if t_lower in given_lower or given_lower in t_lower:
-                return t.title()
-    return given_type.title()
+        if t and t.lower().strip() == given_lower:
+            return t.title()
+            
+    # 5. If no exact match, treat it as a new type
+    return cleaned.title()
 
 def format_doctor_name(name: str) -> str:
     n = name.upper().strip()
@@ -1657,6 +1671,12 @@ async def ai_vaccine_schedule(req: VaccineAIRequest):
 @app.post("/admin/vaccines")
 def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
     try:
+        # --- Enforce Dependencies ---
+        if not data.allow_repeat_series:
+            data.repeat_interval_days = None
+        if not data.restart_if_interrupted:
+            data.interruption_restart_days = None
+        # ----------------------------
         v_id = data.vaccine_id
         formatted_name = data.name.title() if data.name else None
         
@@ -1714,6 +1734,12 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
 @app.put("/admin/vaccines/{v_id}")
 def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)):
     try:
+        # --- Enforce Dependencies ---
+        if not data.allow_repeat_series:
+            data.repeat_interval_days = None
+        if not data.restart_if_interrupted:
+            data.interruption_restart_days = None
+        # ----------------------------
         v = db.query(models.Vaccine).filter_by(id=v_id).first()
         if v:
             v.name = data.name.title() if data.name else ""

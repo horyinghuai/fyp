@@ -169,9 +169,10 @@ export default function VaccinesPage() {
         stock_quantity: finalStock,
         low_stock_threshold: finalThreshold,
         target_gender: formData.target_gender || 'ANY',
-        // Convert empty strings to null so FastAPI Integer validation doesn't crash
-        repeat_interval_days: formData.repeat_interval_days === '' ? null : formData.repeat_interval_days,
-        interruption_restart_days: formData.interruption_restart_days === '' ? null : formData.interruption_restart_days,
+        
+        // Ensure values are set to null if the rules are disabled or fields are empty
+        repeat_interval_days: formData.allow_repeat_series ? (formData.repeat_interval_days === '' ? null : formData.repeat_interval_days) : null,
+        interruption_restart_days: formData.restart_if_interrupted ? (formData.interruption_restart_days === '' ? null : formData.interruption_restart_days) : null,
     }
 
     const isEditing = !!editingVac;
@@ -204,7 +205,7 @@ export default function VaccinesPage() {
         alert("Failed to connect to the server.");
     }
   }
-  
+
   const handleDelete = async (id: number) => {
     if(confirm("Remove this vaccine from clinic offerings?")) {
       const token = localStorage.getItem('aicas_token');
