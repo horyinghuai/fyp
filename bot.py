@@ -1728,12 +1728,20 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     # ----- SCHEDULING AGENT (PATIENT-FRIENDLY DISPLAY WITH BUTTONS) -----
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.post(f"{API_BASE}/recommend-slots", json={
+            # Added vaccine dependency fields to the payload request
+            payload = {
                 "clinic_id": active_cid,
                 "base_date": today_str,
                 "doctor_pref": doctor_pref,
-                "duration": duration
-            }, timeout=10.0)
+                "duration": duration,
+                "service_type": service,
+                "vaccine_name": context.user_data.get('selected_items', [None])[0] if service == 'Vaccine' else None,
+                "dose": context.user_data.get('dose'),
+                "ic": context.user_data.get('ic'),
+                "manual_dates": context.user_data.get('manual_doses', {})
+            }
+            
+            res = await client.post(f"{API_BASE}/recommend-slots", json=payload, timeout=10.0)
             
             if res.status_code == 200:
                 data = res.json()

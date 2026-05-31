@@ -377,6 +377,12 @@ class RecommendSlotReq(BaseModel):
     base_date: str
     doctor_pref: str = 'ANY'
     duration: int = 30
+    # New fields for Vaccine Agent integration
+    service_type: Optional[str] = None
+    vaccine_name: Optional[str] = None
+    dose: Optional[str] = None
+    ic: Optional[str] = None
+    manual_dates: Optional[Dict[str, str]] = {}
 
 class VaccineHistoryCheckReq(BaseModel):
     clinic_id: str
@@ -2605,6 +2611,54 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
     except:
         start_date = datetime.now().date()
         
+    # --- VACCINE AGENT: Dependency Check for Start Date ---
+    earliest_allowed_dt = datetime.combine(start_date, datetime.min.time())
+    
+    if req.service_type == 'Vaccine' and req.vaccine_name and req.dose and req.dose not in ['Single Dose', 'Dose 1']:
+        vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
+        if vaccine:
+            past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time)\
+                .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
+                .filter(
+                    models.Patient.ic_passport_number == req.ic,
+                    models.AppointmentVaccine.vaccine_id == vaccine.id,
+                    models.ApptStage.status != 'canceled'
+                ).all()
+
+            all_dates = {}
+            for s in past_stages:
+                all_dates[s[0]] = s[1].date() if isinstance(s[1], datetime) else s[1]
+
+            for d_name, d_str in req.manual_dates.items():
+                try: all_dates[d_name] = datetime.strptime(d_str, "%Y-%m-%d").date()
+                except: pass
+
+            target_num = 1
+            if req.dose.startswith("Dose "):
+                try: target_num = int(req.dose.split(" ")[1])
+                except: pass
+            elif req.dose == "Booster":
+                target_num = vaccine.total_doses + 1
+
+            schedules = {s.dose_number: s.interval_days for s in db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id).all()}
+
+            # Find minimum date for the target dose based on its immediate predecessor
+            prev_name = None
+            if target_num <= vaccine.total_doses:
+                prev_name = f"Dose {target_num - 1}"
+            else:
+                prev_name = f"Dose {vaccine.total_doses}" if vaccine.total_doses > 1 else "Single Dose"
+
+            if prev_name and prev_name in all_dates:
+                interval_days = schedules.get(target_num)
+                if interval_days is not None:
+                    d_min = all_dates[prev_name] + timedelta(days=interval_days)
+                    min_dt = datetime.combine(d_min, datetime.min.time())
+                    if min_dt > earliest_allowed_dt:
+                        earliest_allowed_dt = min_dt
+                        start_date = earliest_allowed_dt.date() # Shift the 7-day search window
+    # ------------------------------------------------------
+        
     # 1. Evaluate Constraints & Doctor Preferences
     doctors_query = db.query(models.Doctor).join(models.DoctorClinicAvailability).filter(
         models.DoctorClinicAvailability.clinic_id == req.clinic_id,
@@ -2620,13 +2674,12 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
     if not doctors:
         return {"error": "No doctors found matching criteria."}
         
-    # 2. Calculate Overall & Daily Workload (Scheduled & Upcoming Only)
+    # 2. Calculate Overall Workload (Scheduled & Upcoming Only)
     doc_ics = [d.ic_passport_number for d in doctors]
     
     start_of_period = datetime.combine(start_date, datetime.min.time())
     end_of_period = start_of_period + timedelta(days=8)
     
-    # PROBLEM 2 FIX: Strictly querying upcoming 'scheduled' appointments only
     period_appts = db.query(models.Appointment.doctor_ic, models.ApptStage.scheduled_time).join(
         models.ApptStage, models.Appointment.id == models.ApptStage.appointment_id
     ).filter(
@@ -2637,26 +2690,20 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
     ).all()
     
     workloads = {d.ic_passport_number: 0 for d in doctors}
-    daily_workloads = {}
     time_density = {}
     
     for dic, stime in period_appts:
         if stime:
             workloads[dic] += 1
-            d_str = stime.strftime("%Y-%m-%d")
-            daily_workloads[(dic, d_str)] = daily_workloads.get((dic, d_str), 0) + 1
             time_density[stime] = time_density.get(stime, 0) + 1
 
     max_wl = max(workloads.values()) if workloads.values() else 1
     if max_wl == 0: max_wl = 1
-    
-    max_daily = max(daily_workloads.values()) if daily_workloads else 1
-    if max_daily == 0: max_daily = 1
             
     max_density = max(time_density.values()) if time_density else 1
     if max_density == 0: max_density = 1
 
-    # 3. Generate and Rank Slots (7-Day Window)
+    # 3. Generate and Rank Slots (7-Day Window based on Eligibility)
     all_slots = []
     for i in range(8):
         curr_date = start_date + timedelta(days=i)
@@ -2671,17 +2718,16 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                 models.DoctorClinicAvailability.status == 'active'
             ).all()
             
-            # Sub-score: Overall vs Daily Workload
+            # Sub-score: Overall Workload
             wl_score = 1.0 - (workloads[doc.ic_passport_number] / max_wl)
-            daily_count = daily_workloads.get((doc.ic_passport_number, date_str_key), 0)
-            daily_score = 1.0 - (daily_count / max_daily)
             
             for a in avails:
                 t = datetime.combine(curr_date, a.start_time)
                 end_t = datetime.combine(curr_date, a.end_time)
                 
                 while t + timedelta(minutes=req.duration) <= end_t:
-                    if t > datetime.now():
+                    # ONLY evaluate slots that are in the future AND satisfy Vaccine Dependency Rules
+                    if t > datetime.now() and t >= earliest_allowed_dt:
                         conflict = db.query(models.ApptStage).join(models.Appointment).filter(
                             models.Appointment.doctor_ic == doc.ic_passport_number,
                             models.ApptStage.scheduled_time == t,
@@ -2689,15 +2735,15 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                         ).first()
                         
                         if not conflict:
-                            # 20% Time Slot Density Score
                             slot_density = time_density.get(t, 0)
                             density_score = 1.0 - (slot_density / max_density) 
                             
-                            # 80% Doctor Workload Score (60% Overall + 20% Daily to prevent clumping on a single day)
-                            final_score = (wl_score * 0.60) + (daily_score * 0.20) + (density_score * 0.20)
+                            # NEW SCORING: 80% Doctor Workload Score, 20% Slot Density Score
+                            final_score = (wl_score * 0.80) + (density_score * 0.20)
                             
                             all_slots.append({
                                 "doctor": doc.name,
+                                "doc_ic": doc.ic_passport_number,
                                 "date_str": date_str_key,
                                 "time_str": t.strftime("%I:%M %p"),
                                 "formatted_time": t.strftime("%H:%M:%S"),
@@ -2708,13 +2754,11 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                     t += timedelta(minutes=req.duration)
                     
     if not all_slots:
-        return {"error": "No available slots within the next 7 days."}
+        return {"error": "No available slots within the valid timeframe."}
         
-    # PROBLEM 1 & 4 FIX: Deterministic sorting, highest score first, ties broken by earliest chronological slot
     all_slots.sort(key=lambda x: (-x["score"], x["t_val"]))
     best = all_slots[0]
     
-    # PROBLEM 3 FIX: Structured output for Alternatives
     alts = []
     seen = set([best["display"]])
     for s in all_slots[1:]:
@@ -2729,11 +2773,9 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
         if len(alts) >= 3:
             break
             
-    # PROBLEM 4 FIX: Patient-Friendly Reasons
-    if req.doctor_pref in ['ANY', 'MALE', 'FEMALE']:
-        reason = "Recommended based on doctor availability."
-    else:
-        reason = "Recommended for faster availability."
+    # Agent Logging
+    log_reasoning = f"Selected {best['doctor']} at {best['formatted_time']} (Score: {best['score']:.2f} | Workload: {workloads[best['doc_ic']]} | Density: {time_density.get(best['t_val'], 0)}). Alternatives generated: {len(alts)}."
+    logging_agent(db, req.clinic_id, "Scheduling Recommendation", log_reasoning)
     
     return {
         "recommended_doctor": best["doctor"],
@@ -2741,7 +2783,7 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
         "raw_date": best["date_str"],
         "raw_time": best["time_str"],
         "formatted_time": best["formatted_time"],
-        "reasoning": reason,
+        "reasoning": "Recommended for faster availability.",
         "alternative_slots": alts
     }
 
