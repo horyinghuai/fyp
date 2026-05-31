@@ -2146,18 +2146,20 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await query.edit_message_text("Updating your appointment...")
     
-    service = context.user_data['service']
+    service = context.user_data.get('service', 'Others')
     vaccines = context.user_data.get('vaccines_list', [])
     selected_vac_name = context.user_data.get('selected_items', [None])[0] if context.user_data.get('selected_items') else None
     selected_vac = next((v for v in vaccines if v['name'] == selected_vac_name), None)
     total_doses = selected_vac.get('total_doses', 1) if selected_vac else 1
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
 
+    # Added assigned_doctor_id so the backend successfully updates the new Doctor in the DB
     details_block = {
         "items": context.user_data.get('selected_items', []), 
         "dose": context.user_data.get('dose'),
         "general_notes": context.user_data.get('general_notes'),
-        "assigned_doctor_name": context.user_data.get('assigned_doctor_name')
+        "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
+        "assigned_doctor_id": context.user_data.get('assigned_doctor_id') 
     }
 
     async with httpx.AsyncClient() as client:
@@ -2178,6 +2180,19 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
     time_str = context.user_data['book_time']
     date_part, time_part = time_str.split(" ")
     
+    # Format Details without single quotes and handle "Others" service
+    if service == 'Vaccine':
+        items = context.user_data.get('selected_items', [])
+        details_str = f"{items[0]} ({context.user_data.get('dose')})" if items else "Vaccine"
+    elif service == 'Blood Test':
+        details_str = ", ".join(context.user_data.get('selected_items', []))
+    else:
+        service = "Others"
+        details_str = context.user_data.get('general_notes', 'General Consultation')
+
+    # Get Assigned Doctor
+    doctor_name = context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))
+    
     confirmed_summary = (
         f"✅ *Appointment Successfully Updated!*\n\n"
         f"Name: {context.user_data.get('name', 'N/A')}\n"
@@ -2186,7 +2201,8 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Date: {date_part}\n"
         f"Time: {time_part}\n"
         f"Service: {service}\n"
-        f"Details: {details_block.get('items', [])}\n"
+        f"Details: {details_str}\n"
+        f"Doctor: {doctor_name}\n"
     )
     
     await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
