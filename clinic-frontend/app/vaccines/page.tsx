@@ -28,9 +28,9 @@ export default function VaccinesPage() {
       price: 0, has_booster: false, schedules: [] as any[], 
       stock_quantity: '' as number | string, low_stock_threshold: 10 as number | string,
       target_gender: 'ANY',
-      allow_new_series: false,
-      new_series_delay_days: '' as number | string,
-      must_restart_after_interruption: false,
+      allow_repeat_series: false,
+      repeat_interval_days: '' as number | string,
+      restart_if_interrupted: false,
       interruption_restart_days: '' as number | string
   });
 
@@ -106,9 +106,9 @@ export default function VaccinesPage() {
               total_doses: data.total_doses || 1, 
               has_booster: data.has_booster || false, 
               schedules: scheds,
-              allow_new_series: data.allow_new_series || false,
-              new_series_delay_days: data.new_series_delay_days !== null && data.new_series_delay_days !== undefined ? data.new_series_delay_days : '',
-              must_restart_after_interruption: data.must_restart_after_interruption || false,
+              allow_repeat_series: data.allow_repeat_series || false,
+              repeat_interval_days: data.repeat_interval_days !== null && data.repeat_interval_days !== undefined ? data.repeat_interval_days : '',
+              restart_if_interrupted: data.restart_if_interrupted || false,
               interruption_restart_days: data.interruption_restart_days !== null && data.interruption_restart_days !== undefined ? data.interruption_restart_days : ''
           });
       }
@@ -168,7 +168,10 @@ export default function VaccinesPage() {
         type: capitalizeFirstLetter(formData.type),
         stock_quantity: finalStock,
         low_stock_threshold: finalThreshold,
-        target_gender: formData.target_gender || 'ANY'
+        target_gender: formData.target_gender || 'ANY',
+        // Convert empty strings to null so FastAPI Integer validation doesn't crash
+        repeat_interval_days: formData.repeat_interval_days === '' ? null : formData.repeat_interval_days,
+        interruption_restart_days: formData.interruption_restart_days === '' ? null : formData.interruption_restart_days,
     }
 
     const isEditing = !!editingVac;
@@ -191,7 +194,8 @@ export default function VaccinesPage() {
         
         if (!response.ok) {
             const err = await response.json();
-            alert(`Failed to save: ${err.detail}`);
+            // Fix [object Object] by stringifying the Pydantic error array
+            alert(`Failed to save: ${typeof err.detail === 'object' ? JSON.stringify(err.detail) : err.detail}`);
             return;
         }
         setShowModal(false); 
@@ -199,8 +203,8 @@ export default function VaccinesPage() {
     } catch(e) {
         alert("Failed to connect to the server.");
     }
-  };
-
+  }
+  
   const handleDelete = async (id: number) => {
     if(confirm("Remove this vaccine from clinic offerings?")) {
       const token = localStorage.getItem('aicas_token');
@@ -226,9 +230,9 @@ export default function VaccinesPage() {
             stock_quantity: v.stock_quantity !== undefined ? v.stock_quantity : '', 
             low_stock_threshold: v.low_stock_threshold !== undefined ? v.low_stock_threshold : 10,
             target_gender: v.target_gender || 'ANY',
-            allow_new_series: v.allow_new_series || false,
-            new_series_delay_days: v.new_series_delay_days !== null && v.new_series_delay_days !== undefined ? v.new_series_delay_days : '',
-            must_restart_after_interruption: v.must_restart_after_interruption || false,
+            allow_repeat_series: v.allow_repeat_series || false,
+            repeat_interval_days: v.repeat_interval_days !== null && v.repeat_interval_days !== undefined ? v.repeat_interval_days : '',
+            restart_if_interrupted: v.restart_if_interrupted || false,
             interruption_restart_days: v.interruption_restart_days !== null && v.interruption_restart_days !== undefined ? v.interruption_restart_days : ''
         }); 
     } 
@@ -238,7 +242,7 @@ export default function VaccinesPage() {
             vaccine_id: null, name: '', type: '', total_doses: 1, 
             price: 0, has_booster: false, schedules: [],
             stock_quantity: '', low_stock_threshold: 10, target_gender: 'ANY',
-            allow_new_series: false, new_series_delay_days: '', must_restart_after_interruption: false, interruption_restart_days: ''
+            allow_repeat_series: false, repeat_interval_days: '', restart_if_interrupted: false, interruption_restart_days: ''
         }); 
     }
     setShowModal(true);
@@ -417,16 +421,16 @@ export default function VaccinesPage() {
                     <div className="flex gap-4 mt-4 border-t pt-4 border-slate-100">
                       <div className="flex-1">
                           <label className="block text-xs font-bold text-slate-700 mb-1">Allow New Series?</label>
-                          <select value={formData.allow_new_series ? "yes" : "no"} onChange={e => setFormData({...formData, allow_new_series: e.target.value === "yes"})} className="w-full p-3 border rounded-lg outline-none bg-white font-bold text-sm">
+                          <select value={formData.allow_repeat_series ? "yes" : "no"} onChange={e => setFormData({...formData, allow_repeat_series: e.target.value === "yes"})} className="w-full p-3 border rounded-lg outline-none bg-white font-bold text-sm">
                               <option value="no">No</option>
                               <option value="yes">Yes</option>
                           </select>
                       </div>
-                      {formData.allow_new_series && (
+                      {formData.allow_repeat_series && (
                           <div className="flex-1 bg-purple-50 p-2 rounded-lg border border-purple-100">
                               <label className="block text-[10px] font-bold text-purple-700 mb-1 uppercase">Wait before new series</label>
                               <div className="flex items-center">
-                                  <input type="number" min="0" value={formData.new_series_delay_days} onChange={e => setFormData({...formData, new_series_delay_days: parseInt(e.target.value) || ''})} className="w-full p-2 border rounded-l-lg outline-none text-sm font-bold" placeholder="e.g. 30" />
+                                  <input type="number" min="0" value={formData.repeat_interval_days} onChange={e => setFormData({...formData, repeat_interval_days: parseInt(e.target.value) || ''})} className="w-full p-2 border rounded-l-lg outline-none text-sm font-bold" placeholder="e.g. 30" />
                                   <span className="bg-white border border-l-0 p-2 rounded-r-lg text-sm text-slate-500">Days</span>
                               </div>
                           </div>
@@ -436,12 +440,12 @@ export default function VaccinesPage() {
                     <div className="flex gap-4">
                       <div className="flex-1">
                           <label className="block text-xs font-bold text-slate-700 mb-1">Restart After Interruption?</label>
-                          <select value={formData.must_restart_after_interruption ? "yes" : "no"} onChange={e => setFormData({...formData, must_restart_after_interruption: e.target.value === "yes"})} className="w-full p-3 border rounded-lg outline-none bg-white font-bold text-sm">
+                          <select value={formData.restart_if_interrupted ? "yes" : "no"} onChange={e => setFormData({...formData, restart_if_interrupted: e.target.value === "yes"})} className="w-full p-3 border rounded-lg outline-none bg-white font-bold text-sm">
                               <option value="no">No</option>
                               <option value="yes">Yes</option>
                           </select>
                       </div>
-                      {formData.must_restart_after_interruption && (
+                      {formData.restart_if_interrupted && (
                           <div className="flex-1 bg-amber-50 p-2 rounded-lg border border-amber-100">
                               <label className="block text-[10px] font-bold text-amber-700 mb-1 uppercase">Interruption Limit</label>
                               <div className="flex items-center">
