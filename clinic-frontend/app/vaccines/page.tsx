@@ -213,8 +213,8 @@ export default function VaccinesPage() {
     setEditingVac(v); setAiOptions([]); setAiErrorMsg(""); setSearchQuery("");
     if(v) { 
         setModalMode('existing'); 
-        let scheds = v.schedules || []; 
-        if (scheds.length === 0 && (v.total_doses || s?.total_doses) > 0) {
+        let scheds = v.schedules || [];
+        if (scheds.length === 0 && v.total_doses > 0) {
              scheds.push({dose_number: 1, interval_days: 0});
         } else if (scheds.length === 0 && v.total_doses > 0) {
              scheds.push({dose_number: 1, interval_description: "Initial"});
@@ -342,9 +342,9 @@ export default function VaccinesPage() {
                   <select onChange={e => { 
                       const s = unaddedGlobalVaccines.find(g => g.id === parseInt(e.target.value)); 
                       if (s) {
-                          let scheds = s.schedules || []; 
-                          if (scheds.length === 0 && (v.total_doses || s?.total_doses) > 0) {
-                              scheds.push({dose_number: 1, interval_days: 0});
+                          let scheds = s.schedules || [];
+                          if (scheds.length === 0 && s.total_doses > 0) {
+                               scheds.push({dose_number: 1, interval_days: 0});
                           } else if (scheds.length === 0 && s.total_doses > 0) {
                                scheds.push({dose_number: 1, interval_description: "Initial"});
                           }
