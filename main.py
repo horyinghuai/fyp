@@ -1151,7 +1151,7 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
                 for av in vac_dict[key]:
                     v_name = v_name_map.get(av.vaccine_id, "Unknown Vaccine")
                     items_list.append(v_name)
-                    dose_val = stage.stage_name if stage.stage_name.startswith("Dose") else av.dose_number
+                    dose_val = stage.stage_name.title() if stage.stage_name else av.dose_number
             elif key in test_dict:
                 service = "Blood Test"
                 color = "#EF4444"
@@ -1500,16 +1500,13 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
 
 @app.post("/update-appointment")
 def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
+    from datetime import datetime, timedelta
     try:
         appt = db.query(models.Appointment).filter(models.Appointment.id == booking.appt_id).first()
-        if not appt: raise HTTPException(status_code=404)
-        
-        db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
-        db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
-        db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
+        if not appt: raise HTTPException(status_code=404, detail="Appointment not found")
         
         doc_ic = booking.details.get('assigned_doctor_id')
-        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
+        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL", ""]: doc_ic = None
         appt.doctor_ic = doc_ic
         
         appt.general_notes = booking.details.get('general_notes') 
@@ -1542,6 +1539,53 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         
         start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
         status_val = booking.status
+
+        # -- ISSUE 2 FIX: If staying in multi-stage and vaccine is same, UPDATE in place --
+        if appt.appt_type == 'multi-stage' and mapped_appt_type == 'multi-stage' and v_model:
+            vac_rec = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).first()
+            if vac_rec and vac_rec.vaccine_id == v_model.id:
+                stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id, stage_name=dose_val).first()
+                if not stage:
+                    stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id).order_by(models.ApptStage.id).first()
+                
+                if stage:
+                    stage.scheduled_time = start_time
+                    stage.status = status_val
+                    if status_val == 'canceled' and hasattr(booking, 'cancel_reason'):
+                        stage.cancel_reason = booking.cancel_reason
+                        
+                    schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
+                    all_stages = db.query(models.ApptStage).filter_by(appointment_id=appt.id).order_by(models.ApptStage.id).all()
+                    
+                    current_calc_time = start_time
+                    found_edited = False
+                    for s in all_stages:
+                        if s.id == stage.id:
+                            found_edited = True
+                            continue
+                        
+                        # Only shift times for uncompleted stages that come AFTER the edited stage
+                        if found_edited and s.status != 'completed':
+                            target_num = 1
+                            if s.stage_name.lower().startswith('dose '):
+                                try: target_num = int(s.stage_name.split(" ")[1])
+                                except: pass
+                            elif s.stage_name.lower() == 'booster':
+                                target_num = v_model.total_doses + 1
+                                
+                            sched = next((sch for sch in schedules if sch.dose_number == target_num), None)
+                            interval_days = sched.interval_days if sched and sched.interval_days is not None else (180 if target_num > v_model.total_doses else 30)
+                            
+                            current_calc_time = current_calc_time + timedelta(days=interval_days)
+                            s.scheduled_time = current_calc_time
+                            
+                    db.commit()
+                    return {"status": "success"}
+
+        # -- FALLBACK: Change of service type or vaccine type -> Delete and recreate --
+        db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt.id).delete()
+        db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt.id).delete()
+        db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt.id).delete()
         
         if mapped_appt_type == 'multi-stage' and v_model:
             db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
@@ -1558,7 +1602,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                     
                 if current_calc_time:
                     final_status = status_val if i == start_dose_num else "scheduled"
-                    stage = models.ApptStage(
+                    new_stage = models.ApptStage(
                         appointment_id=appt.id, 
                         stage_name=stage_name, 
                         scheduled_time=current_calc_time, 
@@ -1566,10 +1610,10 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                         status=final_status
                     )
                     if final_status == 'canceled':
-                        stage.cancel_reason = booking.cancel_reason
-                    db.add(stage)
+                        new_stage.cancel_reason = booking.cancel_reason
+                    db.add(new_stage)
                     db.flush()
-                    prev_stage_id = stage.id 
+                    prev_stage_id = new_stage.id 
                 
             if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
                 if start_dose_num == v_model.total_doses + 1:
@@ -1581,7 +1625,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                     
                 if current_calc_time:
                     final_status = status_val if start_dose_num == v_model.total_doses + 1 else "scheduled"
-                    stage = models.ApptStage(
+                    new_stage = models.ApptStage(
                         appointment_id=appt.id, 
                         stage_name="Booster", 
                         scheduled_time=current_calc_time, 
@@ -1589,8 +1633,8 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                         status=final_status
                     )
                     if final_status == 'canceled':
-                        stage.cancel_reason = booking.cancel_reason
-                    db.add(stage)
+                        new_stage.cancel_reason = booking.cancel_reason
+                    db.add(new_stage)
                     db.flush()
         else:
             if service == 'Vaccine' and items_list and v_model:
@@ -1613,7 +1657,7 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-
+    
 @app.post("/cancel-appointment/{appt_id}")
 def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_db)):
     db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled", "cancel_reason": req.cancel_reason})
