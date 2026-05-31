@@ -127,6 +127,10 @@ class Vaccine(Base):
     total_doses = Column(Integer, default=1) 
     has_booster = Column(Boolean, default=False) 
     target_gender = Column(String(10), default="ANY")
+    allow_new_series = Column(Boolean, default=False)
+    new_series_delay_days = Column(Integer, nullable=True)
+    must_restart_after_interruption = Column(Boolean, default=False)
+    interruption_restart_days = Column(Integer, nullable=True)
 
 class DoctorClinicAvailability(Base):
     __tablename__ = "doctor_clinic_availability"

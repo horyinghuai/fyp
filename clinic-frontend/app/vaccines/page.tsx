@@ -27,7 +27,11 @@ export default function VaccinesPage() {
       vaccine_id: null as any, name: '', type: '', total_doses: 1, 
       price: 0, has_booster: false, schedules: [] as any[], 
       stock_quantity: '' as number | string, low_stock_threshold: 10 as number | string,
-      target_gender: 'ANY'
+      target_gender: 'ANY',
+      allow_new_series: false,
+      new_series_delay_days: '' as number | string,
+      must_restart_after_interruption: false,
+      interruption_restart_days: '' as number | string
   });
 
   useEffect(() => { 
@@ -101,7 +105,11 @@ export default function VaccinesPage() {
               type: capitalizeFirstLetter(data.type || ''), 
               total_doses: data.total_doses || 1, 
               has_booster: data.has_booster || false, 
-              schedules: scheds 
+              schedules: scheds,
+              allow_new_series: data.allow_new_series || false,
+              new_series_delay_days: data.new_series_delay_days !== null && data.new_series_delay_days !== undefined ? data.new_series_delay_days : '',
+              must_restart_after_interruption: data.must_restart_after_interruption || false,
+              interruption_restart_days: data.interruption_restart_days !== null && data.interruption_restart_days !== undefined ? data.interruption_restart_days : ''
           });
       }
     } catch (e) { setAiErrorMsg("Failed to connect to AI server."); }
@@ -216,7 +224,11 @@ export default function VaccinesPage() {
             price: v.price, has_booster: v.has_booster, schedules: scheds,
             stock_quantity: v.stock_quantity !== undefined ? v.stock_quantity : '', 
             low_stock_threshold: v.low_stock_threshold !== undefined ? v.low_stock_threshold : 10,
-            target_gender: v.target_gender || 'ANY'
+            target_gender: v.target_gender || 'ANY',
+            allow_new_series: v.allow_new_series || false,
+            new_series_delay_days: v.new_series_delay_days !== null && v.new_series_delay_days !== undefined ? v.new_series_delay_days : '',
+            must_restart_after_interruption: v.must_restart_after_interruption || false,
+            interruption_restart_days: v.interruption_restart_days !== null && v.interruption_restart_days !== undefined ? v.interruption_restart_days : ''
         }); 
     } 
     else { 
@@ -224,7 +236,8 @@ export default function VaccinesPage() {
         setFormData({ 
             vaccine_id: null, name: '', type: '', total_doses: 1, 
             price: 0, has_booster: false, schedules: [],
-            stock_quantity: '', low_stock_threshold: 10, target_gender: 'ANY'
+            stock_quantity: '', low_stock_threshold: 10, target_gender: 'ANY',
+            allow_new_series: false, new_series_delay_days: '', must_restart_after_interruption: false, interruption_restart_days: ''
         }); 
     }
     setShowModal(true);
@@ -398,6 +411,44 @@ export default function VaccinesPage() {
                               <option value="yes">Yes</option>
                           </select>
                       </div>
+                    </div>
+
+                    <div className="flex gap-4 mt-4 border-t pt-4 border-slate-100">
+                      <div className="flex-1">
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Allow New Series?</label>
+                          <select value={formData.allow_new_series ? "yes" : "no"} onChange={e => setFormData({...formData, allow_new_series: e.target.value === "yes"})} className="w-full p-3 border rounded-lg outline-none bg-white font-bold text-sm">
+                              <option value="no">No</option>
+                              <option value="yes">Yes</option>
+                          </select>
+                      </div>
+                      {formData.allow_new_series && (
+                          <div className="flex-1 bg-purple-50 p-2 rounded-lg border border-purple-100">
+                              <label className="block text-[10px] font-bold text-purple-700 mb-1 uppercase">Wait before new series</label>
+                              <div className="flex items-center">
+                                  <input type="number" min="0" value={formData.new_series_delay_days} onChange={e => setFormData({...formData, new_series_delay_days: parseInt(e.target.value) || ''})} className="w-full p-2 border rounded-l-lg outline-none text-sm font-bold" placeholder="e.g. 30" />
+                                  <span className="bg-white border border-l-0 p-2 rounded-r-lg text-sm text-slate-500">Days</span>
+                              </div>
+                          </div>
+                      )}
+                    </div>
+
+                    <div className="flex gap-4">
+                      <div className="flex-1">
+                          <label className="block text-xs font-bold text-slate-700 mb-1">Restart After Interruption?</label>
+                          <select value={formData.must_restart_after_interruption ? "yes" : "no"} onChange={e => setFormData({...formData, must_restart_after_interruption: e.target.value === "yes"})} className="w-full p-3 border rounded-lg outline-none bg-white font-bold text-sm">
+                              <option value="no">No</option>
+                              <option value="yes">Yes</option>
+                          </select>
+                      </div>
+                      {formData.must_restart_after_interruption && (
+                          <div className="flex-1 bg-amber-50 p-2 rounded-lg border border-amber-100">
+                              <label className="block text-[10px] font-bold text-amber-700 mb-1 uppercase">Interruption Limit</label>
+                              <div className="flex items-center">
+                                  <input type="number" min="0" value={formData.interruption_restart_days} onChange={e => setFormData({...formData, interruption_restart_days: parseInt(e.target.value) || ''})} className="w-full p-2 border rounded-l-lg outline-none text-sm font-bold" placeholder="e.g. 365" />
+                                  <span className="bg-white border border-l-0 p-2 rounded-r-lg text-sm text-slate-500">Days</span>
+                              </div>
+                          </div>
+                      )}
                     </div>
 
                     {formData.total_doses > 0 && (

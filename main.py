@@ -278,6 +278,10 @@ class VaccineCreate(BaseModel):
     stock_quantity: int
     low_stock_threshold: int
     target_gender: Optional[str] = "ANY"
+    allow_new_series: Optional[bool] = False
+    new_series_delay_days: Optional[int] = None
+    must_restart_after_interruption: Optional[bool] = False
+    interruption_restart_days: Optional[int] = None
 
 class VaccineAIRequest(BaseModel):
     search_query: str
@@ -1649,6 +1653,10 @@ def get_global_vaccines(db: Session = Depends(get_db)):
             "id": v.id, "name": v.name, "type": v.type, 
             "total_doses": v.total_doses, "has_booster": v.has_booster,
             "target_gender": getattr(v, 'target_gender', 'ANY'),
+            "allow_new_series": getattr(v, 'allow_new_series', False),
+            "new_series_delay_days": getattr(v, 'new_series_delay_days', None),
+            "must_restart_after_interruption": getattr(v, 'must_restart_after_interruption', False),
+            "interruption_restart_days": getattr(v, 'interruption_restart_days', None),
             "schedules": [{"dose_number": s.dose_number, "interval_description": s.interval_description} for s in scheds]
         })
     return res
@@ -1670,7 +1678,12 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
                 
         if not v_id:
             normalized_type = normalize_vaccine_type(db, data.type)
-            v = models.Vaccine(name=formatted_name, type=normalized_type, total_doses=data.total_doses, has_booster=data.has_booster, target_gender=data.target_gender.upper())
+            v = models.Vaccine(
+                name=formatted_name, type=normalized_type, total_doses=data.total_doses, 
+                has_booster=data.has_booster, target_gender=data.target_gender.upper(),
+                allow_new_series=data.allow_new_series, new_series_delay_days=data.new_series_delay_days,
+                must_restart_after_interruption=data.must_restart_after_interruption, interruption_restart_days=data.interruption_restart_days
+            )
             db.add(v)
             db.flush() 
             v_id = v.id
@@ -1719,6 +1732,10 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
             v.total_doses = data.total_doses
             v.has_booster = data.has_booster
             v.target_gender = data.target_gender.upper()
+            v.allow_new_series = data.allow_new_series
+            v.new_series_delay_days = data.new_series_delay_days
+            v.must_restart_after_interruption = data.must_restart_after_interruption
+            v.interruption_restart_days = data.interruption_restart_days
             
         vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
         if vc: 
@@ -1814,6 +1831,10 @@ def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
             res.append({
                 "id": v.id, "name": v.name, "type": v.type, "price": float(vc.price),
                 "total_doses": v.total_doses, "has_booster": v.has_booster, "target_gender": getattr(v, 'target_gender', 'ANY'),
+                "allow_new_series": getattr(v, 'allow_new_series', False),
+                "new_series_delay_days": getattr(v, 'new_series_delay_days', None),
+                "must_restart_after_interruption": getattr(v, 'must_restart_after_interruption', False),
+                "interruption_restart_days": getattr(v, 'interruption_restart_days', None),
                 "stock_quantity": vc.stock_quantity,
                 "low_stock_threshold": vc.low_stock_threshold,
                 "held_quantity": held_count,
