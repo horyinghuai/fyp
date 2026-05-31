@@ -1353,7 +1353,6 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         if mapped_appt_type == 'multi-stage' and v_model:
             db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
             schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
-            base_date = start_time
             current_calc_time = start_time
             prev_stage_id = None
             
@@ -1365,10 +1364,13 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
-                    final_status = "scheduled" if "status_val" not in locals() or i > start_dose_num else status_val
-                    stage = models.ApptStage(appointment_id=new_appt.id if "new_appt" in locals() else appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
-                    if final_status == 'canceled':
-                        stage.cancel_reason = booking.cancel_reason if hasattr(booking, 'cancel_reason') else None
+                    stage = models.ApptStage(
+                        appointment_id=new_appt.id, 
+                        stage_name=stage_name, 
+                        scheduled_time=current_calc_time, 
+                        depends_on_stage_id=prev_stage_id, 
+                        status="scheduled"
+                    )
                     db.add(stage)
                     db.flush()
                     prev_stage_id = stage.id 
@@ -1382,26 +1384,13 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
-                    final_status = "scheduled" if "status_val" not in locals() or start_dose_num != v_model.total_doses + 1 else status_val
-                    stage = models.ApptStage(appointment_id=new_appt.id if "new_appt" in locals() else appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
-                    if final_status == 'canceled':
-                        stage.cancel_reason = booking.cancel_reason if hasattr(booking, 'cancel_reason') else None
-                    db.add(stage)
-                    db.flush()
-                
-            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
-                if start_dose_num == v_model.total_doses + 1:
-                    current_calc_time = start_time
-                else:
-                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
-                    interval = sched.interval_description if sched else "6 month"
-                    if not interval or not interval.strip():
-                        current_calc_time = None
-                    else:
-                        current_calc_time = calculate_future_date(current_calc_time, interval)
-                    
-                if current_calc_time:
-                    stage = models.ApptStage(appointment_id=new_appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
+                    stage = models.ApptStage(
+                        appointment_id=new_appt.id, 
+                        stage_name="Booster", 
+                        scheduled_time=current_calc_time, 
+                        depends_on_stage_id=prev_stage_id, 
+                        status="scheduled"
+                    )
                     db.add(stage)
                     db.flush()
         else:
@@ -1537,7 +1526,6 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         if mapped_appt_type == 'multi-stage' and v_model:
             db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
             schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
-            base_date = start_time
             current_calc_time = start_time
             prev_stage_id = None
             
@@ -1549,10 +1537,16 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
-                    final_status = "scheduled" if "status_val" not in locals() or i > start_dose_num else status_val
-                    stage = models.ApptStage(appointment_id=new_appt.id if "new_appt" in locals() else appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    final_status = status_val if i == start_dose_num else "scheduled"
+                    stage = models.ApptStage(
+                        appointment_id=appt.id, 
+                        stage_name=stage_name, 
+                        scheduled_time=current_calc_time, 
+                        depends_on_stage_id=prev_stage_id, 
+                        status=final_status
+                    )
                     if final_status == 'canceled':
-                        stage.cancel_reason = booking.cancel_reason if hasattr(booking, 'cancel_reason') else None
+                        stage.cancel_reason = booking.cancel_reason
                     db.add(stage)
                     db.flush()
                     prev_stage_id = stage.id 
@@ -1566,27 +1560,14 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
-                    final_status = "scheduled" if "status_val" not in locals() or start_dose_num != v_model.total_doses + 1 else status_val
-                    stage = models.ApptStage(appointment_id=new_appt.id if "new_appt" in locals() else appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
-                    if final_status == 'canceled':
-                        stage.cancel_reason = booking.cancel_reason if hasattr(booking, 'cancel_reason') else None
-                    db.add(stage)
-                    db.flush()
-                
-            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
-                if start_dose_num == v_model.total_doses + 1:
-                    current_calc_time = start_time
-                else:
-                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
-                    interval = sched.interval_description if sched else "6 month"
-                    if not interval or not interval.strip():
-                        current_calc_time = None
-                    else:
-                        current_calc_time = calculate_future_date(current_calc_time, interval)
-                    
-                if current_calc_time:
                     final_status = status_val if start_dose_num == v_model.total_doses + 1 else "scheduled"
-                    stage = models.ApptStage(appointment_id=appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    stage = models.ApptStage(
+                        appointment_id=appt.id, 
+                        stage_name="Booster", 
+                        scheduled_time=current_calc_time, 
+                        depends_on_stage_id=prev_stage_id, 
+                        status=final_status
+                    )
                     if final_status == 'canceled':
                         stage.cancel_reason = booking.cancel_reason
                     db.add(stage)
@@ -1696,7 +1677,7 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
             db.flush() 
             v_id = v.id
             for sched in data.schedules:
-                db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
+                db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_days=sched.get('interval_days', 0)))
             db.flush() 
             
         elif v_id:

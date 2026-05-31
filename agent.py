@@ -124,14 +124,20 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
     Extract appointment details from the user text. 
     USER TEXT: "{user_text}"
     
-    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output markdown tags.
-    JSON SCHEMA:
+    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output <think> tags.
     {{
-        "intent": "booking" | "question" | "reschedule" | "cancel",
-        "raw_date_text": "string (exact date phrase) or null",
-        "raw_time_text": "string (exact time phrase) or null",
-        "doctor_preference": "string ('ANY', 'MALE', 'FEMALE', or exact name) or null",
-        "general_notes": "string (symptoms, reason for visit, e.g., 'fever', 'cough') or null"
+        "status": "exact_match", 
+        "options": ["Brand A", "Brand B"], 
+        "type": "mRNA", 
+        "total_doses": 2, 
+        "has_booster": true, 
+        "allow_new_series": false,
+        "new_series_delay_days": null,
+        "must_restart_after_interruption": true,
+        "interruption_restart_days": 365,
+        "schedules": [
+            {{"dose_number": 2, "interval_days": 30}}
+        ] 
     }}
     Note: If the user is asking a general question not related to booking an appointment (e.g. "Where is the clinic?", "What are your hours?", "Can I bring my child?"), set intent to "question".
     """

@@ -421,7 +421,7 @@ async def proceed_with_start(update, context, query=False):
     btns = [
         [InlineKeyboardButton("1. Create New Appointment", callback_data="main_create")],
         [InlineKeyboardButton("2. Check Appointment Details", callback_data="main_check")],
-        [InlineKeyboardButton("3. General Question", callback_data="main_general")]
+        [InlineKeyboardButton("3. General Question (Coming Soon)", callback_data="main_general")]
     ]
     if query:
         await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))

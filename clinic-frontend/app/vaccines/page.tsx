@@ -94,7 +94,7 @@ export default function VaccinesPage() {
           setSearchQuery(queryToSearch);
           const scheds = data.schedules || [];
           if (scheds.length === 0 && data.total_doses > 0) {
-               scheds.push({dose_number: 1, interval_description: "Initial"});
+               scheds.push({dose_number: 1, interval_days: 0});
           } else if (scheds.length > 0 && (!scheds[0].interval_description || scheds[0].interval_description.trim() === '')) {
                scheds[0].interval_description = "Initial";
           }
@@ -117,12 +117,13 @@ export default function VaccinesPage() {
   };
 
   const handleScheduleChange = (doseNum: number, interval: string) => {
+      const parsedInterval = parseInt(interval) || 0;
       const newSchedules = [...formData.schedules];
       const idx = newSchedules.findIndex(s => s.dose_number === doseNum);
       if (idx >= 0) {
-          newSchedules[idx].interval_description = capitalizeFirstLetter(interval);
+          newSchedules[idx].interval_days = parsedInterval;
       } else {
-          newSchedules.push({ dose_number: doseNum, interval_description: capitalizeFirstLetter(interval) });
+          newSchedules.push({ dose_number: doseNum, interval_days: parsedInterval });
       }
       setFormData({...formData, schedules: newSchedules});
   };
@@ -212,9 +213,9 @@ export default function VaccinesPage() {
     setEditingVac(v); setAiOptions([]); setAiErrorMsg(""); setSearchQuery("");
     if(v) { 
         setModalMode('existing'); 
-        let scheds = v.schedules || [];
-        if (scheds.length > 0 && (!scheds[0].interval_description || scheds[0].interval_description.trim() === '')) {
-             scheds[0].interval_description = "Initial";
+        let scheds = v.schedules || []; 
+        if (scheds.length === 0 && (v.total_doses || s?.total_doses) > 0) {
+             scheds.push({dose_number: 1, interval_days: 0});
         } else if (scheds.length === 0 && v.total_doses > 0) {
              scheds.push({dose_number: 1, interval_description: "Initial"});
         }
@@ -341,9 +342,9 @@ export default function VaccinesPage() {
                   <select onChange={e => { 
                       const s = unaddedGlobalVaccines.find(g => g.id === parseInt(e.target.value)); 
                       if (s) {
-                          let scheds = s.schedules || [];
-                          if (scheds.length > 0 && (!scheds[0].interval_description || scheds[0].interval_description.trim() === '')) {
-                               scheds[0].interval_description = "Initial";
+                          let scheds = s.schedules || []; 
+                          if (scheds.length === 0 && (v.total_doses || s?.total_doses) > 0) {
+                              scheds.push({dose_number: 1, interval_days: 0});
                           } else if (scheds.length === 0 && s.total_doses > 0) {
                                scheds.push({dose_number: 1, interval_description: "Initial"});
                           }
@@ -455,22 +456,23 @@ export default function VaccinesPage() {
                         <div className="bg-slate-50 p-4 rounded-xl space-y-3 border border-slate-100 mt-4">
                             <h4 className="font-bold text-xs text-slate-500 uppercase">Dose Schedules</h4>
                             <p className="text-[10px] text-slate-500 mb-2">Leave intervals blank to signify optional doses without automatic rescheduling.</p>
+                            {/* REPLACE the Dose Schedules mapping WITH THIS: */}
                             {Array.from({ length: formData.total_doses }).map((_, i) => {
                                 const doseNum = i + 1;
-                                let val = formData.schedules.find(s => s.dose_number === doseNum)?.interval_description || '';
-                                if (doseNum === 1 && val === '') val = 'Initial'; 
+                                let val = formData.schedules.find(s => s.dose_number === doseNum)?.interval_days || '';
+                                if (doseNum === 1) val = 0; 
                                 
                                 return (
                                     <div key={`dose-${doseNum}`}>
-                                        <label className="block text-xs font-bold text-slate-700 mb-1">Dose {doseNum} Interval</label>
-                                        <input type="text" value={val} placeholder={doseNum === 1 ? "e.g. Initial" : "e.g. 1 month"} onChange={e => handleScheduleChange(doseNum, e.target.value)} className="w-full p-2 border rounded outline-none text-sm" />
+                                        <label className="block text-xs font-bold text-slate-700 mb-1">Dose {doseNum} Wait Time (Days)</label>
+                                        <input type="number" min="0" value={val} disabled={doseNum === 1} placeholder={doseNum === 1 ? "Initial" : "e.g. 30"} onChange={e => handleScheduleChange(doseNum, e.target.value)} className={`w-full p-2 border rounded outline-none text-sm ${doseNum === 1 ? 'bg-slate-100 text-slate-400' : ''}`} />
                                     </div>
                                 );
                             })}
                             {formData.has_booster && (
                                 <div key="booster">
-                                    <label className="block text-xs font-bold text-slate-700 mb-1">Booster Interval</label>
-                                    <input type="text" value={formData.schedules.find(s => s.dose_number === formData.total_doses + 1)?.interval_description || ''} placeholder="e.g. 6 months (Leave blank if optional)" onChange={e => handleScheduleChange(formData.total_doses + 1, e.target.value)} className="w-full p-2 border rounded outline-none text-sm" />
+                                    <label className="block text-xs font-bold text-slate-700 mb-1">Booster Wait Time (Days)</label>
+                                    <input type="number" min="0" value={formData.schedules.find(s => s.dose_number === formData.total_doses + 1)?.interval_days || ''} placeholder="e.g. 180" onChange={e => handleScheduleChange(formData.total_doses + 1, e.target.value)} className="w-full p-2 border rounded outline-none text-sm" />
                                 </div>
                             )}
                         </div>
