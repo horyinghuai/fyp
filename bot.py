@@ -734,7 +734,9 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         context.user_data['book_date'] = appt['date']
                         context.user_data['book_time'] = f"{appt['date']} {appt['time']}"
                         context.user_data['is_editing'] = True
-                        context.user_data['original_appt_id'] = appt['appt_id'] 
+                        context.user_data['original_appt_id'] = appt['appt_id']
+                        context.user_data['assigned_doctor_name'] = appt['details'].get('assigned_doctor_name', 'ANY')
+                        context.user_data['assigned_doctor_id'] = appt['details'].get('assigned_doctor_id')
                         # Show the edit menu (will use handle_edit_menu_routing)
                         return await handle_edit_menu_routing(update, context)
             except Exception:
