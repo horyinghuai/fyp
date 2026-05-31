@@ -278,9 +278,9 @@ class VaccineCreate(BaseModel):
     stock_quantity: int
     low_stock_threshold: int
     target_gender: Optional[str] = "ANY"
-    allow_new_series: Optional[bool] = False
-    new_series_delay_days: Optional[int] = None
-    must_restart_after_interruption: Optional[bool] = False
+    allow_repeat_series: Optional[bool] = False
+    repeat_interval_days: Optional[int] = None
+    restart_if_interrupted: Optional[bool] = False
     interruption_restart_days: Optional[int] = None
 
 class VaccineAIRequest(BaseModel):
@@ -397,21 +397,6 @@ def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
     db.commit()
-
-def calculate_future_date(start_date: datetime, interval_str: str) -> Optional[datetime]:
-    if not interval_str or interval_str.strip().lower() in ["", "initial", "none", "blank"]:
-        return None
-    interval_str = interval_str.lower()
-    try:
-        match = re.search(r'\d+', interval_str)
-        amount = int(match.group()) if match else 1
-
-        if 'year' in interval_str or 'annual' in interval_str: return start_date + timedelta(days=365 * amount)
-        elif 'month' in interval_str: return start_date + timedelta(days=30 * amount)
-        elif 'week' in interval_str: return start_date + timedelta(weeks=amount)
-        elif 'day' in interval_str: return start_date + timedelta(days=amount)
-    except: pass
-    return start_date + timedelta(days=30) 
 
 def normalize_vaccine_type(db: Session, given_type: str):
     if not given_type: return "Other"
@@ -1376,20 +1361,33 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 stage_name = f"Dose {i}"
                 if i > start_dose_num:
                     sched = next((s for s in schedules if s.dose_number == i), None)
-                    interval = sched.interval_description if sched else "1 month"
-                    if not interval or not interval.strip():
-                        continue 
-                    
-                    if "dose 1" in interval.lower():
-                        current_calc_time = calculate_future_date(base_date, interval)
-                    else:
-                        current_calc_time = calculate_future_date(current_calc_time, interval)
+                    interval_days = sched.interval_days if sched and sched.interval_days is not None else 30
+                    current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
-                    stage = models.ApptStage(appointment_id=new_appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id)
+                    final_status = "scheduled" if "status_val" not in locals() or i > start_dose_num else status_val
+                    stage = models.ApptStage(appointment_id=new_appt.id if "new_appt" in locals() else appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    if final_status == 'canceled':
+                        stage.cancel_reason = booking.cancel_reason if hasattr(booking, 'cancel_reason') else None
                     db.add(stage)
                     db.flush()
                     prev_stage_id = stage.id 
+                
+            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
+                if start_dose_num == v_model.total_doses + 1:
+                    current_calc_time = start_time
+                else:
+                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
+                    interval_days = sched.interval_days if sched and sched.interval_days is not None else 180
+                    current_calc_time = current_calc_time + timedelta(days=interval_days)
+                    
+                if current_calc_time:
+                    final_status = "scheduled" if "status_val" not in locals() or start_dose_num != v_model.total_doses + 1 else status_val
+                    stage = models.ApptStage(appointment_id=new_appt.id if "new_appt" in locals() else appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    if final_status == 'canceled':
+                        stage.cancel_reason = booking.cancel_reason if hasattr(booking, 'cancel_reason') else None
+                    db.add(stage)
+                    db.flush()
                 
             if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
                 if start_dose_num == v_model.total_doses + 1:
@@ -1547,23 +1545,33 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
                 stage_name = f"Dose {i}"
                 if i > start_dose_num:
                     sched = next((s for s in schedules if s.dose_number == i), None)
-                    interval = sched.interval_description if sched else "1 month"
-                    if not interval or not interval.strip():
-                        continue 
-                        
-                    if "dose 1" in interval.lower():
-                        current_calc_time = calculate_future_date(base_date, interval)
-                    else:
-                        current_calc_time = calculate_future_date(current_calc_time, interval)
+                    interval_days = sched.interval_days if sched and sched.interval_days is not None else 30
+                    current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
-                    final_status = status_val if i == start_dose_num else "scheduled"
-                    stage = models.ApptStage(appointment_id=appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    final_status = "scheduled" if "status_val" not in locals() or i > start_dose_num else status_val
+                    stage = models.ApptStage(appointment_id=new_appt.id if "new_appt" in locals() else appt.id, stage_name=stage_name, scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
                     if final_status == 'canceled':
-                        stage.cancel_reason = booking.cancel_reason
+                        stage.cancel_reason = booking.cancel_reason if hasattr(booking, 'cancel_reason') else None
                     db.add(stage)
                     db.flush()
-                    prev_stage_id = stage.id
+                    prev_stage_id = stage.id 
+                
+            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
+                if start_dose_num == v_model.total_doses + 1:
+                    current_calc_time = start_time
+                else:
+                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
+                    interval_days = sched.interval_days if sched and sched.interval_days is not None else 180
+                    current_calc_time = current_calc_time + timedelta(days=interval_days)
+                    
+                if current_calc_time:
+                    final_status = "scheduled" if "status_val" not in locals() or start_dose_num != v_model.total_doses + 1 else status_val
+                    stage = models.ApptStage(appointment_id=new_appt.id if "new_appt" in locals() else appt.id, stage_name="Booster", scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status=final_status)
+                    if final_status == 'canceled':
+                        stage.cancel_reason = booking.cancel_reason if hasattr(booking, 'cancel_reason') else None
+                    db.add(stage)
+                    db.flush()
                 
             if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
                 if start_dose_num == v_model.total_doses + 1:
@@ -1653,11 +1661,11 @@ def get_global_vaccines(db: Session = Depends(get_db)):
             "id": v.id, "name": v.name, "type": v.type, 
             "total_doses": v.total_doses, "has_booster": v.has_booster,
             "target_gender": getattr(v, 'target_gender', 'ANY'),
-            "allow_new_series": getattr(v, 'allow_new_series', False),
-            "new_series_delay_days": getattr(v, 'new_series_delay_days', None),
-            "must_restart_after_interruption": getattr(v, 'must_restart_after_interruption', False),
+            "allow_repeat_series": getattr(v, 'allow_repeat_series', False),
+            "repeat_interval_days": getattr(v, 'repeat_interval_days', None),
+            "restart_if_interrupted": getattr(v, 'restart_if_interrupted', False),
             "interruption_restart_days": getattr(v, 'interruption_restart_days', None),
-            "schedules": [{"dose_number": s.dose_number, "interval_description": s.interval_description} for s in scheds]
+            "schedules": [{"dose_number": s.dose_number, "interval_days": s.interval_days} for s in scheds]
         })
     return res
 
@@ -1681,8 +1689,8 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
             v = models.Vaccine(
                 name=formatted_name, type=normalized_type, total_doses=data.total_doses, 
                 has_booster=data.has_booster, target_gender=data.target_gender.upper(),
-                allow_new_series=data.allow_new_series, new_series_delay_days=data.new_series_delay_days,
-                must_restart_after_interruption=data.must_restart_after_interruption, interruption_restart_days=data.interruption_restart_days
+                allow_repeat_series=data.allow_repeat_series, repeat_interval_days=data.repeat_interval_days,
+                restart_if_interrupted=data.restart_if_interrupted, interruption_restart_days=data.interruption_restart_days
             )
             db.add(v)
             db.flush() 
@@ -1701,7 +1709,7 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
                 v.target_gender = data.target_gender.upper()
             db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_id).delete()
             for sched in data.schedules:
-                db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
+                db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_days=sched.get('interval_days', 0)))
             db.flush()
 
         existing_vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
@@ -1732,9 +1740,9 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
             v.total_doses = data.total_doses
             v.has_booster = data.has_booster
             v.target_gender = data.target_gender.upper()
-            v.allow_new_series = data.allow_new_series
-            v.new_series_delay_days = data.new_series_delay_days
-            v.must_restart_after_interruption = data.must_restart_after_interruption
+            v.allow_repeat_series = data.allow_repeat_series
+            v.repeat_interval_days = data.repeat_interval_days
+            v.restart_if_interrupted = data.restart_if_interrupted
             v.interruption_restart_days = data.interruption_restart_days
             
         vc = db.query(models.VaccineClinic).filter_by(vaccine_id=v_id, clinic_id=data.clinic_id).first()
@@ -1745,7 +1753,7 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
 
         db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_id).delete()
         for sched in data.schedules:
-            db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_description=sched.get('interval_description')))
+            db.add(models.VaccineDoseSchedule(vaccine_id=v_id, dose_number=sched.get('dose_number'), interval_days=sched.get('interval_days', 0)))
 
         db.flush()
 
@@ -1761,11 +1769,11 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
                 continue
             
             base_date = dose1_stage.scheduled_time
-            prev_date = base_date
+            prev_date = dose1_stage.scheduled_time
             
             for sched in data.schedules:
                 d_num = sched.get('dose_number')
-                interval = sched.get('interval_description', '').strip()
+                interval_days = sched.get('interval_days')
                 
                 if d_num == 1:
                     continue
@@ -1780,14 +1788,11 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
                     prev_date = stage.scheduled_time
                     continue
                     
-                if not interval:
+                if interval_days is None:
                     continue
                     
-                if "dose 1" in interval.lower():
-                    new_date = calculate_future_date(base_date, interval)
-                else:
-                    new_date = calculate_future_date(prev_date, interval)
-                    
+                new_date = prev_date + timedelta(days=interval_days)
+                
                 if new_date:
                     stage.scheduled_time = new_date
                     prev_date = new_date
@@ -1831,15 +1836,15 @@ def get_vaccines(clinic_id: str, db: Session = Depends(get_db)):
             res.append({
                 "id": v.id, "name": v.name, "type": v.type, "price": float(vc.price),
                 "total_doses": v.total_doses, "has_booster": v.has_booster, "target_gender": getattr(v, 'target_gender', 'ANY'),
-                "allow_new_series": getattr(v, 'allow_new_series', False),
-                "new_series_delay_days": getattr(v, 'new_series_delay_days', None),
-                "must_restart_after_interruption": getattr(v, 'must_restart_after_interruption', False),
+                "allow_repeat_series": getattr(v, 'allow_repeat_series', False),
+                "repeat_interval_days": getattr(v, 'repeat_interval_days', None),
+                "restart_if_interrupted": getattr(v, 'restart_if_interrupted', False),
                 "interruption_restart_days": getattr(v, 'interruption_restart_days', None),
                 "stock_quantity": vc.stock_quantity,
                 "low_stock_threshold": vc.low_stock_threshold,
                 "held_quantity": held_count,
                 "is_low_stock": is_low_stock,
-                "schedules": [{"dose_number": s.dose_number, "interval_description": s.interval_description} for s in scheds]
+                "schedules": [{"dose_number": s.dose_number, "interval_days": s.interval_days} for s in scheds]
             })
     return res
 
@@ -2812,17 +2817,16 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
         models.VaccineDoseSchedule.dose_number == target_num
     ).first()
 
-    if not sched or not sched.interval_description: return {"is_valid": True}
+    if not sched or sched.interval_days is None: return {"is_valid": True}
 
     # Calculate minimum allowed date
-    min_allowed_date = calculate_future_date(prev_date_obj, sched.interval_description)
-    if not min_allowed_date: return {"is_valid": True}
+    min_allowed_date = prev_date_obj + timedelta(days=sched.interval_days)
 
     req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
 
     # Validate Request vs Interval Rules
     if req_dt.date() < min_allowed_date.date():
-        reason = f"Based on dependency rules, {req.target_dose} must be at least {sched.interval_description} after your previous dose. Earliest allowed date: {min_allowed_date.strftime('%Y-%m-%d')}."
+        reason = f"Based on dependency rules, {req.target_dose} must be at least {sched.interval_days} days after your previous dose. Earliest allowed date: {min_allowed_date.strftime('%Y-%m-%d')}."
         # Log Rejection
         logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {req.target_dose} on {req_dt.strftime('%Y-%m-%d')} is before minimum date {min_allowed_date.strftime('%Y-%m-%d')}")
         return {"is_valid": False, "reason": reason}

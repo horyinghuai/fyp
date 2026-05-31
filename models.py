@@ -127,9 +127,9 @@ class Vaccine(Base):
     total_doses = Column(Integer, default=1) 
     has_booster = Column(Boolean, default=False) 
     target_gender = Column(String(10), default="ANY")
-    allow_new_series = Column(Boolean, default=False)
-    new_series_delay_days = Column(Integer, nullable=True)
-    must_restart_after_interruption = Column(Boolean, default=False)
+    allow_repeat_series = Column(Boolean, default=False)
+    repeat_interval_days = Column(Integer, nullable=True)
+    restart_if_interrupted = Column(Boolean, default=False)
     interruption_restart_days = Column(Integer, nullable=True)
 
 class DoctorClinicAvailability(Base):
@@ -168,7 +168,7 @@ class VaccineDoseSchedule(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     vaccine_id = Column(Integer, ForeignKey("vaccines.id", ondelete="CASCADE"))
     dose_number = Column(Integer)
-    interval_description = Column(String(50))
+    interval_days = Column(Integer, default=0)
 
 class BloodTestComponent(Base):
     __tablename__ = "blood_test_components"
