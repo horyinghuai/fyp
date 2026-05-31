@@ -19,6 +19,7 @@ REUSE_PATIENT = 31   # or any unused number
 APPOINTMENT_SELECT = 32
 APPOINTMENT_ACTION = 33
 MODIFY_ANOTHER = 34
+MANUAL_PREV_DOSE = 40 
 
 async def log_chat_to_db(clinic_id, tg_id, user_msg=None, bot_reply=None, msg_id=None):
     active_cid = clinic_id if clinic_id else DEFAULT_CLINIC_ID
@@ -1423,8 +1424,67 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    context.user_data['dose'] = query.data.replace("dose_", "")
+    dose = query.data.replace("dose_", "")
+    context.user_data['dose'] = dose
     
+    # --- VACCINE DEPENDENCY AGENT: Missing Dose Check ---
+    if dose not in ['Single Dose', 'Dose 1']:
+        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+        ic = context.user_data.get('ic')
+        selected_vac = context.user_data.get('selected_items', [None])[0]
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.post(f"{API_BASE}/check-vaccine-history", json={
+                    "clinic_id": active_cid,
+                    "ic": ic,
+                    "vaccine_name": selected_vac,
+                    "target_dose": dose
+                }, timeout=5.0)
+                if res.status_code == 200:
+                    missing = res.json().get('missing_doses', [])
+                    if missing:
+                        context.user_data['missing_doses'] = missing
+                        context.user_data['current_missing_idx'] = 0
+                        context.user_data['manual_doses'] = {}
+                        await query.edit_message_text(f"Our system doesn't have a record of your {missing[0]} for {selected_vac}.\n\nPlease reply with the date you received it (Format: YYYY-MM-DD):")
+                        return MANUAL_PREV_DOSE
+            except Exception as e:
+                logger.error(f"Vaccine Agent History Check Error: {e}")
+    # ----------------------------------------------------
+    
+    if context.user_data.get('is_editing'):
+        return await show_booking_summary(update, context)
+    return await show_doctor_preference(update, context)
+
+async def handle_manual_prev_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = clean_bot_username(update.message.text)
+    
+    import datetime as dt
+    try:
+        parsed_date = dt.datetime.strptime(text, "%Y-%m-%d")
+        if parsed_date > dt.datetime.now():
+            await update.message.reply_text("Date cannot be in the future. Please try again (YYYY-MM-DD):")
+            return MANUAL_PREV_DOSE
+    except ValueError:
+        await update.message.reply_text("Invalid date format. Please use YYYY-MM-DD (e.g., 2024-01-15):")
+        return MANUAL_PREV_DOSE
+        
+    missing = context.user_data.get('missing_doses', [])
+    idx = context.user_data.get('current_missing_idx', 0)
+    
+    dose_name = missing[idx]
+    if 'manual_doses' not in context.user_data:
+        context.user_data['manual_doses'] = {}
+    context.user_data['manual_doses'][dose_name] = text
+    
+    idx += 1
+    if idx < len(missing):
+        context.user_data['current_missing_idx'] = idx
+        selected_vac = context.user_data.get('selected_items', [None])[0]
+        await update.message.reply_text(f"Thank you. Now, please enter the date you received {missing[idx]} for {selected_vac} (Format: YYYY-MM-DD):")
+        return MANUAL_PREV_DOSE
+        
     if context.user_data.get('is_editing'):
         return await show_booking_summary(update, context)
     return await show_doctor_preference(update, context)
@@ -1909,6 +1969,31 @@ async def process_availability(update, context, full_time_str):
         if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         else: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         return BOOK_DATE_TIME
+    
+    if service == 'Vaccine' and context.user_data.get('dose') not in ['Single Dose', 'Dose 1', None]:
+        selected_vac = context.user_data.get('selected_items', [None])[0]
+        payload_val = {
+            "clinic_id": active_cid,
+            "ic": context.user_data.get('ic'),
+            "vaccine_name": selected_vac,
+            "target_dose": context.user_data.get('dose'),
+            "requested_time": full_time_str,
+            "manual_dates": context.user_data.get('manual_doses', {})
+        }
+        async with httpx.AsyncClient() as client:
+            try:
+                res_val = await client.post(f"{API_BASE}/validate-vaccine-booking", json=payload_val, timeout=5.0)
+                if res_val.status_code == 200:
+                    val_data = res_val.json()
+                    if not val_data.get('is_valid'):
+                        msg = f"❌ *Vaccine Agent Validation Failed:*\n{val_data.get('reason')}\n\nPlease select a different Date/Time."
+                        markup = await generate_date_picker(active_cid, service, doctor_pref, context.user_data.get('is_editing', False))
+                        if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
+                        else: await update.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
+                        return BOOK_DATE_TIME
+            except Exception as e:
+                logger.error(f"Vaccine Validation Error: {e}")
+    # -----------------------------------------------------
 
     context.user_data['book_time'] = full_time_str
     
@@ -2455,6 +2540,9 @@ if __name__ == '__main__':
             CANCEL_REASON: [
                 CallbackQueryHandler(cancel_reason_logic),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_reason_logic)
+            ],
+            MANUAL_PREV_DOSE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_prev_dose)
             ],
             MODIFY_ANOTHER: [CallbackQueryHandler(modify_another_choice, pattern="^(modify_another|help_no)")]
         },
