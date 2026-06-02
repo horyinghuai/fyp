@@ -1146,7 +1146,9 @@ def admin_get_all_appointments(clinic_id: str, db: Session = Depends(get_db)):
             dose_val = stage.stage_name
             total_doses = appt.total_stages
 
-            service = "Consultation"
+            # --- CHANGE THIS LINE ---
+            service = "Others" 
+            # -----------------------
             color = "#3B82F6" 
 
             if key in vac_dict:

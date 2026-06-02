@@ -44,7 +44,7 @@ export default function AdminDashboard() {
 
   const [editForm, setEditForm] = useState({
     status: 'scheduled', doctor_ic: '', patient_ic: '',
-    service: 'Consultation', items: [] as string[], dose: 'Single Dose', reason: ''
+    service: 'Others', items: [] as string[], dose: 'Single Dose', reason: ''
   });
 
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
@@ -143,9 +143,9 @@ export default function AdminDashboard() {
         const formattedEvents = data.map((appt: any) => {
           if (appt.service === "Vaccine") vacCount++;
           if (appt.service === "Blood Test") btCount++;
-          if (appt.service === "Consultation") consultCount++;
+          if (appt.service === "Others") consultCount++;
           
-          let detailsText = appt.reason || "General Consultation";
+          let detailsText = appt.reason || "Others";
           if (appt.service === "Vaccine") detailsText = `${appt.items[0]} (${appt.dose})`;
           if (appt.service === "Blood Test") detailsText = appt.items.join(", ");
 
@@ -401,7 +401,7 @@ export default function AdminDashboard() {
       status: event.status || 'scheduled',
       doctor_ic: event.doctor_ic || (doctors.length > 0 ? doctors[0].ic_passport_number : ''),
       patient_ic: event.patient_ic || '',
-      service: event.service || 'Consultation',
+      service: event.service || 'Others',
       items: event.items || [],
       dose: event.dose || 'Single Dose',
       reason: event.reason || ''
@@ -418,7 +418,7 @@ export default function AdminDashboard() {
     setEditForm({
       status: 'scheduled',
       doctor_ic: '', 
-      patient_ic: '', service: 'Consultation', items: [], dose: 'Single Dose', reason: ''
+      patient_ic: '', service: 'Others', items: [], dose: 'Single Dose', reason: ''
     });
     setNewPatientForm({ name: '', ic_passport_number: '', phone: '', gender: 'MALE', nationality: 'MALAYSIA', address: '' });
     setPatientSearchText("");
@@ -574,7 +574,7 @@ export default function AdminDashboard() {
         </div>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-orange-100 text-orange-600 rounded-xl"><FileText size={24}/></div>
-          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Total Consultations</p><h3 className="text-3xl font-black text-slate-800">{stats.consultations}</h3></div></div>
+          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Others</p><h3 className="text-3xl font-black text-slate-800">{stats.consultations}</h3></div></div>
         </div>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-purple-100 text-purple-600 rounded-xl"><Activity size={24}/></div>
@@ -779,7 +779,7 @@ export default function AdminDashboard() {
                             setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
                             setEditTime(""); // Clear the time to refresh 15/30 min intervals correctly
                         }} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          <option value="Consultation">Consultation</option><option value="Vaccine">Vaccine</option><option value="Blood Test">Blood Test</option>
+                          <option value="Consultation">Others</option><option value="Vaccine">Vaccine</option><option value="Blood Test">Blood Test</option>
                         </select>
                       </div>
                   </div>
@@ -861,7 +861,7 @@ export default function AdminDashboard() {
                         </div>
                       )}
 
-                      {editForm.service === 'Consultation' && (
+                      {editForm.service === 'Others' && (
                         <div>
                           <label className="block text-xs font-bold text-slate-500 mb-1">Reason / Notes</label>
                           <input type="text" value={editForm.reason || ''} onChange={e => setEditForm({...editForm, reason: e.target.value})} placeholder="e.g. Fever and cough" className="w-full p-2 border rounded-lg bg-white outline-none" />
