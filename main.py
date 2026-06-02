@@ -1420,17 +1420,29 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     db.add(stage)
                     db.flush()
         else:
-            if booking.service_type == 'Vaccine' and v_model:
-                db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+            # Strictly determine the stage name based on the service type
+            final_stage_name = booking.service_type
+            if booking.service_type in ['Others', 'Consultation', 'General Appointment', 'General']:
+                final_stage_name = 'Others'
             elif booking.service_type == 'Blood Test':
+                final_stage_name = 'Blood Test'
+            elif booking.service_type == 'Vaccine':
+                final_stage_name = booking.details.get("dose", "Single Dose")
+
+            if booking.service_type == 'Vaccine' and items_list and v_model:
+                db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+            elif booking.service_type == 'Blood Test' and items_list:
                 for t_name in items_list:
-                    bt = db.query(models.BloodTest).filter_by(name=t_name, clinic_id=booking.clinic_id).first()
+                    bt = db.query(models.BloodTest).filter_by(name=t_name).first()
                     if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
-                    
-            stage = models.ApptStage(appointment_id=new_appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time)
-            db.add(stage)
             
-                # --- INSIDE book_appointment, JUST BEFORE return {"status": "success"} ---
+            stage = models.ApptStage(
+                appointment_id=new_appt.id, 
+                stage_name=final_stage_name, 
+                scheduled_time=start_time, 
+                status="scheduled"
+            )
+            db.add(stage)
         db.commit()
 
         # Send Booking Summary ONLY if requested from the React Website
@@ -1635,6 +1647,15 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     db.add(new_stage)
                     db.flush()
         else:
+            # Strictly determine the stage name based on the service type
+            final_stage_name = service
+            if service in ['Others', 'Consultation', 'General Appointment', 'General']:
+                final_stage_name = 'Others'
+            elif service == 'Blood Test':
+                final_stage_name = 'Blood Test'
+            elif service == 'Vaccine':
+                final_stage_name = booking.details.get("dose", "Single Dose")
+
             if service == 'Vaccine' and items_list and v_model:
                 db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
             elif service == 'Blood Test' and items_list:
@@ -1642,7 +1663,12 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     bt = db.query(models.BloodTest).filter_by(name=t_name).first()
                     if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
                     
-            new_stage = models.ApptStage(appointment_id=appt.id, stage_name=booking.details.get("dose", booking.service_type), scheduled_time=start_time, status=status_val)
+            new_stage = models.ApptStage(
+                appointment_id=appt.id, 
+                stage_name=final_stage_name, 
+                scheduled_time=start_time, 
+                status=status_val
+            )
             if status_val == 'canceled':
                 new_stage.cancel_reason = booking.cancel_reason
             db.add(new_stage)
