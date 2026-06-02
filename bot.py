@@ -2565,6 +2565,6 @@ if __name__ == '__main__':
     app.add_handler(conv)
     app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_text))
-    app.add_handler(MessageHandler(filters.TEXT, log_all_incoming), group=1)
+    app.add_handler(MessageHandler(filters.TEXT, log_all_incoming), group=-1) 
     logger.info("Bot is starting...")
     app.run_polling(drop_pending_updates=True)
