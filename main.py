@@ -312,9 +312,13 @@ class UpdateBooking(BaseModel):
     scheduled_time: str
     status: Optional[str] = "scheduled"
     cancel_reason: Optional[str] = None
+    skip_notification: Optional[bool] = False
+    source: Optional[str] = "web"
 
 class CancelReq(BaseModel):
     cancel_reason: str
+    skip_notification: Optional[bool] = False
+    source: Optional[str] = "web"
 
 class ChatMessageModel(BaseModel):
     clinic_id: str
@@ -1466,26 +1470,18 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 if booking.service_type == "Blood Test":
                     summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."
                 
+                bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
+                
                 if patient.telegram_id:
-                    # Fetch first stage ID to link the modify/confirm buttons directly to this appointment
-                    first_stage = db.query(models.ApptStage).filter_by(appointment_id=new_appt.id).order_by(models.ApptStage.scheduled_time.asc()).first()
-                    stage_id_str = str(first_stage.id) if first_stage else ""
-                    
-                    keyboard = {
-                        "inline_keyboard": [
-                            [{"text": "✅ Yes, confirmed", "callback_data": f"rem_conf_{stage_id_str}"}],
-                            [{"text": "✏️ No, need to modify", "callback_data": f"rem_mod_{stage_id_str}"}]
-                        ]
-                    }
-                    
+                    summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
                     token = os.getenv("TELEGRAM_BOT_TOKEN")
                     async with httpx.AsyncClient() as client:
                         await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                             "chat_id": patient.telegram_id, 
-                            "text": summary,
-                            "reply_markup": keyboard
+                            "text": summary
                         })
                 else:
+                    summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={booking.clinic_id}"
                     await send_sms_async(patient.phone, summary)
             except Exception as e:
                 print(f"Failed to send booking summary: {e}")
@@ -1499,7 +1495,7 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/update-appointment")
-def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
+async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)): # Added async
     from datetime import datetime, timedelta
     try:
         appt = db.query(models.Appointment).filter(models.Appointment.id == booking.appt_id).first()
@@ -1650,6 +1646,57 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
             db.add(new_stage)
             
         db.commit()
+
+        # Send Modification Summary ONLY if requested from the React Website
+        if getattr(booking, 'source', 'web') == 'web' and not booking.skip_notification:
+            try:
+                patient = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
+                if patient:
+                    doc_ic = booking.details.get('assigned_doctor_id')
+                    actual_doc_name = "ANY"
+                    if doc_ic and str(doc_ic).upper() not in ["ANY", "NONE", "NULL", ""]:
+                        doc_model = db.query(models.Doctor).filter_by(ic_passport_number=doc_ic).first()
+                        if doc_model:
+                            actual_doc_name = doc_model.name
+                            
+                    items = booking.details.get('items', [])
+                    dose = booking.details.get('dose')
+                    notes = booking.details.get('general_notes')
+                    
+                    if booking.service_type == 'Vaccine':
+                        details_str = f"{items[0] if items else ''} ({dose})" if dose else ", ".join(items)
+                    elif booking.service_type == 'Blood Test':
+                        details_str = ", ".join(items) if items else ""
+                    else:
+                        details_str = str(notes) if notes else "General Consultation"
+                        
+                    doctor_str = f"\nDoctor: {actual_doc_name}"
+                    
+                    summary = (f"✏️ Booking Successfully Modified!\n\n"
+                               f"Name: {patient.name}\n"
+                               f"IC/Passport: {patient.ic_passport_number}\n"
+                               f"Phone: {patient.phone}\n"
+                               f"New Date: {start_time.strftime('%Y-%m-%d')}\n"
+                               f"New Time: {start_time.strftime('%H:%M')}\n"
+                               f"Service: {booking.service_type}\n"
+                               f"Details: {details_str}{doctor_str}")
+                               
+                    bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
+                    
+                    if patient.telegram_id:
+                        summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
+                        token = os.getenv("TELEGRAM_BOT_TOKEN")
+                        async with httpx.AsyncClient() as client:
+                            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": patient.telegram_id, 
+                                "text": summary
+                            })
+                    else:
+                        summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={patient.clinic_id}"
+                        await send_sms_async(patient.phone, summary)
+            except Exception as e:
+                print(f"Failed to send update summary: {e}")
+
         return {"status": "success"}
     except HTTPException:
         db.rollback()
@@ -1659,9 +1706,38 @@ def update_appointment(booking: UpdateBooking, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
     
 @app.post("/cancel-appointment/{appt_id}")
-def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_db)):
+@app.post("/cancel-appointment/{appt_id}")
+async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_db)):
     db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled", "cancel_reason": req.cancel_reason})
     db.commit()
+    
+    if getattr(req, 'source', 'web') == 'web' and not getattr(req, 'skip_notification', False):
+        try:
+            appt = db.query(models.Appointment).filter(models.Appointment.id == appt_id).first()
+            if appt:
+                patient = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
+                if patient:
+                    summary = (f"❌ Booking Successfully Cancelled!\n\n"
+                               f"Name: {patient.name}\n"
+                               f"IC/Passport: {patient.ic_passport_number}\n"
+                               f"Reason: {req.cancel_reason}")
+                               
+                    bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
+                    
+                    if patient.telegram_id:
+                        summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
+                        token = os.getenv("TELEGRAM_BOT_TOKEN")
+                        async with httpx.AsyncClient() as client:
+                            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                                "chat_id": patient.telegram_id, 
+                                "text": summary
+                            })
+                    else:
+                        summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={patient.clinic_id}"
+                        await send_sms_async(patient.phone, summary)
+        except Exception as e:
+            print(f"Failed to send cancel summary: {e}")
+            
     return {"status": "success"}
 
 @app.get("/admin/patients/{clinic_id}")
