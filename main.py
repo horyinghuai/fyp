@@ -1487,16 +1487,35 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
                 
                 if patient.telegram_id:
-                    summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
+                    # Fetch first stage ID to link the modify/confirm buttons directly to this appointment
+                    first_stage = db.query(models.ApptStage).filter_by(appointment_id=new_appt.id).order_by(models.ApptStage.scheduled_time.asc()).first()
+                    stage_id_str = str(first_stage.id) if first_stage else ""
+                    
+                    keyboard = {
+                        "inline_keyboard": [
+                            [{"text": "✅ Yes, confirmed", "callback_data": f"rem_conf_{stage_id_str}"}],
+                            [{"text": "✏️ No, need to modify", "callback_data": f"rem_mod_{stage_id_str}"}]
+                        ]
+                    }
+                    
                     token = os.getenv("TELEGRAM_BOT_TOKEN")
                     async with httpx.AsyncClient() as client:
                         await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                             "chat_id": patient.telegram_id, 
-                            "text": summary
+                            "text": summary,
+                            "reply_markup": keyboard
                         })
+                        
+                    # Save notification to Chat_Messages table
+                    db.add(models.ChatMessage(clinic_id=booking.clinic_id, phone=patient.phone, telegram_id=patient.telegram_id, channel='telegram', message=None, reply=summary, status='replied'))
+                    db.commit()
                 else:
                     summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={booking.clinic_id}"
                     await send_sms_async(patient.phone, summary)
+                    
+                    # Save notification to Chat_Messages table
+                    db.add(models.ChatMessage(clinic_id=booking.clinic_id, phone=patient.phone, telegram_id=None, channel='sms', message=None, reply=summary, status='replied'))
+                    db.commit()
             except Exception as e:
                 print(f"Failed to send booking summary: {e}")
 
@@ -1719,9 +1738,17 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                                 "chat_id": patient.telegram_id, 
                                 "text": summary
                             })
+                            
+                        # Save notification to Chat_Messages table
+                        db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone, telegram_id=patient.telegram_id, channel='telegram', message=None, reply=summary, status='replied'))
+                        db.commit()
                     else:
                         summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={patient.clinic_id}"
                         await send_sms_async(patient.phone, summary)
+                        
+                        # Save notification to Chat_Messages table
+                        db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone, telegram_id=None, channel='sms', message=None, reply=summary, status='replied'))
+                        db.commit()
             except Exception as e:
                 print(f"Failed to send update summary: {e}")
 
@@ -1760,9 +1787,17 @@ async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends
                                 "chat_id": patient.telegram_id, 
                                 "text": summary
                             })
+                            
+                        # Save notification to Chat_Messages table
+                        db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone, telegram_id=patient.telegram_id, channel='telegram', message=None, reply=summary, status='replied'))
+                        db.commit()
                     else:
                         summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={patient.clinic_id}"
                         await send_sms_async(patient.phone, summary)
+                        
+                        # Save notification to Chat_Messages table
+                        db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone, telegram_id=None, channel='sms', message=None, reply=summary, status='replied'))
+                        db.commit()
         except Exception as e:
             print(f"Failed to send cancel summary: {e}")
             
@@ -2554,6 +2589,7 @@ async def new_chat(req: NewChatReq, db: Session = Depends(get_db)):
         bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
         final_message += f"\n\n[You can also contact us on Telegram: https://t.me/{bot_username}]"
 
+    # Database store occurs BEFORE sending the message
     new_msg = models.ChatMessage(
         clinic_id=req.clinic_id, phone=req.phone, telegram_id=telegram_id,
         channel=channel, message=None, reply=final_message, status='replied'
