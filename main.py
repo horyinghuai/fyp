@@ -3038,8 +3038,8 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
     if not vaccine: return {"is_valid": True}
 
-    # 1. Gather all existing history from the database
-    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time)\
+    # 1. Gather all existing history from the database (Include Status to check for completion)
+    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time, models.ApptStage.status)\
         .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
         .filter(
             models.Patient.ic_passport_number == req.ic,
@@ -3048,20 +3048,27 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
         ).order_by(models.ApptStage.scheduled_time.asc()).all()
 
     all_dates = {}
+    completed_dates = {}
     for s in past_stages:
-        all_dates[s[0]] = s[1].date() if isinstance(s[1], datetime) else s[1]
+        dt = s[1].date() if isinstance(s[1], datetime) else s[1]
+        all_dates[s[0]] = dt
+        if s[2] == 'completed':
+            completed_dates[s[0]] = dt
 
     # 2. Add manual dates entered by the user
     for d_name, d_str in req.manual_dates.items():
         try: 
-            all_dates[d_name] = datetime.strptime(d_str, "%Y-%m-%d").date()
+            dt = datetime.strptime(d_str, "%Y-%m-%d").date()
+            all_dates[d_name] = dt
+            completed_dates[d_name] = dt # Treat user-provided past dates as completed
         except: 
             pass
 
     # 3. Add the target requested time
     try:
         req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
-        all_dates[req.target_dose] = req_dt.date()
+        req_date = req_dt.date()
+        all_dates[req.target_dose] = req_date
     except:
         return {"is_valid": False, "reason": "Invalid requested time format."}
 
@@ -3073,12 +3080,35 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     elif req.target_dose == "Booster":
         target_num = vaccine.total_doses + 1
 
+    # --- NEW: Repeat Vaccination Validation ---
+    if target_num == 1:
+        final_primary_dose = f"Dose {vaccine.total_doses}" if vaccine.total_doses > 1 else "Single Dose"
+        last_completed_dose_date = None
+        
+        # Determine if they have already completed the series
+        if "Booster" in completed_dates:
+            last_completed_dose_date = completed_dates["Booster"]
+        elif final_primary_dose in completed_dates:
+            last_completed_dose_date = completed_dates[final_primary_dose]
+            
+        if last_completed_dose_date:
+            if not vaccine.allow_repeat_series:
+                reason = f"You have already completed the {vaccine.name} series. This vaccine cannot be repeated."
+                logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {req.ic} repeat attempt for {vaccine.name} (allow_repeat_series is FALSE)")
+                return {"is_valid": False, "reason": reason}
+            else:
+                if vaccine.repeat_interval_days is not None:
+                    min_repeat_date = last_completed_dose_date + timedelta(days=vaccine.repeat_interval_days)
+                    if req_date < min_repeat_date:
+                        reason = f"This vaccine may only be repeated after {min_repeat_date.strftime('%Y-%m-%d')}."
+                        logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {req.ic} repeat attempt for {vaccine.name} before interval. Min allowed: {min_repeat_date.strftime('%Y-%m-%d')}")
+                        return {"is_valid": False, "reason": reason}
+
     # 4. Fetch all interval schedules for this vaccine
     schedules = {s.dose_number: s.interval_days for s in db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id).all()}
 
     # 5. Validate the ENTIRE sequence chain
     for d_num in range(2, target_num + 1):
-        # Dynamically map names based on the dose sequence
         if d_num <= vaccine.total_doses:
             curr_name = f"Dose {d_num}"
             prev_name = f"Dose {d_num - 1}"
@@ -3086,21 +3116,27 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
             curr_name = "Booster"
             prev_name = f"Dose {vaccine.total_doses}" if vaccine.total_doses > 1 else "Single Dose"
 
-        # Check the interval constraint if both sequential dates exist
         if curr_name in all_dates and prev_name in all_dates:
             prev_date = all_dates[prev_name]
             curr_date = all_dates[curr_name]
             
+            # Standard Minimum Interval Validation
             interval_days = schedules.get(d_num)
             if interval_days is not None:
                 min_allowed_date = prev_date + timedelta(days=interval_days)
                 if curr_date < min_allowed_date:
                     reason = f"Based on dependency rules, {curr_name} must be at least {interval_days} days after {prev_name}. Earliest allowed date for {curr_name}: {min_allowed_date.strftime('%Y-%m-%d')}."
-                    
-                    # Log rejection
                     logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {curr_name} on {curr_date.strftime('%Y-%m-%d')} is before minimum date {min_allowed_date.strftime('%Y-%m-%d')} (from {prev_name})")
+                    return {"is_valid": False, "reason": reason}
+            
+            # --- NEW: Interrupted Series Validation ---
+            if vaccine.restart_if_interrupted and vaccine.interruption_restart_days is not None:
+                max_allowed_date = prev_date + timedelta(days=vaccine.interruption_restart_days)
+                if curr_date > max_allowed_date:
+                    reason = "Your previous vaccine series has expired and must be restarted."
+                    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {curr_name} on {curr_date.strftime('%Y-%m-%d')} exceeded interruption limit of {vaccine.interruption_restart_days} days from {prev_name}.")
                     return {"is_valid": False, "reason": reason}
 
     # Log sequence acceptance
-    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Accepted: Sequence requirement met up to {req.target_dose}")
+    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Accepted: Sequence requirements met up to {req.target_dose}")
     return {"is_valid": True}

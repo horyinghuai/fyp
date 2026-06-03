@@ -1983,7 +1983,7 @@ async def process_availability(update, context, full_time_str):
         else: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
         return BOOK_DATE_TIME
     
-    if service == 'Vaccine' and context.user_data.get('dose') not in ['Single Dose', 'Dose 1', None]:
+    if service == 'Vaccine' and context.user_data.get('dose'):
         selected_vac = context.user_data.get('selected_items', [None])[0]
         payload_val = {
             "clinic_id": active_cid,
@@ -2006,7 +2006,6 @@ async def process_availability(update, context, full_time_str):
                         return BOOK_DATE_TIME
             except Exception as e:
                 logger.error(f"Vaccine Validation Error: {e}")
-    # -----------------------------------------------------
 
     context.user_data['book_time'] = full_time_str
     
