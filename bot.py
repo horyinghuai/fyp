@@ -2205,30 +2205,48 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
         "assigned_doctor_id": context.user_data.get('assigned_doctor_id')
     }
 
+    stages = []
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(f"{API_BASE}/book-appointment", json={
+            res = await client.post(f"{API_BASE}/book-appointment", json={
                 "clinic_id": active_cid, "telegram_id": update.effective_user.id, "ic_passport_number": context.user_data['ic'].upper(), 
                 "service_type": context.user_data['service'], "details": details_block, "scheduled_time": context.user_data['book_time'],
-                "skip_notification": True   # <-- Add this line
+                "skip_notification": True   
             }, timeout=10.0)
+            if res.status_code == 200:
+                data = res.json()
+                stages = data.get("stages", [])
         except Exception as e:
             logger.error(f"Error booking appointment: {e}")
     
     time_str = context.user_data['book_time']
     date_part, time_part = time_str.split(" ")
     
-    if service == 'Vaccine': details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
-    elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
-    else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
-        
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}"
     id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
 
-    confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
-                         f"Name: {context.user_data['name']}\n{id_label}: {context.user_data['ic']}\n"
-                         f"Phone: {context.user_data['phone']}\nDate: {date_part}\nTime: {time_part}\n"
-                         f"Service: {service}\nDetails: {details}{doc_text}\n")
+    if service == 'Vaccine':
+        details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
+        
+        # Dynamically build the generated schedule block
+        sched_str = "Your vaccination schedule has been created successfully.\n\nUpcoming Appointments:\n"
+        for s in stages:
+            sched_str += f"*{s['stage_name']}*\nDate: {s['date']}\nTime: {s['time']}\n\n"
+        sched_str += "Don't worry, we will send you a reminder before each appointment."
+
+        confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
+                             f"Name: {context.user_data['name']}\n{id_label}: {context.user_data['ic']}\n"
+                             f"Phone: {context.user_data['phone']}\n"
+                             f"Service: {service}\nDetails: {details}{doc_text}\n\n"
+                             f"{sched_str}")
+    else:
+        if service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
+        else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
+            
+        confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
+                             f"Name: {context.user_data['name']}\n{id_label}: {context.user_data['ic']}\n"
+                             f"Phone: {context.user_data['phone']}\nDate: {date_part}\nTime: {time_part}\n"
+                             f"Service: {service}\nDetails: {details}{doc_text}\n")
     
     await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
     

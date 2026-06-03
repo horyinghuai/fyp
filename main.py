@@ -1443,7 +1443,30 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 status="scheduled"
             )
             db.add(stage)
+        # --- INSIDE book_appointment, JUST BEFORE NOTIFICATIONS ---
         db.commit()
+
+        # Extract the dynamically generated stages and ensure Booster is strictly at the bottom
+        stages_query = db.query(models.ApptStage).filter_by(appointment_id=new_appt.id).order_by(models.ApptStage.scheduled_time.asc()).all()
+        
+        stages_data = []
+        booster_data = None
+        
+        for s in stages_query:
+            stage_info = {
+                "stage_name": s.stage_name, 
+                "date": s.scheduled_time.strftime('%Y-%m-%d'), 
+                "time": s.scheduled_time.strftime('%H:%M')
+            }
+            # Identify the booster and hold it back
+            if s.stage_name.lower() == "booster":
+                booster_data = stage_info
+            else:
+                stages_data.append(stage_info)
+                
+        # Append the Booster appointment as the final item
+        if booster_data:
+            stages_data.append(booster_data)
 
         # Send Booking Summary ONLY if requested from the React Website
         # Checking 'not booking.skip_notification' completely stops Telegram Bot triggers
@@ -1462,48 +1485,51 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 items = details_dict.get('items', [])
                 dose = details_dict.get('dose')
                 notes = details_dict.get('general_notes')
+                doctor_str = f"\nDoctor: {actual_doc_name}"
                 
                 if booking.service_type == 'Vaccine':
                     details_str = f"{items[0] if items else ''} ({dose})" if dose else ", ".join(items)
-                elif booking.service_type == 'Blood Test':
-                    details_str = ", ".join(items) if items else ""
-                else:
-                    details_str = str(notes) if notes else "General Consultation"
                     
-                doctor_str = f"\nDoctor: {actual_doc_name}"
-                
-                summary = (f"✅ Booking Successfully Confirmed!\n\n"
-                           f"Name: {patient.name}\n"
-                           f"IC/Passport: {patient.ic_passport_number}\n"
-                           f"Phone: {patient.phone}\n"
-                           f"Date: {start_time.strftime('%Y-%m-%d')}\n"
-                           f"Time: {start_time.strftime('%H:%M')}\n"
-                           f"Service: {booking.service_type}\n"
-                           f"Details: {details_str}{doctor_str}")
-                           
+                    # Dynamically build the generated schedule block
+                    sched_str = "Your vaccination schedule has been created successfully.\n\nUpcoming Appointments:\n"
+                    for s in stages_data:
+                        sched_str += f"{s['stage_name']}\nDate: {s['date']}\nTime: {s['time']}\n\n"
+                    sched_str += "Don't worry, we will send you a reminder before each appointment."
+                    
+                    summary = (f"✅ Booking Successfully Confirmed!\n\n"
+                               f"Name: {patient.name}\n"
+                               f"IC/Passport: {patient.ic_passport_number}\n"
+                               f"Phone: {patient.phone}\n"
+                               f"Service: {booking.service_type}\n"
+                               f"Details: {details_str}{doctor_str}\n\n"
+                               f"{sched_str}")
+                else:
+                    if booking.service_type == 'Blood Test':
+                        details_str = ", ".join(items) if items else ""
+                    else:
+                        details_str = str(notes) if notes else "General Consultation"
+                        
+                    summary = (f"✅ Booking Successfully Confirmed!\n\n"
+                               f"Name: {patient.name}\n"
+                               f"IC/Passport: {patient.ic_passport_number}\n"
+                               f"Phone: {patient.phone}\n"
+                               f"Date: {start_time.strftime('%Y-%m-%d')}\n"
+                               f"Time: {start_time.strftime('%H:%M')}\n"
+                               f"Service: {booking.service_type}\n"
+                               f"Details: {details_str}{doctor_str}")
+                               
                 if booking.service_type == "Blood Test":
                     summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."
                 
                 bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
                 
                 if patient.telegram_id:
-                    # Fetch first stage ID to link the modify/confirm buttons directly to this appointment
-                    first_stage = db.query(models.ApptStage).filter_by(appointment_id=new_appt.id).order_by(models.ApptStage.scheduled_time.asc()).first()
-                    stage_id_str = str(first_stage.id) if first_stage else ""
-                    
-                    keyboard = {
-                        "inline_keyboard": [
-                            [{"text": "✅ Yes, confirmed", "callback_data": f"rem_conf_{stage_id_str}"}],
-                            [{"text": "✏️ No, need to modify", "callback_data": f"rem_mod_{stage_id_str}"}]
-                        ]
-                    }
-                    
+                    summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
                     token = os.getenv("TELEGRAM_BOT_TOKEN")
                     async with httpx.AsyncClient() as client:
                         await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
                             "chat_id": patient.telegram_id, 
-                            "text": summary,
-                            "reply_markup": keyboard
+                            "text": summary
                         })
                         
                     # Save notification to Chat_Messages table
@@ -1519,7 +1545,8 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             except Exception as e:
                 print(f"Failed to send booking summary: {e}")
 
-        return {"status": "success"}
+        # Send the generated schedule stages to the bot as a payload
+        return {"status": "success", "stages": stages_data}
     except HTTPException:
         db.rollback()
         raise
