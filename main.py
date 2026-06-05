@@ -3241,6 +3241,16 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
             reason = f"You already have an active booking for {vaccine.type} {sched['name']} on {sched['date'].strftime('%Y-%m-%d')}."
             return {"is_valid": False, "reason": reason}
 
+    # --- NEW: COMPLETED DUPLICATE DOSE CHECK ---
+    # Only block completed duplicates if we aren't legitimately starting a new permitted repeat series
+    is_valid_repeat_start = is_completed_series and target_num == 1 and vaccine.allow_repeat_series
+    
+    if not is_valid_repeat_start:
+        for comp in completed_doses:
+            if comp['num'] == target_num:
+                reason = f"You have already completed {vaccine.type} {comp['name']} on {comp['date'].strftime('%Y-%m-%d')}."
+                return {"is_valid": False, "reason": reason}
+
     # --- AUTO-CORRECT MISMATCHED SEQUENCE ---
     next_req_num = highest_overall['num'] + 1 if highest_overall else 1
     if target_num > next_req_num:
