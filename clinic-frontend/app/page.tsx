@@ -263,22 +263,6 @@ export default function AdminDashboard() {
             if (sp) currentPatientGender = sp.gender.toUpperCase();
         }
 
-        if (editForm.service === "Vaccine" && editForm.items.length > 0) {
-            const vInfo = vaccinesList.find(v => v.name === editForm.items[0]);
-            if (vInfo && vInfo.target_gender && vInfo.target_gender.toUpperCase() !== "ANY" && vInfo.target_gender.toUpperCase() !== currentPatientGender) {
-                return alert("Selected vaccine is not applicable for this gender. Please recheck.");
-            }
-        }
-
-        if (editForm.service === "Blood Test") {
-            for (const item of editForm.items) {
-                const bInfo = bloodTestsList.find(b => b.name === item);
-                if (bInfo && bInfo.target_gender && bInfo.target_gender.toUpperCase() !== "ANY" && bInfo.target_gender.toUpperCase() !== currentPatientGender) {
-                    return alert("Selected test is not applicable for this gender. Please recheck.");
-                }
-            }
-        }
-
         // --- Vaccine Agent Validation for React Admin ---
         if (editForm.service === "Vaccine" && editForm.items.length > 0) {
             let tempIc = editForm.patient_ic;
@@ -286,40 +270,52 @@ export default function AdminDashboard() {
                 let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
                 if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
                     tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
-                } else {
-                    tempIc = rawIc;
-                }
+                } else { tempIc = rawIc; }
             }
             
             if (tempIc) {
-                try {
-                    const valRes = await fetch(`http://127.0.0.1:8000/validate-vaccine-booking`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            clinic_id: activeClinicId,
-                            ic: tempIc,
-                            vaccine_name: editForm.items[0],
-                            target_dose: editForm.dose,
-                            requested_time: scheduled_time,
-                            manual_dates: {}
-                        })
-                    });
-                    if (valRes.ok) {
-                        const valData = await valRes.json();
-                        if (!valData.is_valid) {
-                            alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
-                            return; // Stop the booking from saving
-                        } else if (valData.corrected_dose) {
-                            alert(`ℹ️ System Notice:\n${valData.message}`);
-                            editForm.dose = valData.corrected_dose; // Automatically switch to the next required dose
-                        }
-                    }
-                } catch (e) {
-                    console.error("Validation check failed", e);
+                let manualDates: Record<string, string> = {};
+                let isValidated = false;
+                
+                while (!isValidated) {
+                    try {
+                        const valRes = await fetch(`http://127.0.0.1:8000/validate-vaccine-booking`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                clinic_id: activeClinicId, ic: tempIc,
+                                vaccine_name: editForm.items[0], target_dose: editForm.dose,
+                                requested_time: scheduled_time, manual_dates: manualDates
+                            })
+                        });
+                        if (valRes.ok) {
+                            const valData = await valRes.json();
+                            if (!valData.is_valid) {
+                                if (valData.ask_manual_date) {
+                                    const manualDate = prompt(`${valData.reason}\n\nPlease enter the date (YYYY-MM-DD):`);
+                                    if (manualDate && /^\d{4}-\d{2}-\d{2}$/.test(manualDate)) {
+                                        manualDates[valData.ask_manual_date] = manualDate;
+                                        continue; // Loop back and re-validate with the new date
+                                    } else {
+                                        alert("Validation canceled or invalid date format.");
+                                        return;
+                                    }
+                                } else {
+                                    alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
+                                    return;
+                                }
+                            } else if (valData.corrected_dose) {
+                                alert(`ℹ️ System Notice:\n${valData.message}`);
+                                editForm.dose = valData.corrected_dose; 
+                                isValidated = true;
+                            } else {
+                                isValidated = true;
+                            }
+                        } else { isValidated = true; }
+                    } catch (e) { console.error("Validation failed", e); isValidated = true; }
                 }
             }
         }
-
+        
         if(!window.confirm("Are you sure this details are correct?")) return;
 
         let formattedReason = editForm.reason;

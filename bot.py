@@ -20,6 +20,7 @@ APPOINTMENT_SELECT = 32
 APPOINTMENT_ACTION = 33
 MODIFY_ANOTHER = 34
 MANUAL_PREV_DOSE = 40 
+ASK_MANUAL_DATE = 99
 
 async def log_chat_to_db(clinic_id, tg_id, user_msg=None, bot_reply=None, msg_id=None):
     active_cid = clinic_id if clinic_id else DEFAULT_CLINIC_ID
@@ -709,6 +710,23 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
                 pass
         await query.edit_message_text("Unable to load appointment details. Please try again.")
         return APPOINTMENT_SELECT
+
+async def handle_manual_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        await update.message.reply_text("⚠️ Invalid format. Please enter the date as YYYY-MM-DD (e.g., 2025-06-15):")
+        return ASK_MANUAL_DATE
+        
+    missing_dose = context.user_data.get('missing_dose_name')
+    if 'manual_doses' not in context.user_data:
+        context.user_data['manual_doses'] = {}
+    context.user_data['manual_doses'][missing_dose] = text
+    
+    await update.message.reply_text(f"Thank you. Saved {missing_dose} as {text}. Processing your booking...")
+    
+    # Re-trigger availability check with the newly acquired date
+    return await process_availability(update, context)
 
 async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2000,6 +2018,13 @@ async def process_availability(update, context, full_time_str):
                     val_data = res_val.json()
                     
                     if not val_data.get('is_valid'):
+                        if val_data.get('ask_manual_date'):
+                            msg = f"⚠️ *Missing Record*\n{val_data.get('reason')}\n\nPlease reply with the date you received it (YYYY-MM-DD):"
+                            context.user_data['missing_dose_name'] = val_data.get('ask_manual_date')
+                            if update.callback_query: await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
+                            else: await update.message.reply_text(msg, parse_mode="Markdown")
+                            return ASK_MANUAL_DATE
+                            
                         msg = f"❌ *Vaccine Agent Validation Failed:*\n{val_data.get('reason')}\n\nPlease select a different Date/Time."
                         markup = await generate_date_picker(active_cid, service, doctor_pref, context.user_data.get('is_editing', False))
                         if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
@@ -2582,7 +2607,8 @@ if __name__ == '__main__':
             MANUAL_PREV_DOSE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_prev_dose)
             ],
-            MODIFY_ANOTHER: [CallbackQueryHandler(modify_another_choice, pattern="^(modify_another|help_no)")]
+            MODIFY_ANOTHER: [CallbackQueryHandler(modify_another_choice, pattern="^(modify_another|help_no)")],
+            ASK_MANUAL_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_date_input)],
         },
         fallbacks=[CommandHandler('start', start), CommandHandler('cancel', cancel_command)],
         allow_reentry=True
