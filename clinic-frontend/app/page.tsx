@@ -42,6 +42,8 @@ export default function AdminDashboard() {
   const [editDate, setEditDate] = useState("");
   const [editTime, setEditTime] = useState("");
 
+  const [minDate, setMinDate] = useState(moment().format("YYYY-MM-DD"));
+
   const [editForm, setEditForm] = useState({
     status: 'scheduled', doctor_ic: '', patient_ic: '',
     service: 'Others', items: [] as string[], dose: 'Single Dose', reason: ''
@@ -264,6 +266,7 @@ export default function AdminDashboard() {
         }
 
         // --- Vaccine Agent Validation for React Admin ---
+        let manualDates: Record<string, string> = {};
         if (editForm.service === "Vaccine" && editForm.items.length > 0) {
             let tempIc = editForm.patient_ic;
             if (isNewBooking && isCreatingNewPatient) {
@@ -274,7 +277,6 @@ export default function AdminDashboard() {
             }
             
             if (tempIc) {
-                let manualDates: Record<string, string> = {};
                 let isValidated = false;
                 
                 while (!isValidated) {
@@ -290,24 +292,36 @@ export default function AdminDashboard() {
                         if (valRes.ok) {
                             const valData = await valRes.json();
                             if (!valData.is_valid) {
-                                if (valData.ask_manual_date) {
-                                    const manualDate = prompt(`${valData.reason}\n\nPlease enter the date (YYYY-MM-DD):`);
-                                    if (manualDate && /^\d{4}-\d{2}-\d{2}$/.test(manualDate)) {
-                                        manualDates[valData.ask_manual_date] = manualDate;
-                                        continue; // Loop back and re-validate with the new date
-                                    } else {
-                                        alert("Validation canceled or invalid date format.");
-                                        return;
+                                if (valData.ask_manual_dates) {
+                                    for (const missing of valData.ask_manual_dates) {
+                                        const manualDate = prompt(`Missing record for ${missing}\n\nPlease enter the date you took it (YYYY-MM-DD):`);
+                                        if (manualDate && /^\d{4}-\d{2}-\d{2}$/.test(manualDate)) {
+                                            manualDates[missing] = manualDate;
+                                        } else {
+                                            alert("Validation canceled or invalid date format.");
+                                            return;
+                                        }
                                     }
+                                    continue; // Re-run validation with all dates
                                 } else {
+                                    if (valData.min_allowed_date) {
+                                        setMinDate(valData.min_allowed_date);
+                                        if (editDate < valData.min_allowed_date) {
+                                            alert(`${valData.reason}\n\nAdjusting calendar to earliest allowed date.`);
+                                            setEditDate(valData.min_allowed_date);
+                                            setEditTime("");
+                                            return; // Halt save and let them pick a new valid time
+                                        }
+                                    }
                                     alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
                                     return;
                                 }
-                            } else if (valData.corrected_dose) {
-                                alert(`ℹ️ System Notice:\n${valData.message}`);
-                                editForm.dose = valData.corrected_dose; 
-                                isValidated = true;
                             } else {
+                                if (valData.corrected_dose) {
+                                    alert(`ℹ️ System Notice:\n${valData.message}`);
+                                    editForm.dose = valData.corrected_dose; 
+                                }
+                                if (valData.min_allowed_date) setMinDate(valData.min_allowed_date);
                                 isValidated = true;
                             }
                         } else { isValidated = true; }
@@ -384,7 +398,7 @@ export default function AdminDashboard() {
                 clinic_id: activeClinicId, telegram_id: 0, ic_passport_number: finalIc,
                 service_type: editForm.service,
                 details: {
-                    items: editForm.items, dose: editForm.dose, general_notes: editForm.reason, assigned_doctor_id: editForm.doctor_ic
+                    items: editForm.items, dose: editForm.dose, general_notes: editForm.reason, assigned_doctor_id: editForm.doctor_ic, manual_dates: manualDates
                 },
                 scheduled_time: scheduled_time
             };
@@ -431,6 +445,7 @@ export default function AdminDashboard() {
   };
 
   const openEventModal = (event: any) => {
+    setMinDate(moment().format("YYYY-MM-DD"))
     setSelectedEvent(event);
     setEditDate(moment(event.start).format("YYYY-MM-DD"));
     setEditTime(moment(event.start).format("HH:mm"));
@@ -450,6 +465,7 @@ export default function AdminDashboard() {
   };
 
   const openNewBookingModal = () => {
+    setMinDate(moment().format("YYYY-MM-DD"))
     setEditDate(moment().format("YYYY-MM-DD"));
     setEditTime(""); 
     setEditForm({
@@ -765,10 +781,10 @@ export default function AdminDashboard() {
                   <div className="grid grid-cols-3 gap-4">
                       <div>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Date</label>
-                        <input type="date" min={moment().format("YYYY-MM-DD")} value={editDate} onChange={(e) => {
+                        <input type="date" min={minDate} value={editDate} onChange={(e) => {
                             setEditDate(e.target.value);
                             setEditTime("");
-                            setEditForm(prev => ({...prev, doctor_ic: ''})); // Clear doctor to force re-selection
+                            setEditForm(prev => ({...prev, doctor_ic: ''}));
                         }} className="w-full p-2 border rounded-lg outline-none" />
                       </div>
                       <div>

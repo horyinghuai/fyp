@@ -181,3 +181,11 @@ class ChatTemplate(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(100), nullable=False)
     message = Column(String, nullable=False)
+
+class ExternalVaccineRecord(Base):
+    __tablename__ = "external_vaccine_records"
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    patient_ic = Column(String, index=True)
+    vaccine_id = Column(Integer, ForeignKey("vaccines.id"))
+    dose_name = Column(String)
+    date_taken = Column(DateTime)
