@@ -3279,3 +3279,60 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
     logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Accepted: Sequence requirements met for {req.target_dose}")
     return {"is_valid": True, "min_allowed_date": min_allowed_date_str}
+
+@app.get("/patients/{ic}/next-vaccine-dose/{vaccine_name}")
+def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_db)):
+    vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == vaccine_name).first()
+    if not vaccine: return {"next_dose": "Single Dose"}
+
+    # Group vaccines by TYPE to catch combinations like Twinrix / Engerix-B
+    same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == vaccine.type).all()]
+
+    # Fetch valid clinic history (ignoring canceled and no-shows)
+    past_stages = db.query(models.ApptStage.stage_name)\
+        .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
+        .filter(
+            models.Patient.ic_passport_number == ic,
+            models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
+            models.ApptStage.status.notin_(['canceled', 'no-show'])
+        ).all()
+
+    # Fetch external history
+    external_records = db.query(models.ExternalVaccineRecord).filter(
+        models.ExternalVaccineRecord.patient_ic == ic,
+        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
+    ).all()
+
+    def get_dose_num(name):
+        if not name: return 0
+        name = name.lower()
+        if 'single' in name: return 1
+        if 'booster' in name: return vaccine.total_doses + 1
+        if 'dose ' in name:
+            try: return int(name.split(" ")[1])
+            except: return 0
+        return 0
+
+    max_num = 0
+    for s in past_stages:
+        num = get_dose_num(s[0])
+        if num > max_num: max_num = num
+    for e in external_records:
+        num = get_dose_num(e.dose_name)
+        if num > max_num: max_num = num
+
+    # Determine the mathematically correct next dose
+    next_num = max_num + 1
+    
+    # If they finished everything, default to Dose 1 for a repeat series
+    if next_num > vaccine.total_doses + (1 if vaccine.has_booster else 0):
+        next_num = 1 
+
+    if next_num == vaccine.total_doses + 1 and vaccine.has_booster:
+        next_dose = "Booster"
+    elif vaccine.total_doses == 1 and next_num == 1:
+        next_dose = "Single Dose"
+    else:
+        next_dose = f"Dose {next_num}"
+
+    return {"next_dose": next_dose}

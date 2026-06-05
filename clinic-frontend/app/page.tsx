@@ -873,12 +873,37 @@ export default function AdminDashboard() {
                         <div className="grid grid-cols-2 gap-4">
                           <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Vaccine Name</label>
-                            <select value={editForm.items[0] || ''} onChange={e => {
+                            <select value={editForm.items[0] || ''} onChange={async e => {
                                 const val = e.target.value;
                                 const vac = vaccinesList.find((v: any) => v.name === val);
                                 let defaultDose = 'Single Dose';
                                 if(vac && vac.total_doses > 1) defaultDose = 'Dose 1';
-                                setEditForm({...editForm, items: [val], dose: defaultDose});
+                                
+                                // Set optimistically first
+                                setEditForm(prev => ({...prev, items: [val], dose: defaultDose}));
+
+                                // --- NEW: Auto-determine the exact next dose ---
+                                let tempIc = editForm.patient_ic;
+                                if (isNewBooking && isCreatingNewPatient) {
+                                    let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
+                                    if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
+                                        tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
+                                    } else { tempIc = rawIc; }
+                                }
+                                
+                                if (val && tempIc) {
+                                    try {
+                                        const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}`);
+                                        if (res.ok) {
+                                            const data = await res.json();
+                                            if (data.next_dose) {
+                                                // Override with the calculated correct dose
+                                                setEditForm(prev => ({...prev, items: [val], dose: data.next_dose}));
+                                            }
+                                        }
+                                    } catch (err) { console.error("Failed to fetch next dose", err); }
+                                }
+                                // -----------------------------------------------
                             }} className="w-full p-2 border rounded-lg bg-white outline-none">
                               <option value="">Select Vaccine</option>
                               {Object.keys(groupedVaccines).map(type => (
