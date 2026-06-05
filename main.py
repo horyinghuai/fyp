@@ -401,6 +401,7 @@ class ValidateVaccineDateReq(BaseModel):
     target_dose: str
     requested_time: str
     manual_dates: Dict[str, str] = {}
+    exclude_stage_id: Optional[str] = None 
 
 # --- Helper Functions ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
@@ -1769,7 +1770,8 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
         db.commit()
 
         # Send Modification Summary ONLY if requested from the React Website
-        if getattr(booking, 'source', 'web') == 'web' and not booking.skip_notification:
+        # AND do NOT send if we are purely marking the appointment as completed or no-show
+        if getattr(booking, 'source', 'web') == 'web' and not booking.skip_notification and booking.status not in ['completed', 'no-show']:
             try:
                 patient = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
                 if patient:
@@ -3124,24 +3126,33 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     same_type_vaccines = db.query(models.Vaccine).filter(models.Vaccine.type == vaccine.type).all()
     same_type_ids = [v.id for v in same_type_vaccines]
 
-    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time, models.ApptStage.status, models.AppointmentVaccine.vaccine_id)\
+    # Gather existing history across ALL vaccines of the same type in the clinic
+    past_stages_query = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time, models.ApptStage.status, models.AppointmentVaccine.vaccine_id, models.ApptStage.id)\
         .select_from(models.ApptStage)\
         .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
         .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
         .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
         .filter(
-            models.Patient.ic_passport_number == req.ic, 
-            models.AppointmentVaccine.vaccine_id.in_(same_type_ids)
-        )\
-        .order_by(models.ApptStage.scheduled_time.asc()).all()
+            models.Patient.ic_passport_number == req.ic,
+            models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
+            models.ApptStage.status.notin_(['canceled', 'no-show'])
+        )
+
+    # Exclude the appointment currently being edited so it doesn't trigger duplicate errors against itself
+    if req.exclude_stage_id:
+        past_stages_query = past_stages_query.filter(models.ApptStage.id != req.exclude_stage_id)
+
+    past_stages = past_stages_query.order_by(models.ApptStage.scheduled_time.asc()).all()
         
+    # --- Fetch External Records ---
     external_records = db.query(models.ExternalVaccineRecord).filter(
-        models.ExternalVaccineRecord.patient_ic == req.ic, models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
+        models.ExternalVaccineRecord.patient_ic == req.ic,
+        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
     ).all()
 
     completed_doses = []
     scheduled_doses = []
-    missed_doses = [] # Tracks canceled/no-shows
+    missed_doses = [] # <--- ADD THIS LINE BACK HERE
 
     def get_dose_num(name):
         if not name: return 0
@@ -3160,17 +3171,20 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
     all_dates = {}
     
+    # 1. Process Clinic History
     for s in past_stages:
-        stage_name, scheduled_time, status, v_id = s
+        stage_name, scheduled_time, status, v_id, stg_id = s # Unpack the stage_id safely
         dt = scheduled_time.date() if isinstance(scheduled_time, datetime) else scheduled_time
+        all_dates[stage_name] = dt
         d_num = get_dose_num(stage_name)
         if d_num == 0: continue
         
         if status == 'completed': 
             completed_doses.append({"num": d_num, "date": dt, "name": stage_name, "v_id": v_id})
-            all_dates[stage_name] = dt
-        elif status == 'scheduled': scheduled_doses.append({"num": d_num, "date": dt, "name": stage_name})
-        elif status in ['canceled', 'no-show']: missed_doses.append(d_num)
+        elif status == 'scheduled': 
+            scheduled_doses.append({"num": d_num, "date": dt, "name": stage_name})
+        elif status in ['canceled', 'no-show']: # <--- ADD THIS LINE BACK HERE
+            missed_doses.append(d_num)
 
     for ext in external_records:
         dt = ext.date_taken.date() if isinstance(ext.date_taken, datetime) else ext.date_taken

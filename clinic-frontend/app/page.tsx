@@ -266,8 +266,13 @@ export default function AdminDashboard() {
             if (sp) currentPatientGender = sp.gender.toUpperCase();
         }
 
-        // --- UPGRADED: Run Vaccine Agent Validation for React Admin ---
-        if (editForm.service === "Vaccine" && editForm.items.length > 0) {
+        // --- UPGRADED: Vaccine Agent Validation ---
+        const isDateTimeUnchanged = isEditingEvent && 
+              editDate === moment(selectedEvent.start).format("YYYY-MM-DD") && 
+              editTime === moment(selectedEvent.start).format("HH:mm");
+
+        // We skip validation if it's an existing booking and they didn't change the Date or Time
+        if (editForm.service === "Vaccine" && editForm.items.length > 0 && !isDateTimeUnchanged) {
             let tempIc = editForm.patient_ic;
             if (isNewBooking && isCreatingNewPatient) {
                 let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
@@ -289,7 +294,8 @@ export default function AdminDashboard() {
                             body: JSON.stringify({
                                 clinic_id: activeClinicId, ic: tempIc,
                                 vaccine_name: editForm.items[0], target_dose: editForm.dose,
-                                requested_time: scheduled_time, manual_dates: currentManualDates
+                                requested_time: scheduled_time, manual_dates: currentManualDates,
+                                exclude_stage_id: isEditingEvent ? selectedEvent.extendedProps.stage_id : null // Pass ID to exclude
                             })
                         });
                         if (valRes.ok) {
@@ -831,7 +837,9 @@ export default function AdminDashboard() {
                       )}
                       <div className={isNewBooking ? "col-span-2" : ""}>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
-                        <select value={editForm.service} onChange={(e) => {
+                        <select value={editForm.service} 
+                        disabled={isEditingEvent && editForm.service === "Vaccine"}
+                        onChange={(e) => {
                             setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
                             setEditTime(""); // Clear the time to refresh 15/30 min intervals correctly
                         }} className="w-full p-2 border rounded-lg bg-white outline-none">
@@ -854,7 +862,9 @@ export default function AdminDashboard() {
                         <div className="grid grid-cols-2 gap-4">
                           <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Vaccine Name</label>
-                            <select value={editForm.items[0] || ''} onChange={async e => {
+                            <select value={editForm.items[0] || ''} 
+                            disabled={isEditingEvent && editForm.service === "Vaccine"}
+                            onChange={async e => {
                                 const val = e.target.value;
                                 setEditForm(prev => ({...prev, items: [val], dose: 'Calculating...'}));
 
