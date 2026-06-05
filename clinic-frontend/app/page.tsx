@@ -837,12 +837,15 @@ export default function AdminDashboard() {
                       )}
                       <div className={isNewBooking ? "col-span-2" : ""}>
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
-                        <select value={editForm.service} 
-                        disabled={isEditingEvent && editForm.service === "Vaccine"}
-                        onChange={(e) => {
-                            setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
-                            setEditTime(""); // Clear the time to refresh 15/30 min intervals correctly
-                        }} className="w-full p-2 border rounded-lg bg-white outline-none">
+                        <select 
+                            value={editForm.service} 
+                            disabled={!isNewBooking && editForm.service === "Vaccine"}
+                            onChange={(e) => {
+                                setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
+                                setEditTime(""); // Clear the time to refresh 15/30 min intervals correctly
+                            }} 
+                            className="w-full p-2 border rounded-lg bg-white outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                        >
                           <option value="Others">Others</option>
                           <option value="Vaccine">Vaccine</option>
                           <option value="Blood Test">Blood Test</option>
@@ -853,7 +856,35 @@ export default function AdminDashboard() {
                   {editForm.status === 'canceled' && (
                       <div className="col-span-2">
                           <label className="block text-xs font-bold text-red-500 uppercase mb-1">Cancellation Reason <span className="text-red-500">*</span></label>
-                          <input type="text" value={inlineCancelReason} onChange={e => setInlineCancelReason(e.target.value)} className="w-full p-2 border rounded-lg bg-white outline-none border-red-300" placeholder="Please specify why this was canceled..." />
+                          <select
+                              value={["Change of schedule", "Feeling better", "Booked wrong service", "Personal reasons"].includes(inlineCancelReason) ? inlineCancelReason : (inlineCancelReason ? "Other" : "")}
+                              onChange={(e) => {
+                                  if (e.target.value !== "Other") {
+                                      setInlineCancelReason(e.target.value);
+                                  } else {
+                                      setInlineCancelReason(""); // Clear to allow typing
+                                  }
+                              }}
+                              className="w-full p-2 border rounded-lg bg-white outline-none border-red-300 mb-2"
+                          >
+                              <option value="" disabled>Select Reason...</option>
+                              <option value="Change of schedule">Change of schedule</option>
+                              <option value="Feeling better">Feeling better</option>
+                              <option value="Booked wrong service">Booked wrong service</option>
+                              <option value="Personal reasons">Personal reasons</option>
+                              <option value="Other">Other (Type below)</option>
+                          </select>
+                          
+                          {/* Only show the text input if they choose 'Other' or haven't picked a preset reason */}
+                          {!["Change of schedule", "Feeling better", "Booked wrong service", "Personal reasons"].includes(inlineCancelReason) && (
+                              <input 
+                                  type="text" 
+                                  value={inlineCancelReason} 
+                                  onChange={e => setInlineCancelReason(e.target.value)} 
+                                  className="w-full p-2 border rounded-lg bg-white outline-none border-red-300" 
+                                  placeholder="Please specify why this was canceled..." 
+                              />
+                          )}
                       </div>
                   )}
 
@@ -862,35 +893,38 @@ export default function AdminDashboard() {
                         <div className="grid grid-cols-2 gap-4">
                           <div>
                             <label className="block text-xs font-bold text-slate-500 mb-1">Vaccine Name</label>
-                            <select value={editForm.items[0] || ''} 
-                            disabled={isEditingEvent && editForm.service === "Vaccine"}
-                            onChange={async e => {
-                                const val = e.target.value;
-                                setEditForm(prev => ({...prev, items: [val], dose: 'Calculating...'}));
+                            <select 
+                                value={editForm.items[0] || ''} 
+                                disabled={!isNewBooking && editForm.service === "Vaccine"}
+                                onChange={async e => {
+                                    const val = e.target.value;
+                                    setEditForm(prev => ({...prev, items: [val], dose: 'Calculating...'}));
 
-                                let tempIc = editForm.patient_ic;
-                                if (isNewBooking && isCreatingNewPatient) {
-                                    let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
-                                    if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
-                                        tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
-                                    } else { tempIc = rawIc; }
-                                }
-                                
-                                if (val && tempIc) {
-                                    try {
-                                        const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}`);
-                                        if (res.ok) {
-                                            const data = await res.json();
-                                            if (data.is_brand_switch) {
-                                                alert(`⚠️ Brand Switch Detected:\nYou started a cycle with ${data.active_brand}. You must complete that cycle before switching to ${val}.`);
-                                                setEditForm(prev => ({...prev, items: [], dose: ''})); // Reset selection
-                                            } else if (data.next_dose) {
-                                                setEditForm(prev => ({...prev, items: [val], dose: data.next_dose}));
+                                    let tempIc = editForm.patient_ic;
+                                    if (isNewBooking && isCreatingNewPatient) {
+                                        let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
+                                        if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
+                                            tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
+                                        } else { tempIc = rawIc; }
+                                    }
+                                    
+                                    if (val && tempIc) {
+                                        try {
+                                            const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}`);
+                                            if (res.ok) {
+                                                const data = await res.json();
+                                                if (data.is_brand_switch) {
+                                                    alert(`⚠️ Brand Switch Detected:\nYou started a cycle with ${data.active_brand}. You must complete that cycle before switching to ${val}.`);
+                                                    setEditForm(prev => ({...prev, items: [], dose: ''})); // Reset selection
+                                                } else if (data.next_dose) {
+                                                    setEditForm(prev => ({...prev, items: [val], dose: data.next_dose}));
+                                                }
                                             }
-                                        }
-                                    } catch (err) { console.error(err); }
-                                }
-                            }} className="w-full p-2 border rounded-lg bg-white outline-none">
+                                        } catch (err) { console.error(err); }
+                                    }
+                                }} 
+                                className="w-full p-2 border rounded-lg bg-white outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                            >
                               <option value="">Select Vaccine</option>
                               {Object.keys(groupedVaccines).map(type => (
                                   <optgroup key={type} label={type}>
