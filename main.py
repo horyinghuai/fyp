@@ -1375,12 +1375,17 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == v_model.type).all()]
             prev_dose_name = f"Dose {start_dose_num - 1}" if start_dose_num <= v_model.total_doses else (f"Dose {v_model.total_doses}" if v_model.total_doses > 1 else "Single Dose")
             
-            prev_stage = db.query(models.ApptStage).join(models.Appointment).join(models.AppointmentVaccine).filter(
-                models.Appointment.patient_id == patient.id,
-                models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
-                models.ApptStage.stage_name == prev_dose_name,
-                models.ApptStage.status.notin_(['canceled', 'no-show'])
-            ).order_by(models.ApptStage.scheduled_time.desc()).first()
+            # UPGRADED: Explicit select_from to prevent SQLAlchemy Join crashes
+            prev_stage = db.query(models.ApptStage)\
+                .select_from(models.ApptStage)\
+                .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
+                .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
+                .filter(
+                    models.Appointment.patient_id == patient.id,
+                    models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
+                    models.ApptStage.stage_name == prev_dose_name,
+                    models.ApptStage.status.notin_(['canceled', 'no-show'])
+                ).order_by(models.ApptStage.scheduled_time.desc()).first()
             
             if prev_stage:
                 existing_appt_id = prev_stage.appointment_id
@@ -2913,11 +2918,17 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
     if req.service_type == 'Vaccine' and req.vaccine_name and req.dose and req.dose not in ['Single Dose', 'Dose 1']:
         vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
         if vaccine:
+            same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == vaccine.type).all()]
+            
+            # UPGRADED: Explicit select_from to prevent SQLAlchemy Join crashes
             past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time)\
-                .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
+                .select_from(models.ApptStage)\
+                .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
+                .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
+                .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
                 .filter(
                     models.Patient.ic_passport_number == req.ic,
-                    models.AppointmentVaccine.vaccine_id == vaccine.id,
+                    models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
                     models.ApptStage.status != 'canceled'
                 ).all()
 
@@ -3103,9 +3114,12 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
 
     if not required_doses: return {"missing_doses": []}
 
-    # Query existing history from the clinic database
+    # UPGRADED: Explicit select_from to prevent SQLAlchemy Join crashes
     past_stages = db.query(models.ApptStage.stage_name)\
-        .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
+        .select_from(models.ApptStage)\
+        .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
+        .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
+        .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
         .filter(
             models.Patient.ic_passport_number == req.ic,
             models.AppointmentVaccine.vaccine_id == vaccine.id,
@@ -3171,20 +3185,19 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
     all_dates = {}
     
-    # 1. Process Clinic History
     for s in past_stages:
-        stage_name, scheduled_time, status, v_id, stg_id = s # Unpack the stage_id safely
+        stage_name, scheduled_time, status, v_id = s
         dt = scheduled_time.date() if isinstance(scheduled_time, datetime) else scheduled_time
-        all_dates[stage_name] = dt
         d_num = get_dose_num(stage_name)
         if d_num == 0: continue
         
         if status == 'completed': 
             completed_doses.append({"num": d_num, "date": dt, "name": stage_name, "v_id": v_id})
+            all_dates[stage_name] = dt
         elif status == 'scheduled': 
-            scheduled_doses.append({"num": d_num, "date": dt, "name": stage_name})
-        elif status in ['canceled', 'no-show']: # <--- ADD THIS LINE BACK HERE
-            missed_doses.append(d_num)
+            scheduled_doses.append({"num": d_num, "date": dt, "name": stage_name, "v_id": v_id})
+            all_dates[stage_name] = dt # FIX: Save scheduled dates so interval validation can find them!
+        elif status in ['canceled', 'no-show']: missed_doses.append(d_num)
 
     for ext in external_records:
         dt = ext.date_taken.date() if isinstance(ext.date_taken, datetime) else ext.date_taken
@@ -3204,11 +3217,16 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
     completed_doses.sort(key=lambda x: x['num'])
     scheduled_doses.sort(key=lambda x: x['num'])
+    
     highest_comp = completed_doses[-1] if completed_doses else None
     
+    # FIX: Calculate highest overall dose (completed + scheduled)
+    all_doses_sorted = sorted(completed_doses + scheduled_doses, key=lambda x: x['num'])
+    highest_overall = all_doses_sorted[-1] if all_doses_sorted else None
+    
     # 1. Strict Brand Continuation Check
-    if highest_comp and highest_comp['num'] < vaccine.total_doses and highest_comp['v_id'] != vaccine.id:
-        active_vac = next((v for v in same_type_vaccines if v.id == highest_comp['v_id']), None)
+    if highest_overall and highest_overall['num'] < vaccine.total_doses and highest_overall['v_id'] != vaccine.id:
+        active_vac = next((v for v in same_type_vaccines if v.id == highest_overall['v_id']), None)
         reason = f"You started your cycle with {active_vac.name}. You must complete your cycle with {active_vac.name} before switching brands."
         return {"is_valid": False, "reason": reason}
 
@@ -3218,8 +3236,8 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     except:
         return {"is_valid": False, "reason": "Invalid requested time format."}
 
-    # Auto-Determine Target Dose
-    target_num = highest_comp['num'] + 1 if highest_comp else 1
+    # Auto-Determine Target Dose (Using highest overall, not just completed)
+    target_num = highest_overall['num'] + 1 if highest_overall else 1
     if target_num > vaccine.total_doses + (1 if vaccine.has_booster else 0): target_num = 1
     target_name = get_dose_name(target_num)
 
@@ -3246,12 +3264,16 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
     # 5. Interrupted Vaccine Validation
     min_allowed_date_str = None
+    
+    # Interruption logic checks gaps between physically COMPLETED doses
     if highest_comp and target_num > 1:
         if vaccine.restart_if_interrupted and vaccine.interruption_restart_days is not None:
             max_allowed_date = highest_comp['date'] + timedelta(days=vaccine.interruption_restart_days)
             if req_date > max_allowed_date:
                 return {"is_valid": False, "reason": "Your previous vaccine series has expired and must be restarted. Please select Dose 1 instead."}
 
+    # Interval logic checks dates spacing between ANY existing doses (completed OR scheduled)
+    if highest_overall and target_num > 1:
         schedules = {s.dose_number: s.interval_days for s in db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id).all()}
         interval_days = schedules.get(target_num)
         if interval_days is not None:
