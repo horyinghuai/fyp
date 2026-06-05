@@ -1998,12 +1998,20 @@ async def process_availability(update, context, full_time_str):
                 res_val = await client.post(f"{API_BASE}/validate-vaccine-booking", json=payload_val, timeout=5.0)
                 if res_val.status_code == 200:
                     val_data = res_val.json()
+                    
                     if not val_data.get('is_valid'):
                         msg = f"❌ *Vaccine Agent Validation Failed:*\n{val_data.get('reason')}\n\nPlease select a different Date/Time."
                         markup = await generate_date_picker(active_cid, service, doctor_pref, context.user_data.get('is_editing', False))
                         if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
                         else: await update.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
                         return BOOK_DATE_TIME
+                    else:
+                        # Automatically create the next required dose booking if corrected
+                        if val_data.get('corrected_dose'):
+                            context.user_data['dose'] = val_data['corrected_dose']
+                            msg = f"ℹ️ *System Notice:*\n{val_data.get('message')}"
+                            if update.callback_query: await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
+                            else: await update.message.reply_text(msg, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Vaccine Validation Error: {e}")
 

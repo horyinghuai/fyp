@@ -279,7 +279,7 @@ export default function AdminDashboard() {
             }
         }
 
-        // --- NEW: Run Vaccine Agent Validation for React Admin ---
+        // --- Vaccine Agent Validation for React Admin ---
         if (editForm.service === "Vaccine" && editForm.items.length > 0) {
             let tempIc = editForm.patient_ic;
             if (isNewBooking && isCreatingNewPatient) {
@@ -307,7 +307,11 @@ export default function AdminDashboard() {
                     if (valRes.ok) {
                         const valData = await valRes.json();
                         if (!valData.is_valid) {
-                            return alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
+                            alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
+                            return; // Stop the booking from saving
+                        } else if (valData.corrected_dose) {
+                            alert(`ℹ️ System Notice:\n${valData.message}`);
+                            editForm.dose = valData.corrected_dose; // Automatically switch to the next required dose
                         }
                     }
                 } catch (e) {

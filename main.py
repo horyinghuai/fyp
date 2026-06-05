@@ -1788,7 +1788,6 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
         raise HTTPException(status_code=400, detail=str(e))
     
 @app.post("/cancel-appointment/{appt_id}")
-@app.post("/cancel-appointment/{appt_id}")
 async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_db)):
     db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled", "cancel_reason": req.cancel_reason})
     db.commit()
@@ -1829,6 +1828,43 @@ async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends
             print(f"Failed to send cancel summary: {e}")
             
     return {"status": "success"}
+
+@app.delete("/delete-appointment/{stage_id}")
+def delete_appointment(stage_id: str, db: Session = Depends(get_db)):
+    try:
+        # 1. Find the specific stage the user wants to delete
+        stage = db.query(models.ApptStage).filter(models.ApptStage.id == stage_id).first()
+        if not stage:
+            raise HTTPException(status_code=404, detail="Appointment stage not found")
+        
+        appt_id = stage.appointment_id
+        
+        # 2. Delete the specific stage
+        db.delete(stage)
+        db.commit()
+        
+        # --- ORPHAN CLEANUP LOGIC ---
+        # 3. Count how many stages are left for this parent appointment
+        remaining_stages = db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).count()
+        
+        # 4. If no stages are left, completely remove the parent appointment and its details
+        if remaining_stages == 0:
+            # Clean up related service tables first (to avoid foreign key constraint errors)
+            db.query(models.AppointmentVaccine).filter(models.AppointmentVaccine.appointment_id == appt_id).delete()
+            db.query(models.AppointmentBloodTest).filter(models.AppointmentBloodTest.appointment_id == appt_id).delete()
+            
+            # Finally, delete the parent appointment itself
+            db.query(models.Appointment).filter(models.Appointment.id == appt_id).delete()
+            db.commit()
+        # ----------------------------
+        
+        return {"status": "success", "message": "Appointment deleted successfully"}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/admin/patients/{clinic_id}")
 def admin_get_patients(clinic_id: str, db: Session = Depends(get_db)):
@@ -3038,105 +3074,136 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
     if not vaccine: return {"is_valid": True}
 
-    # 1. Gather all existing history from the database (Include Status to check for completion)
+    # 1. Gather existing history (excluding canceled and no-show)
     past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time, models.ApptStage.status)\
         .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
         .filter(
             models.Patient.ic_passport_number == req.ic,
             models.AppointmentVaccine.vaccine_id == vaccine.id,
-            models.ApptStage.status != 'canceled'
+            models.ApptStage.status.notin_(['canceled', 'no-show'])
         ).order_by(models.ApptStage.scheduled_time.asc()).all()
 
-    all_dates = {}
-    completed_dates = {}
+    completed_doses = []
+    scheduled_doses = []
+
+    def get_dose_num(name):
+        if not name: return 0
+        name = name.lower()
+        if 'single' in name: return 1
+        if 'booster' in name: return vaccine.total_doses + 1
+        if 'dose ' in name:
+            try: return int(name.split(" ")[1])
+            except: return 0
+        return 0
+
+    def get_dose_name(num):
+        if num == vaccine.total_doses + 1 and vaccine.has_booster: return "Booster"
+        if vaccine.total_doses == 1 and num == 1: return "Single Dose"
+        return f"Dose {num}"
+
     for s in past_stages:
-        dt = s[1].date() if isinstance(s[1], datetime) else s[1]
-        all_dates[s[0]] = dt
-        if s[2] == 'completed':
-            completed_dates[s[0]] = dt
+        stage_name, scheduled_time, status = s
+        dt = scheduled_time.date() if isinstance(scheduled_time, datetime) else scheduled_time
+        d_num = get_dose_num(stage_name)
+        if d_num == 0: continue
+        
+        if status == 'completed':
+            completed_doses.append({"num": d_num, "date": dt, "name": stage_name})
+        elif status == 'scheduled':
+            scheduled_doses.append({"num": d_num, "date": dt, "name": stage_name})
 
     # 2. Add manual dates entered by the user
     for d_name, d_str in req.manual_dates.items():
         try: 
             dt = datetime.strptime(d_str, "%Y-%m-%d").date()
-            all_dates[d_name] = dt
-            completed_dates[d_name] = dt # Treat user-provided past dates as completed
-        except: 
-            pass
+            d_num = get_dose_num(d_name)
+            if d_num > 0:
+                completed_doses.append({"num": d_num, "date": dt, "name": d_name})
+        except: pass
+
+    completed_doses.sort(key=lambda x: x['num'])
+    scheduled_doses.sort(key=lambda x: x['num'])
+
+    highest_comp = completed_doses[-1] if completed_doses else None
 
     # 3. Add the target requested time
     try:
         req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
         req_date = req_dt.date()
-        all_dates[req.target_dose] = req_date
     except:
         return {"is_valid": False, "reason": "Invalid requested time format."}
 
-    # Determine target_num
-    target_num = 1
-    if req.target_dose.startswith("Dose "):
-        try: target_num = int(req.target_dose.split(" ")[1])
-        except: pass
-    elif req.target_dose == "Booster":
-        target_num = vaccine.total_doses + 1
+    target_num = get_dose_num(req.target_dose)
+    is_completed_series = True if highest_comp and highest_comp['num'] >= vaccine.total_doses else False
 
-    # --- NEW: Repeat Vaccination Validation ---
-    if target_num == 1:
-        final_primary_dose = f"Dose {vaccine.total_doses}" if vaccine.total_doses > 1 else "Single Dose"
-        last_completed_dose_date = None
-        
-        # Determine if they have already completed the series
-        if "Booster" in completed_dates:
-            last_completed_dose_date = completed_dates["Booster"]
-        elif final_primary_dose in completed_dates:
-            last_completed_dose_date = completed_dates[final_primary_dose]
-            
-        if last_completed_dose_date:
+    # --- REPEAT VACCINATION VALIDATION ---
+    if is_completed_series:
+        if target_num == vaccine.total_doses + 1 and vaccine.has_booster and highest_comp['num'] == vaccine.total_doses:
+            # They are booking a Booster right after finishing the primary series. Let it pass to standard checks.
+            pass
+        else:
             if not vaccine.allow_repeat_series:
-                reason = f"You have already completed the {vaccine.name} series. This vaccine cannot be repeated."
-                logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {req.ic} repeat attempt for {vaccine.name} (allow_repeat_series is FALSE)")
+                reason = "You have already completed this vaccine series."
+                logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Rejected: {req.ic} already completed {vaccine.name}.")
                 return {"is_valid": False, "reason": reason}
             else:
                 if vaccine.repeat_interval_days is not None:
-                    min_repeat_date = last_completed_dose_date + timedelta(days=vaccine.repeat_interval_days)
-                    if req_date < min_repeat_date:
-                        reason = f"This vaccine may only be repeated after {min_repeat_date.strftime('%Y-%m-%d')}."
-                        logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {req.ic} repeat attempt for {vaccine.name} before interval. Min allowed: {min_repeat_date.strftime('%Y-%m-%d')}")
+                    eligible_date = highest_comp['date'] + timedelta(days=vaccine.repeat_interval_days)
+                    if req_date < eligible_date:
+                        reason = f"This vaccine may only be repeated after {eligible_date.strftime('%Y-%m-%d')}."
+                        logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Rejected: Repeat interval not met for {vaccine.name}.")
                         return {"is_valid": False, "reason": reason}
+                
+                # Auto-correct to Dose 1 for the new repeated series
+                next_dose_num = 1
+                next_dose_name = get_dose_name(next_dose_num)
+                if target_num != next_dose_num:
+                    msg = f"You are starting a new series. You should continue with {next_dose_name}."
+                    logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Auto-corrected to {next_dose_name}")
+                    return {"is_valid": True, "corrected_dose": next_dose_name, "message": msg}
+                return {"is_valid": True}
 
-    # 4. Fetch all interval schedules for this vaccine
-    schedules = {s.dose_number: s.interval_days for s in db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id).all()}
+    # --- SERIES IS NOT COMPLETED ---
+    next_dose_num = highest_comp['num'] + 1 if highest_comp else 1
+    next_dose_name = get_dose_name(next_dose_num)
 
-    # 5. Validate the ENTIRE sequence chain
-    for d_num in range(2, target_num + 1):
-        if d_num <= vaccine.total_doses:
-            curr_name = f"Dose {d_num}"
-            prev_name = f"Dose {d_num - 1}"
-        else:
-            curr_name = "Booster"
-            prev_name = f"Dose {vaccine.total_doses}" if vaccine.total_doses > 1 else "Single Dose"
+    # Check for active duplicate bookings for the next required dose
+    for sched in scheduled_doses:
+        if sched['num'] == next_dose_num:
+            reason = f"You already have a booking for {vaccine.name} {sched['name']} on {sched['date'].strftime('%Y-%m-%d')}."
+            logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Rejected: Active booking exists for {next_dose_name}.")
+            return {"is_valid": False, "reason": reason}
 
-        if curr_name in all_dates and prev_name in all_dates:
-            prev_date = all_dates[prev_name]
-            curr_date = all_dates[curr_name]
-            
-            # Standard Minimum Interval Validation
-            interval_days = schedules.get(d_num)
-            if interval_days is not None:
-                min_allowed_date = prev_date + timedelta(days=interval_days)
-                if curr_date < min_allowed_date:
-                    reason = f"Based on dependency rules, {curr_name} must be at least {interval_days} days after {prev_name}. Earliest allowed date for {curr_name}: {min_allowed_date.strftime('%Y-%m-%d')}."
-                    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {curr_name} on {curr_date.strftime('%Y-%m-%d')} is before minimum date {min_allowed_date.strftime('%Y-%m-%d')} (from {prev_name})")
-                    return {"is_valid": False, "reason": reason}
-            
-            # --- NEW: Interrupted Series Validation ---
-            if vaccine.restart_if_interrupted and vaccine.interruption_restart_days is not None:
-                max_allowed_date = prev_date + timedelta(days=vaccine.interruption_restart_days)
-                if curr_date > max_allowed_date:
-                    reason = "Your previous vaccine series has expired and must be restarted."
-                    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Rejected: {curr_name} on {curr_date.strftime('%Y-%m-%d')} exceeded interruption limit of {vaccine.interruption_restart_days} days from {prev_name}.")
-                    return {"is_valid": False, "reason": reason}
+    # --- INTERRUPTED SERIES VALIDATION ---
+    if highest_comp:
+        if vaccine.restart_if_interrupted and vaccine.interruption_restart_days is not None:
+            max_allowed_date = highest_comp['date'] + timedelta(days=vaccine.interruption_restart_days)
+            if req_date > max_allowed_date:
+                reason = "Your previous vaccine series has expired and must be restarted."
+                logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Rejected: Interruption limit exceeded.")
+                return {"is_valid": False, "reason": reason}
 
-    # Log sequence acceptance
-    logging_agent(db, req.clinic_id, "Vaccine Dependency Validation", f"Accepted: Sequence requirements met up to {req.target_dose}")
+        # Auto-correct the dose target if the patient picked the wrong dose to continue with
+        if target_num != next_dose_num:
+            msg = f"You previously received {vaccine.name} {highest_comp['name']}. You should continue with {next_dose_name}."
+            logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Auto-corrected to {next_dose_name}")
+            return {"is_valid": True, "corrected_dose": next_dose_name, "message": msg}
+        
+        # Standard interval gap check
+        schedules = {s.dose_number: s.interval_days for s in db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id).all()}
+        interval_days = schedules.get(next_dose_num)
+        if interval_days is not None:
+            min_allowed_date = highest_comp['date'] + timedelta(days=interval_days)
+            if req_date < min_allowed_date:
+                reason = f"Based on dependency rules, {next_dose_name} must be at least {interval_days} days after {highest_comp['name']}. Earliest allowed date for {next_dose_name}: {min_allowed_date.strftime('%Y-%m-%d')}."
+                logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Rejected: Minimum interval not met.")
+                return {"is_valid": False, "reason": reason}
+    else:
+        # User has no history but clicked a higher dose; auto-correct back to 1
+        if target_num != 1:
+            msg = f"You have not started this vaccine series. You should begin with {get_dose_name(1)}."
+            logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Auto-corrected to Dose 1")
+            return {"is_valid": True, "corrected_dose": get_dose_name(1), "message": msg}
+
+    logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Accepted: Sequence requirements met for {req.target_dose}")
     return {"is_valid": True}
