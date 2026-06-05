@@ -43,6 +43,7 @@ export default function AdminDashboard() {
   const [editTime, setEditTime] = useState("");
 
   const [minDate, setMinDate] = useState(moment().format("YYYY-MM-DD"));
+  const [manualDates, setManualDates] = useState<Record<string, string>>({});
 
   const [editForm, setEditForm] = useState({
     status: 'scheduled', doctor_ic: '', patient_ic: '',
@@ -265,56 +266,70 @@ export default function AdminDashboard() {
             if (sp) currentPatientGender = sp.gender.toUpperCase();
         }
 
-        // --- Vaccine Agent Validation for React Admin ---
-        let manualDates: Record<string, string> = {};
+        // --- UPGRADED: Run Vaccine Agent Validation for React Admin ---
         if (editForm.service === "Vaccine" && editForm.items.length > 0) {
             let tempIc = editForm.patient_ic;
             if (isNewBooking && isCreatingNewPatient) {
                 let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
                 if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
                     tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
-                } else { tempIc = rawIc; }
+                } else {
+                    tempIc = rawIc;
+                }
             }
             
             if (tempIc) {
                 let isValidated = false;
+                let currentManualDates = { ...manualDates };
                 
                 while (!isValidated) {
                     try {
                         const valRes = await fetch(`http://127.0.0.1:8000/validate-vaccine-booking`, {
                             method: 'POST', headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                clinic_id: activeClinicId, ic: tempIc,
-                                vaccine_name: editForm.items[0], target_dose: editForm.dose,
-                                requested_time: scheduled_time, manual_dates: manualDates
+                                clinic_id: activeClinicId,
+                                ic: tempIc,
+                                vaccine_name: editForm.items[0],
+                                target_dose: editForm.dose,
+                                requested_time: scheduled_time,
+                                manual_dates: currentManualDates
                             })
                         });
                         if (valRes.ok) {
                             const valData = await valRes.json();
                             if (!valData.is_valid) {
                                 if (valData.ask_manual_dates) {
+                                    // Iterate through all missing doses
                                     for (const missing of valData.ask_manual_dates) {
-                                        const manualDate = prompt(`Missing record for ${missing}\n\nPlease enter the date you took it (YYYY-MM-DD):`);
-                                        if (manualDate && /^\d{4}-\d{2}-\d{2}$/.test(manualDate)) {
-                                            manualDates[missing] = manualDate;
-                                        } else {
-                                            alert("Validation canceled or invalid date format.");
-                                            return;
+                                        let validDateEntered = false;
+                                        // Strict format enforcement loop
+                                        while (!validDateEntered) {
+                                            const manualDate = window.prompt(`Missing external record for ${missing}\n\n${valData.reason}\n\nPlease enter the date you took it (YYYY-MM-DD):`);
+                                            if (manualDate === null) {
+                                                alert("Validation canceled.");
+                                                return; // Abort if user clicks Cancel
+                                            }
+                                            if (/^\d{4}-\d{2}-\d{2}$/.test(manualDate)) {
+                                                currentManualDates[missing] = manualDate;
+                                                validDateEntered = true;
+                                            } else {
+                                                alert("❌ Invalid format! Please enter the date EXACTLY as YYYY-MM-DD (e.g., 2026-05-15).");
+                                            }
                                         }
                                     }
-                                    continue; // Re-run validation with all dates
+                                    setManualDates(currentManualDates); // Save to state
+                                    continue; // Loop back and re-validate with the newly acquired dates
                                 } else {
                                     if (valData.min_allowed_date) {
                                         setMinDate(valData.min_allowed_date);
                                         if (editDate < valData.min_allowed_date) {
-                                            alert(`${valData.reason}\n\nAdjusting calendar to earliest allowed date.`);
+                                            alert(`${valData.reason}\n\nAdjusting calendar to earliest allowed date. Please review the details and click "Create Booking" again.`);
                                             setEditDate(valData.min_allowed_date);
                                             setEditTime("");
-                                            return; // Halt save and let them pick a new valid time
+                                            return; // Halt submission so the user can review before creating
                                         }
                                     }
-                                    alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
-                                    return;
+                                    return alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
                                 }
                             } else {
                                 if (valData.corrected_dose) {
@@ -324,8 +339,13 @@ export default function AdminDashboard() {
                                 if (valData.min_allowed_date) setMinDate(valData.min_allowed_date);
                                 isValidated = true;
                             }
-                        } else { isValidated = true; }
-                    } catch (e) { console.error("Validation failed", e); isValidated = true; }
+                        } else {
+                            isValidated = true;
+                        }
+                    } catch (e) {
+                        console.error("Validation check failed", e);
+                        isValidated = true;
+                    }
                 }
             }
         }
@@ -445,9 +465,10 @@ export default function AdminDashboard() {
   };
 
   const openEventModal = (event: any) => {
-    setMinDate(moment().format("YYYY-MM-DD"))
     setSelectedEvent(event);
     setEditDate(moment(event.start).format("YYYY-MM-DD"));
+    setMinDate(moment().format("YYYY-MM-DD")); 
+    setManualDates({});                        
     setEditTime(moment(event.start).format("HH:mm"));
     setEditForm({
       status: event.status || 'scheduled',
@@ -465,8 +486,9 @@ export default function AdminDashboard() {
   };
 
   const openNewBookingModal = () => {
-    setMinDate(moment().format("YYYY-MM-DD"))
     setEditDate(moment().format("YYYY-MM-DD"));
+    setMinDate(moment().format("YYYY-MM-DD")); 
+    setManualDates({});                       
     setEditTime(""); 
     setEditForm({
       status: 'scheduled',
