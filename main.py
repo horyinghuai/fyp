@@ -1465,11 +1465,22 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 final_stage_name = booking.details.get("dose", "Single Dose")
 
             if booking.service_type == 'Vaccine' and items_list and v_model:
-                db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+                # Check if AppointmentVaccine already exists to avoid duplicate key violation
+                existing_av = db.query(models.AppointmentVaccine).filter_by(
+                    appointment_id=new_appt.id, vaccine_id=v_model.id
+                ).first()
+                if not existing_av:
+                    db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
             elif booking.service_type == 'Blood Test' and items_list:
+                # Check and add only missing BloodTest records
                 for t_name in items_list:
                     bt = db.query(models.BloodTest).filter_by(name=t_name).first()
-                    if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
+                    if bt:
+                        existing_abt = db.query(models.AppointmentBloodTest).filter_by(
+                            appointment_id=new_appt.id, blood_test_id=bt.id
+                        ).first()
+                        if not existing_abt:
+                            db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
             
             stage = models.ApptStage(
                 appointment_id=new_appt.id, 

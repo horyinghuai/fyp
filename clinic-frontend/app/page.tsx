@@ -176,14 +176,21 @@ export default function AdminDashboard() {
   const handleReviewAction = async (status: string) => {
     if (!pendingReviewEvent) return;
     try {
-        await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${pendingReviewEvent.id}`, {
+        const reviewRes = await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${pendingReviewEvent.id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status })
         });
+        
+        if (!reviewRes.ok) {
+            const errorData = await reviewRes.json();
+            throw new Error(errorData.detail || 'Review action failed');
+        }
+        
         setPendingReviewEvent(null);
         loadAppointments(activeClinicId);
-    } catch (err) {
-        alert("Failed to connect to backend");
+    } catch (err: any) {
+        const errorMsg = err?.message || "Failed to connect to backend";
+        alert(`Error: ${errorMsg}`);
     }
   };
 
@@ -267,7 +274,7 @@ export default function AdminDashboard() {
         }
 
         // --- UPGRADED: Vaccine Agent Validation ---
-        const isDateTimeUnchanged = isEditingEvent && 
+        const isDateTimeUnchanged = isEditingEvent && selectedEvent &&
               editDate === moment(selectedEvent.start).format("YYYY-MM-DD") && 
               editTime === moment(selectedEvent.start).format("HH:mm");
 
@@ -295,7 +302,7 @@ export default function AdminDashboard() {
                                 clinic_id: activeClinicId, ic: tempIc,
                                 vaccine_name: editForm.items[0], target_dose: editForm.dose,
                                 requested_time: scheduled_time, manual_dates: currentManualDates,
-                                exclude_stage_id: isEditingEvent ? selectedEvent.extendedProps.stage_id : null // Pass ID to exclude
+                                exclude_stage_id: (isEditingEvent && selectedEvent) ? selectedEvent.extendedProps.stage_id : null // Pass ID to exclude
                             })
                         });
                         if (valRes.ok) {
@@ -394,6 +401,11 @@ export default function AdminDashboard() {
                 
                 if (pRes.status === 409) return alert("This IC/Passport has already been registered in the system.");
                 
+                if (!pRes.ok) {
+                    const errorData = await pRes.json();
+                    return alert(`Patient registration error: ${errorData.detail || 'Unknown error'}`);
+                }
+                
                 const pData = await pRes.json();
                 if (pData.status === 'error') return alert(pData.reason);
                 finalIc = finalFormattedIc;
@@ -409,10 +421,19 @@ export default function AdminDashboard() {
                 },
                 scheduled_time: scheduled_time
             };
-            await fetch(`http://127.0.0.1:8000/book-appointment`, {
+            const bookRes = await fetch(`http://127.0.0.1:8000/book-appointment`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
             });
+            
+            if (!bookRes.ok) {
+                const errorData = await bookRes.json();
+                throw new Error(errorData.detail || 'Booking failed');
+            }
         } else {
+            if (!selectedEvent) {
+                return alert("Error: No appointment selected for update.");
+            }
+            
             const payload: any = {
                 appt_id: selectedEvent.appt_id, service_type: editForm.service,
                 details: {
@@ -426,28 +447,42 @@ export default function AdminDashboard() {
                 payload.cancel_reason = inlineCancelReason;
             }
 
-            await fetch(`http://127.0.0.1:8000/update-appointment`, {
+            const updateRes = await fetch(`http://127.0.0.1:8000/update-appointment`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
             });
+            
+            if (!updateRes.ok) {
+                const errorData = await updateRes.json();
+                throw new Error(errorData.detail || 'Update failed');
+            }
         }
         window.location.reload(); 
-    } catch (err) {
-        alert("Failed to connect to backend");
+    } catch (err: any) {
+        const errorMsg = err?.message || "Failed to connect to backend";
+        alert(`Error: ${errorMsg}`);
     }
   };
 
   const executeCancellation = async () => {
     const reason = cancelReason === "Other" ? customCancelReason : cancelReason;
     if (!reason.trim()) return alert("Please provide a cancellation reason.");
+    if (!selectedEvent) return alert("Error: No appointment selected for cancellation.");
 
     try {
-        await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`, {
+        const cancelRes = await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, 
             body: JSON.stringify({ status: 'canceled', cancel_reason: reason })
         });
+        
+        if (!cancelRes.ok) {
+            const errorData = await cancelRes.json();
+            throw new Error(errorData.detail || 'Cancellation failed');
+        }
+        
         window.location.reload();
-    } catch (err) {
-        alert("Failed to connect to backend");
+    } catch (err: any) {
+        const errorMsg = err?.message || "Failed to connect to backend";
+        alert(`Error: ${errorMsg}`);
     }
   };
 
