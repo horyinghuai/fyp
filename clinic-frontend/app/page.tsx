@@ -287,65 +287,46 @@ export default function AdminDashboard() {
                         const valRes = await fetch(`http://127.0.0.1:8000/validate-vaccine-booking`, {
                             method: 'POST', headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                clinic_id: activeClinicId,
-                                ic: tempIc,
-                                vaccine_name: editForm.items[0],
-                                target_dose: editForm.dose,
-                                requested_time: scheduled_time,
-                                manual_dates: currentManualDates
+                                clinic_id: activeClinicId, ic: tempIc,
+                                vaccine_name: editForm.items[0], target_dose: editForm.dose,
+                                requested_time: scheduled_time, manual_dates: currentManualDates
                             })
                         });
                         if (valRes.ok) {
                             const valData = await valRes.json();
                             if (!valData.is_valid) {
-                                if (valData.ask_manual_dates) {
-                                    // Iterate through all missing doses
-                                    for (const missing of valData.ask_manual_dates) {
+                                if (valData.ask_external_yes_no) {
+                                    const tookExternal = window.confirm(`${valData.reason}\n\nClick OK for YES, Cancel for NO.`);
+                                    if (tookExternal) {
                                         let validDateEntered = false;
-                                        // Strict format enforcement loop
                                         while (!validDateEntered) {
-                                            const manualDate = window.prompt(`Missing external record for ${missing}\n\n${valData.reason}\n\nPlease enter the date you took it (YYYY-MM-DD):`);
-                                            if (manualDate === null) {
-                                                alert("Validation canceled.");
-                                                return; // Abort if user clicks Cancel
-                                            }
+                                            const manualDate = window.prompt(`Please provide the vaccination date for ${valData.ask_external_yes_no} (YYYY-MM-DD):`);
+                                            if (manualDate === null) return alert("Validation canceled.");
                                             if (/^\d{4}-\d{2}-\d{2}$/.test(manualDate)) {
-                                                currentManualDates[missing] = manualDate;
+                                                currentManualDates[valData.ask_external_yes_no] = manualDate;
                                                 validDateEntered = true;
                                             } else {
-                                                alert("❌ Invalid format! Please enter the date EXACTLY as YYYY-MM-DD (e.g., 2026-05-15).");
+                                                alert("❌ Invalid format! Use YYYY-MM-DD.");
                                             }
                                         }
+                                        setManualDates(currentManualDates);
+                                        continue; // Re-validate with the new date
+                                    } else {
+                                        // Patient clicked NO. We tell backend to ignore the missing external dose by passing a special flag if needed,
+                                        // OR natively, we just accept the target_dose as valid to book now.
+                                        alert(`You previously missed this dose. You should continue with ${valData.ask_external_yes_no}.`);
+                                        editForm.dose = valData.ask_external_yes_no;
+                                        break; // Exit loop and allow booking
                                     }
-                                    setManualDates(currentManualDates); // Save to state
-                                    continue; // Loop back and re-validate with the newly acquired dates
                                 } else {
-                                    if (valData.min_allowed_date) {
-                                        setMinDate(valData.min_allowed_date);
-                                        if (editDate < valData.min_allowed_date) {
-                                            alert(`${valData.reason}\n\nAdjusting calendar to earliest allowed date. Please review the details and click "Create Booking" again.`);
-                                            setEditDate(valData.min_allowed_date);
-                                            setEditTime("");
-                                            return; // Halt submission so the user can review before creating
-                                        }
-                                    }
                                     return alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
                                 }
                             } else {
-                                if (valData.corrected_dose) {
-                                    alert(`ℹ️ System Notice:\n${valData.message}`);
-                                    editForm.dose = valData.corrected_dose; 
-                                }
-                                if (valData.min_allowed_date) setMinDate(valData.min_allowed_date);
+                                editForm.dose = valData.target_dose; // Auto-apply the backend's determined dose
                                 isValidated = true;
                             }
-                        } else {
-                            isValidated = true;
-                        }
-                    } catch (e) {
-                        console.error("Validation check failed", e);
-                        isValidated = true;
-                    }
+                        } else isValidated = true;
+                    } catch (e) { isValidated = true; }
                 }
             }
         }
@@ -875,14 +856,8 @@ export default function AdminDashboard() {
                             <label className="block text-xs font-bold text-slate-500 mb-1">Vaccine Name</label>
                             <select value={editForm.items[0] || ''} onChange={async e => {
                                 const val = e.target.value;
-                                const vac = vaccinesList.find((v: any) => v.name === val);
-                                let defaultDose = 'Single Dose';
-                                if(vac && vac.total_doses > 1) defaultDose = 'Dose 1';
-                                
-                                // Set optimistically first
-                                setEditForm(prev => ({...prev, items: [val], dose: defaultDose}));
+                                setEditForm(prev => ({...prev, items: [val], dose: 'Calculating...'}));
 
-                                // --- NEW: Auto-determine the exact next dose ---
                                 let tempIc = editForm.patient_ic;
                                 if (isNewBooking && isCreatingNewPatient) {
                                     let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
@@ -896,14 +871,15 @@ export default function AdminDashboard() {
                                         const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}`);
                                         if (res.ok) {
                                             const data = await res.json();
-                                            if (data.next_dose) {
-                                                // Override with the calculated correct dose
+                                            if (data.is_brand_switch) {
+                                                alert(`⚠️ Brand Switch Detected:\nYou started a cycle with ${data.active_brand}. You must complete that cycle before switching to ${val}.`);
+                                                setEditForm(prev => ({...prev, items: [], dose: ''})); // Reset selection
+                                            } else if (data.next_dose) {
                                                 setEditForm(prev => ({...prev, items: [val], dose: data.next_dose}));
                                             }
                                         }
-                                    } catch (err) { console.error("Failed to fetch next dose", err); }
+                                    } catch (err) { console.error(err); }
                                 }
-                                // -----------------------------------------------
                             }} className="w-full p-2 border rounded-lg bg-white outline-none">
                               <option value="">Select Vaccine</option>
                               {Object.keys(groupedVaccines).map(type => (
@@ -914,10 +890,8 @@ export default function AdminDashboard() {
                             </select>
                           </div>
                           <div>
-                            <label className="block text-xs font-bold text-slate-500 mb-1">Dose Sequence</label>
-                            <select value={editForm.dose} onChange={e => setEditForm({...editForm, dose: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                                {doseOptions.map(d => <option key={d} value={d}>{d}</option>)}
-                            </select>
+                            <label className="block text-xs font-bold text-slate-500 mb-1">Dose Sequence (Auto-Determined)</label>
+                            <input type="text" value={editForm.dose} disabled className="w-full p-2 border rounded-lg bg-slate-100 outline-none text-slate-500 font-bold" />
                           </div>
                         </div>
                       )}

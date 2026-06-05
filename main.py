@@ -3121,26 +3121,27 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
     if not vaccine: return {"is_valid": True}
 
-    # Group vaccines by TYPE (e.g. Hepatitis B) to catch combinations of Twinrix/Engerix-B
-    same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == vaccine.type).all()]
+    same_type_vaccines = db.query(models.Vaccine).filter(models.Vaccine.type == vaccine.type).all()
+    same_type_ids = [v.id for v in same_type_vaccines]
 
-    # Gather existing history across ALL vaccines of the same type in the clinic
-    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time, models.ApptStage.status)\
-        .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
+    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.scheduled_time, models.ApptStage.status, models.AppointmentVaccine.vaccine_id)\
+        .select_from(models.ApptStage)\
+        .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
+        .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
+        .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
         .filter(
-            models.Patient.ic_passport_number == req.ic,
-            models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
-            models.ApptStage.status.notin_(['canceled', 'no-show'])
-        ).order_by(models.ApptStage.scheduled_time.asc()).all()
+            models.Patient.ic_passport_number == req.ic, 
+            models.AppointmentVaccine.vaccine_id.in_(same_type_ids)
+        )\
+        .order_by(models.ApptStage.scheduled_time.asc()).all()
         
-    # --- Fetch External Records ---
     external_records = db.query(models.ExternalVaccineRecord).filter(
-        models.ExternalVaccineRecord.patient_ic == req.ic,
-        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
+        models.ExternalVaccineRecord.patient_ic == req.ic, models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
     ).all()
 
     completed_doses = []
     scheduled_doses = []
+    missed_doses = [] # Tracks canceled/no-shows
 
     def get_dose_num(name):
         if not name: return 0
@@ -3159,112 +3160,83 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
     all_dates = {}
     
-    # 1. Process Clinic History
     for s in past_stages:
-        stage_name, scheduled_time, status = s
+        stage_name, scheduled_time, status, v_id = s
         dt = scheduled_time.date() if isinstance(scheduled_time, datetime) else scheduled_time
-        all_dates[stage_name] = dt
         d_num = get_dose_num(stage_name)
         if d_num == 0: continue
-        if status == 'completed': completed_doses.append({"num": d_num, "date": dt, "name": stage_name})
+        
+        if status == 'completed': 
+            completed_doses.append({"num": d_num, "date": dt, "name": stage_name, "v_id": v_id})
+            all_dates[stage_name] = dt
         elif status == 'scheduled': scheduled_doses.append({"num": d_num, "date": dt, "name": stage_name})
+        elif status in ['canceled', 'no-show']: missed_doses.append(d_num)
 
-    # 2. Process External Records
     for ext in external_records:
         dt = ext.date_taken.date() if isinstance(ext.date_taken, datetime) else ext.date_taken
-        all_dates[ext.dose_name] = dt
         d_num = get_dose_num(ext.dose_name)
-        if d_num > 0: completed_doses.append({"num": d_num, "date": dt, "name": ext.dose_name})
+        if d_num > 0: 
+            completed_doses.append({"num": d_num, "date": dt, "name": ext.dose_name, "v_id": ext.vaccine_id})
+            all_dates[ext.dose_name] = dt
 
-    # 3. Add manual dates entered actively during this specific validation request
     for d_name, d_str in req.manual_dates.items():
         try: 
             dt = datetime.strptime(d_str, "%Y-%m-%d").date()
-            all_dates[d_name] = dt
             d_num = get_dose_num(d_name)
-            if d_num > 0: completed_doses.append({"num": d_num, "date": dt, "name": d_name})
+            if d_num > 0: 
+                completed_doses.append({"num": d_num, "date": dt, "name": d_name, "v_id": vaccine.id})
+                all_dates[d_name] = dt
         except: pass
 
     completed_doses.sort(key=lambda x: x['num'])
     scheduled_doses.sort(key=lambda x: x['num'])
-
     highest_comp = completed_doses[-1] if completed_doses else None
-    all_doses_sorted = sorted(completed_doses + scheduled_doses, key=lambda x: x['num'])
-    highest_overall = all_doses_sorted[-1] if all_doses_sorted else None
+    
+    # 1. Strict Brand Continuation Check
+    if highest_comp and highest_comp['num'] < vaccine.total_doses and highest_comp['v_id'] != vaccine.id:
+        active_vac = next((v for v in same_type_vaccines if v.id == highest_comp['v_id']), None)
+        reason = f"You started your cycle with {active_vac.name}. You must complete your cycle with {active_vac.name} before switching brands."
+        return {"is_valid": False, "reason": reason}
 
     try:
         req_dt = datetime.strptime(req.requested_time, "%Y-%m-%d %H:%M:%S")
         req_date = req_dt.date()
-        all_dates[req.target_dose] = req_date
     except:
         return {"is_valid": False, "reason": "Invalid requested time format."}
 
-    target_num = get_dose_num(req.target_dose)
+    # Auto-Determine Target Dose
+    target_num = highest_comp['num'] + 1 if highest_comp else 1
+    if target_num > vaccine.total_doses + (1 if vaccine.has_booster else 0): target_num = 1
+    target_name = get_dose_name(target_num)
+
+    # 2. Cancelled/No-Show Handling (External Request)
+    if target_num in missed_doses and target_name not in all_dates:
+        reason = f"We found an incomplete vaccine series. Have you already received {vaccine.name} {target_name} at another clinic?"
+        return {"is_valid": False, "ask_external_yes_no": target_name, "reason": reason}
+
     is_completed_series = True if highest_comp and highest_comp['num'] >= vaccine.total_doses else False
 
-    # --- MISSING HISTORY VALIDATION (Ask user for manual dates) ---
-    if target_num > 1:
-        missing_doses = []
-        # Check iteratively for ALL missing previous doses
-        for i in range(1, target_num):
-            d_name = get_dose_name(i)
-            if d_name not in all_dates:
-                missing_doses.append(d_name)
-                
-        if missing_doses:
-            reason = f"We are missing records for: {', '.join(missing_doses)}. Please provide the dates."
-            return {"is_valid": False, "ask_manual_dates": missing_doses, "reason": reason}
+    # 3. Repeat Vaccination Validation
+    if is_completed_series and target_num == 1:
+        if not vaccine.allow_repeat_series:
+            return {"is_valid": False, "reason": f"You have already completed the {vaccine.name} series. This vaccine cannot be repeated."}
+        elif vaccine.repeat_interval_days is not None:
+            eligible_date = highest_comp['date'] + timedelta(days=vaccine.repeat_interval_days)
+            if req_date < eligible_date:
+                return {"is_valid": False, "reason": f"This vaccine may only be repeated after {eligible_date.strftime('%Y-%m-%d')}."}
 
-    # --- REPEAT VACCINATION VALIDATION ---
-    if is_completed_series:
-        if target_num == vaccine.total_doses + 1 and vaccine.has_booster and highest_comp['num'] == vaccine.total_doses:
-            pass # Booking a Booster immediately after primary series is valid
-        elif target_num == 1: 
-            if not vaccine.allow_repeat_series:
-                reason = f"You have already completed the {vaccine.type} vaccine series. This vaccine cannot be repeated."
-                logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Rejected: {req.ic} already completed {vaccine.type}.")
-                return {"is_valid": False, "reason": reason}
-            else:
-                if vaccine.repeat_interval_days is not None:
-                    eligible_date = highest_comp['date'] + timedelta(days=vaccine.repeat_interval_days)
-                    if req_date < eligible_date:
-                        reason = f"You have recently completed the {vaccine.type} series. To ensure your safety, this vaccine may only be repeated after {eligible_date.strftime('%Y-%m-%d')}."
-                        logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Rejected: Repeat interval not met for {vaccine.type}.")
-                        return {"is_valid": False, "reason": reason}
-        else:
-            msg = f"You have already completed this series. If you are starting a new series, you should begin with {get_dose_name(1)}."
-            return {"is_valid": True, "corrected_dose": get_dose_name(1), "message": msg}
-
-    # --- ACTIVE DUPLICATE BOOKING CHECK ---
+    # 4. Existing Scheduled Dose Check
     for sched in scheduled_doses:
         if sched['num'] == target_num:
-            reason = f"You already have an active booking for {vaccine.type} {sched['name']} on {sched['date'].strftime('%Y-%m-%d')}."
-            return {"is_valid": False, "reason": reason}
+            return {"is_valid": False, "reason": f"You already have a booking for {vaccine.name} {sched['name']} on {sched['date'].strftime('%Y-%m-%d')}."}
 
-    # --- NEW: COMPLETED DUPLICATE DOSE CHECK ---
-    # Only block completed duplicates if we aren't legitimately starting a new permitted repeat series
-    is_valid_repeat_start = is_completed_series and target_num == 1 and vaccine.allow_repeat_series
-    
-    if not is_valid_repeat_start:
-        for comp in completed_doses:
-            if comp['num'] == target_num:
-                reason = f"You have already completed {vaccine.type} {comp['name']} on {comp['date'].strftime('%Y-%m-%d')}."
-                return {"is_valid": False, "reason": reason}
-
-    # --- AUTO-CORRECT MISMATCHED SEQUENCE ---
-    next_req_num = highest_overall['num'] + 1 if highest_overall else 1
-    if target_num > next_req_num:
-        msg = f"You have not completed or scheduled {get_dose_name(next_req_num)}. You should continue with {get_dose_name(next_req_num)}."
-        return {"is_valid": True, "corrected_dose": get_dose_name(next_req_num), "message": msg}
-
-    # --- INTERRUPTED SERIES & INTERVAL MIN-DATE VALIDATION ---
+    # 5. Interrupted Vaccine Validation
     min_allowed_date_str = None
-    if highest_comp:
+    if highest_comp and target_num > 1:
         if vaccine.restart_if_interrupted and vaccine.interruption_restart_days is not None:
             max_allowed_date = highest_comp['date'] + timedelta(days=vaccine.interruption_restart_days)
             if req_date > max_allowed_date:
-                reason = f"Your previous {vaccine.type} vaccine series has expired because it exceeded the {vaccine.interruption_restart_days}-day limit. You must restart the series."
-                return {"is_valid": False, "reason": reason}
+                return {"is_valid": False, "reason": "Your previous vaccine series has expired and must be restarted. Please select Dose 1 instead."}
 
         schedules = {s.dose_number: s.interval_days for s in db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id).all()}
         interval_days = schedules.get(target_num)
@@ -3274,65 +3246,78 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
                 min_allowed_date = all_dates[prev_name] + timedelta(days=interval_days)
                 min_allowed_date_str = min_allowed_date.strftime('%Y-%m-%d')
                 if req_date < min_allowed_date:
-                    reason = f"Based on dependency rules, {get_dose_name(target_num)} must be at least {interval_days} days after {prev_name}. Earliest allowed date: {min_allowed_date_str}."
-                    return {"is_valid": False, "reason": reason, "min_allowed_date": min_allowed_date_str}
+                    return {"is_valid": False, "reason": f"Based on dependency rules, {target_name} must be at least {interval_days} days after {prev_name}. Earliest allowed date: {min_allowed_date_str}."}
 
-    logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Accepted: Sequence requirements met for {req.target_dose}")
-    return {"is_valid": True, "min_allowed_date": min_allowed_date_str}
+    return {"is_valid": True, "target_dose": target_name, "min_allowed_date": min_allowed_date_str}
 
 @app.get("/patients/{ic}/next-vaccine-dose/{vaccine_name}")
 def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_db)):
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == vaccine_name).first()
-    if not vaccine: return {"next_dose": "Single Dose"}
+    if not vaccine: return {"next_dose": "Single Dose", "is_brand_switch": False}
 
-    # Group vaccines by TYPE to catch combinations like Twinrix / Engerix-B
-    same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == vaccine.type).all()]
+    # Fetch all vaccines of the SAME TYPE to check for brand switching
+    same_type_vaccines = db.query(models.Vaccine).filter(models.Vaccine.type == vaccine.type).all()
+    same_type_ids = [v.id for v in same_type_vaccines]
 
     # Fetch valid clinic history (ignoring canceled and no-shows)
-    past_stages = db.query(models.ApptStage.stage_name)\
-        .join(models.Appointment).join(models.Patient).join(models.AppointmentVaccine)\
+    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.status, models.AppointmentVaccine.vaccine_id)\
+        .select_from(models.ApptStage)\
+        .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
+        .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
+        .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
         .filter(
-            models.Patient.ic_passport_number == ic,
-            models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
-            models.ApptStage.status.notin_(['canceled', 'no-show'])
+            models.Patient.ic_passport_number == ic, 
+            models.AppointmentVaccine.vaccine_id.in_(same_type_ids)
         ).all()
+        
+    external_records = db.query(models.ExternalVaccineRecord)\
+        .filter(models.ExternalVaccineRecord.patient_ic == ic, models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)).all()
 
-    # Fetch external history
-    external_records = db.query(models.ExternalVaccineRecord).filter(
-        models.ExternalVaccineRecord.patient_ic == ic,
-        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
-    ).all()
-
-    def get_dose_num(name):
+    def get_dose_num(name, total_doses):
         if not name: return 0
         name = name.lower()
         if 'single' in name: return 1
-        if 'booster' in name: return vaccine.total_doses + 1
+        if 'booster' in name: return total_doses + 1
         if 'dose ' in name:
             try: return int(name.split(" ")[1])
             except: return 0
         return 0
 
-    max_num = 0
-    for s in past_stages:
-        num = get_dose_num(s[0])
-        if num > max_num: max_num = num
-    for e in external_records:
-        num = get_dose_num(e.dose_name)
-        if num > max_num: max_num = num
-
-    # Determine the mathematically correct next dose
-    next_num = max_num + 1
+    max_completed_num = 0
+    active_brand_id = None
     
-    # If they finished everything, default to Dose 1 for a repeat series
-    if next_num > vaccine.total_doses + (1 if vaccine.has_booster else 0):
-        next_num = 1 
+    # Analyze history to find highest completed dose and active brand
+    for s in past_stages:
+        stage_name, status, v_id = s
+        vac_ref = next((v for v in same_type_vaccines if v.id == v_id), vaccine)
+        num = get_dose_num(stage_name, vac_ref.total_doses)
+        
+        if status in ['completed', 'scheduled']:
+            if num > max_completed_num: 
+                max_completed_num = num
+                active_brand_id = v_id
+                
+    for e in external_records:
+        vac_ref = next((v for v in same_type_vaccines if v.id == e.vaccine_id), vaccine)
+        num = get_dose_num(e.dose_name, vac_ref.total_doses)
+        if num > max_completed_num: 
+            max_completed_num = num
+            active_brand_id = e.vaccine_id
 
-    if next_num == vaccine.total_doses + 1 and vaccine.has_booster:
-        next_dose = "Booster"
-    elif vaccine.total_doses == 1 and next_num == 1:
-        next_dose = "Single Dose"
-    else:
-        next_dose = f"Dose {next_num}"
+    # Strict Brand Continuation Check
+    is_brand_switch = False
+    active_brand_name = None
+    if active_brand_id and active_brand_id != vaccine.id:
+        active_vac = next((v for v in same_type_vaccines if v.id == active_brand_id), None)
+        if active_vac and max_completed_num < active_vac.total_doses:
+            is_brand_switch = True
+            active_brand_name = active_vac.name
 
-    return {"next_dose": next_dose}
+    next_num = max_completed_num + 1
+    if next_num > vaccine.total_doses + (1 if vaccine.has_booster else 0): next_num = 1 
+
+    if next_num == vaccine.total_doses + 1 and vaccine.has_booster: next_dose = "Booster"
+    elif vaccine.total_doses == 1 and next_num == 1: next_dose = "Single Dose"
+    else: next_dose = f"Dose {next_num}"
+
+    return {"next_dose": next_dose, "is_brand_switch": is_brand_switch, "active_brand": active_brand_name}
