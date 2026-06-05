@@ -816,7 +816,9 @@ export default function AdminDashboard() {
                             setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
                             setEditTime(""); // Clear the time to refresh 15/30 min intervals correctly
                         }} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          <option value="Consultation">Others</option><option value="Vaccine">Vaccine</option><option value="Blood Test">Blood Test</option>
+                          <option value="Others">Others</option>
+                          <option value="Vaccine">Vaccine</option>
+                          <option value="Blood Test">Blood Test</option>
                         </select>
                       </div>
                   </div>

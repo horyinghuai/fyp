@@ -1364,23 +1364,55 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         doc_ic = booking.details.get('assigned_doctor_id')
         if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
 
-        new_appt = models.Appointment(
-            patient_id=patient.id, 
-            doctor_ic=doc_ic, 
-            appt_type=mapped_appt_type, 
-            total_stages=total_stages, 
-            general_notes=booking.details.get('general_notes')  
-        )
-        db.add(new_appt)
-        db.flush() 
+        # Check if this is a subsequent dose and we need to append to an existing appointment
+        existing_appt_id = None
+        prev_stage_id = None
+        doc_ic = booking.details.get('assigned_doctor_id')
+        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
+        
+        if booking.service_type == 'Vaccine' and v_model and start_dose_num > 1:
+            same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == v_model.type).all()]
+            prev_dose_name = f"Dose {start_dose_num - 1}" if start_dose_num <= v_model.total_doses else (f"Dose {v_model.total_doses}" if v_model.total_doses > 1 else "Single Dose")
+            
+            prev_stage = db.query(models.ApptStage).join(models.Appointment).join(models.AppointmentVaccine).filter(
+                models.Appointment.patient_id == patient.id,
+                models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
+                models.ApptStage.stage_name == prev_dose_name,
+                models.ApptStage.status.notin_(['canceled', 'no-show'])
+            ).order_by(models.ApptStage.scheduled_time.desc()).first()
+            
+            if prev_stage:
+                existing_appt_id = prev_stage.appointment_id
+                prev_stage_id = prev_stage.id
+                
+        if existing_appt_id:
+            # Re-use existing appointment parent
+            new_appt = db.query(models.Appointment).filter_by(id=existing_appt_id).first()
+            new_appt.appt_type = 'multi-stage'
+            new_appt.total_stages = max(new_appt.total_stages, start_dose_num)
+            db.flush()
+        else:
+            # Create brand new parent
+            new_appt = models.Appointment(
+                patient_id=patient.id, doctor_ic=doc_ic, appt_type=mapped_appt_type, 
+                total_stages=total_stages, general_notes=booking.details.get('general_notes')  
+            )
+            db.add(new_appt)
+            db.flush() 
+            
+            # Only create junction row if it's a completely new appointment parent
+            if booking.service_type == 'Vaccine' and items_list and v_model:
+                db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+            elif booking.service_type == 'Blood Test' and items_list:
+                for t_name in items_list:
+                    bt = db.query(models.BloodTest).filter_by(name=t_name).first()
+                    if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
         
         start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
         
         if mapped_appt_type == 'multi-stage' and v_model:
-            db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
             schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
             current_calc_time = start_time
-            prev_stage_id = None
             
             for i in range(start_dose_num, v_model.total_doses + 1):
                 stage_name = f"Dose {i}"
@@ -1391,11 +1423,8 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     
                 if current_calc_time:
                     stage = models.ApptStage(
-                        appointment_id=new_appt.id, 
-                        stage_name=stage_name, 
-                        scheduled_time=current_calc_time, 
-                        depends_on_stage_id=prev_stage_id, 
-                        status="scheduled"
+                        appointment_id=new_appt.id, stage_name=stage_name, 
+                        scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status="scheduled"
                     )
                     db.add(stage)
                     db.flush()
@@ -3111,11 +3140,9 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
         all_dates[stage_name] = dt
         d_num = get_dose_num(stage_name)
         if d_num == 0: continue
-        
         if status == 'completed': completed_doses.append({"num": d_num, "date": dt, "name": stage_name})
         elif status == 'scheduled': scheduled_doses.append({"num": d_num, "date": dt, "name": stage_name})
 
-    # Add manual dates entered by the user
     for d_name, d_str in req.manual_dates.items():
         try: 
             dt = datetime.strptime(d_str, "%Y-%m-%d").date()
@@ -3160,7 +3187,7 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
                 if vaccine.repeat_interval_days is not None:
                     eligible_date = highest_comp['date'] + timedelta(days=vaccine.repeat_interval_days)
                     if req_date < eligible_date:
-                        reason = f"You have recently completed the {vaccine.type} series. To ensure your safety and follow medical guidelines, this vaccine may only be repeated after {eligible_date.strftime('%Y-%m-%d')}."
+                        reason = f"You have recently completed the {vaccine.type} series. To ensure your safety, this vaccine may only be repeated after {eligible_date.strftime('%Y-%m-%d')}."
                         logging_agent(db, req.clinic_id, "Vaccine Agent Validation", f"Rejected: Repeat interval not met for {vaccine.type}.")
                         return {"is_valid": False, "reason": reason}
         else:
@@ -3184,7 +3211,7 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
         if vaccine.restart_if_interrupted and vaccine.interruption_restart_days is not None:
             max_allowed_date = highest_comp['date'] + timedelta(days=vaccine.interruption_restart_days)
             if req_date > max_allowed_date:
-                reason = f"Your previous {vaccine.type} vaccine series has expired and must be restarted."
+                reason = f"Your previous {vaccine.type} vaccine series has expired because it exceeded the {vaccine.interruption_restart_days}-day limit. You must restart the series."
                 return {"is_valid": False, "reason": reason}
 
         schedules = {s.dose_number: s.interval_days for s in db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id).all()}
