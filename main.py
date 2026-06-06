@@ -3473,72 +3473,179 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
 @app.get("/patients/{ic}/next-vaccine-dose/{vaccine_name}")
 def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_db)):
-    vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == vaccine_name).first()
-    if not vaccine: return {"next_dose": "Single Dose", "is_brand_switch": False}
+    from datetime import datetime, timedelta
 
-    # Fetch all vaccines of the SAME TYPE to check for brand switching
+    vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == vaccine_name).first()
+    if not vaccine:
+        return {"next_dose": "Single Dose", "is_brand_switch": False, "active_brand": None,
+                "no_history": True, "all_dose_options": ["Single Dose"],
+                "type_disabled": False, "disable_reason": None}
+
     same_type_vaccines = db.query(models.Vaccine).filter(models.Vaccine.type == vaccine.type).all()
     same_type_ids = [v.id for v in same_type_vaccines]
 
-    # Fetch valid clinic history (ignoring canceled and no-shows)
-    past_stages = db.query(models.ApptStage.stage_name, models.ApptStage.status, models.AppointmentVaccine.vaccine_id)\
-        .select_from(models.ApptStage)\
-        .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
-        .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
-        .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
-        .filter(
-            models.Patient.ic_passport_number == ic, 
-            models.AppointmentVaccine.vaccine_id.in_(same_type_ids)
-        ).all()
-        
-    external_records = db.query(models.ExternalVaccineRecord)\
-        .filter(models.ExternalVaccineRecord.patient_ic == ic, models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)).all()
-
     def get_dose_num(name, total_doses):
         if not name: return 0
-        name = name.lower()
-        if 'single' in name: return 1
-        if 'booster' in name: return total_doses + 1
-        if 'dose ' in name:
-            try: return int(name.split(" ")[1])
+        n = name.lower()
+        if 'single' in n: return 1
+        if 'booster' in n: return total_doses + 1
+        if 'dose ' in n:
+            try: return int(n.split(" ")[1])
             except: return 0
         return 0
 
-    max_completed_num = 0
-    active_brand_id = None
-    
-    # Analyze history to find highest completed dose and active brand
-    for s in past_stages:
-        stage_name, status, v_id = s
+    def all_dose_options_for(vac):
+        opts = []
+        if vac.total_doses == 1:
+            opts.append("Single Dose")
+        else:
+            for i in range(1, vac.total_doses + 1):
+                opts.append(f"Dose {i}")
+        if vac.has_booster:
+            opts.append("Booster")
+        return opts
+
+    # Fetch ALL clinic history (including no-show/cancelled) for full analysis
+    rows = db.query(
+        models.ApptStage.stage_name, models.ApptStage.status,
+        models.ApptStage.scheduled_time, models.AppointmentVaccine.vaccine_id
+    ).select_from(models.ApptStage)\
+     .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
+     .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
+     .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
+     .filter(
+         models.Patient.ic_passport_number == ic,
+         models.AppointmentVaccine.vaccine_id.in_(same_type_ids)
+     ).order_by(models.ApptStage.scheduled_time.asc()).all()
+
+    external_records = db.query(models.ExternalVaccineRecord).filter(
+        models.ExternalVaccineRecord.patient_ic == ic,
+        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
+    ).all()
+
+    # Build dose_map: dose_num -> most recent {status, date, vaccine_id}
+    dose_map: dict = {}
+    for stage_name, status, stime, v_id in rows:
         vac_ref = next((v for v in same_type_vaccines if v.id == v_id), vaccine)
         num = get_dose_num(stage_name, vac_ref.total_doses)
-        
-        if status in ['completed', 'scheduled']:
-            if num > max_completed_num: 
-                max_completed_num = num
-                active_brand_id = v_id
-                
-    for e in external_records:
-        vac_ref = next((v for v in same_type_vaccines if v.id == e.vaccine_id), vaccine)
-        num = get_dose_num(e.dose_name, vac_ref.total_doses)
-        if num > max_completed_num: 
-            max_completed_num = num
-            active_brand_id = e.vaccine_id
+        if num <= 0: continue
+        existing = dose_map.get(num)
+        if existing is None or (stime and existing['date'] and stime > existing['date']):
+            dose_map[num] = {'status': status, 'date': stime, 'vaccine_id': v_id}
 
-    # Strict Brand Continuation Check
-    is_brand_switch = False
-    active_brand_name = None
+    # External records fill in gaps only (do not overwrite clinic records)
+    for ext in external_records:
+        vac_ref = next((v for v in same_type_vaccines if v.id == ext.vaccine_id), vaccine)
+        num = get_dose_num(ext.dose_name, vac_ref.total_doses)
+        if num > 0 and num not in dose_map:
+            dose_map[num] = {'status': 'completed', 'date': ext.date_taken, 'vaccine_id': ext.vaccine_id}
+
+    # --- Brand switch check ---
+    active_brand_id = None
+    highest_valid_num = 0
+    for num, info in dose_map.items():
+        if info['status'] in ['completed', 'scheduled'] and num > highest_valid_num:
+            highest_valid_num = num
+            active_brand_id = info['vaccine_id']
+
     if active_brand_id and active_brand_id != vaccine.id:
         active_vac = next((v for v in same_type_vaccines if v.id == active_brand_id), None)
-        if active_vac and max_completed_num < active_vac.total_doses:
-            is_brand_switch = True
-            active_brand_name = active_vac.name
+        if active_vac and highest_valid_num < active_vac.total_doses:
+            return {"next_dose": None, "is_brand_switch": True, "active_brand": active_vac.name,
+                    "no_history": False, "all_dose_options": [],
+                    "type_disabled": False, "disable_reason": None}
 
-    next_num = max_completed_num + 1
-    if next_num > vaccine.total_doses + (1 if vaccine.has_booster else 0): next_num = 1 
+    # --- No history at all ---
+    if not dose_map:
+        return {"next_dose": ("Dose 1" if vaccine.total_doses > 1 else "Single Dose"),
+                "is_brand_switch": False, "active_brand": None,
+                "no_history": True, "all_dose_options": all_dose_options_for(vaccine),
+                "type_disabled": False, "disable_reason": None}
 
-    if next_num == vaccine.total_doses + 1 and vaccine.has_booster: next_dose = "Booster"
-    elif vaccine.total_doses == 1 and next_num == 1: next_dose = "Single Dose"
-    else: next_dose = f"Dose {next_num}"
+    # --- Full series completion check ---
+    all_required_nums = list(range(1, vaccine.total_doses + 1))
+    if vaccine.has_booster:
+        all_required_nums.append(vaccine.total_doses + 1)
+    completed_set = {n for n, info in dose_map.items() if info['status'] in ['completed', 'scheduled']}
+    full_series_done = all(n in completed_set for n in all_required_nums)
 
-    return {"next_dose": next_dose, "is_brand_switch": is_brand_switch, "active_brand": active_brand_name}
+    if full_series_done:
+        if not vaccine.allow_repeat_series:
+            return {"next_dose": None, "is_brand_switch": False, "active_brand": None,
+                    "no_history": False, "all_dose_options": [],
+                    "type_disabled": True,
+                    "disable_reason": "This vaccine series can only be taken once."}
+
+        # allow_repeat_series=True: check repeat_interval_days
+        last_dose_num = max(all_required_nums)
+        last_info = dose_map.get(last_dose_num)
+        last_date = None
+        if last_info and last_info['date']:
+            d = last_info['date']
+            last_date = d.date() if isinstance(d, datetime) else d
+
+        if vaccine.repeat_interval_days and last_date:
+            repeat_from = last_date + timedelta(days=vaccine.repeat_interval_days)
+            if datetime.now().date() < repeat_from:
+                return {"next_dose": None, "is_brand_switch": False, "active_brand": None,
+                        "no_history": False, "all_dose_options": [],
+                        "type_disabled": True,
+                        "disable_reason": f"Repeat series available from {repeat_from.strftime('%d %b %Y')}."}
+
+        # Repeat allowed and interval passed → fresh series
+        return {"next_dose": ("Dose 1" if vaccine.total_doses > 1 else "Single Dose"),
+                "is_brand_switch": False, "active_brand": None,
+                "no_history": True, "all_dose_options": all_dose_options_for(vaccine),
+                "type_disabled": False, "disable_reason": None}
+
+    # --- Incomplete series: handle no-show/cancelled latest dose ---
+    highest_completed_num = 0
+    last_completed_date = None
+    for num in sorted(dose_map.keys(), reverse=True):
+        info = dose_map[num]
+        if info['status'] == 'completed':
+            highest_completed_num = num
+            last_completed_date = info['date']
+            break
+
+    highest_interrupted_num = 0
+    for num in sorted(dose_map.keys(), reverse=True):
+        if dose_map[num]['status'] in ['no-show', 'canceled']:
+            highest_interrupted_num = num
+            break
+
+    if highest_interrupted_num > highest_completed_num:
+        # Latest dose was missed — check interruption restart condition
+        should_restart = False
+        if vaccine.restart_if_interrupted and vaccine.interruption_restart_days and last_completed_date:
+            lcd = last_completed_date.date() if isinstance(last_completed_date, datetime) else last_completed_date
+            if datetime.now().date() > lcd + timedelta(days=vaccine.interruption_restart_days):
+                should_restart = True
+
+        next_num = 1 if should_restart else highest_interrupted_num
+        if next_num == vaccine.total_doses + 1 and vaccine.has_booster:
+            next_dose = "Booster"
+        elif vaccine.total_doses == 1:
+            next_dose = "Single Dose"
+        else:
+            next_dose = f"Dose {next_num}"
+
+        return {"next_dose": next_dose, "is_brand_switch": False, "active_brand": None,
+                "no_history": False, "all_dose_options": [],
+                "type_disabled": False, "disable_reason": None}
+
+    # --- Normal continuation: next dose after highest valid ---
+    next_num = highest_valid_num + 1
+    max_possible = vaccine.total_doses + (1 if vaccine.has_booster else 0)
+    if next_num > max_possible: next_num = 1  # safety fallback
+
+    if next_num == vaccine.total_doses + 1 and vaccine.has_booster:
+        next_dose = "Booster"
+    elif vaccine.total_doses == 1 and next_num == 1:
+        next_dose = "Single Dose"
+    else:
+        next_dose = f"Dose {next_num}"
+
+    return {"next_dose": next_dose, "is_brand_switch": False, "active_brand": None,
+            "no_history": False, "all_dose_options": [],
+            "type_disabled": False, "disable_reason": None}

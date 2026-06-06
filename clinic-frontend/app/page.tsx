@@ -48,6 +48,8 @@ export default function AdminDashboard() {
 
   const [minDate, setMinDate] = useState(moment().format("YYYY-MM-DD"));
   const [manualDates, setManualDates] = useState<Record<string, string>>({});
+  const [vaccineNoHistory, setVaccineNoHistory] = useState(false);
+  const [allDoseOptions, setAllDoseOptions] = useState<string[]>([]);
 
   const [editForm, setEditForm] = useState({
     status: 'scheduled', doctor_ic: '', patient_ic: '',
@@ -557,7 +559,9 @@ export default function AdminDashboard() {
   const openNewBookingModal = () => {
     setEditDate(moment().format("YYYY-MM-DD"));
     setMinDate(moment().format("YYYY-MM-DD")); 
-    setManualDates({});                       
+    setManualDates({});
+    setVaccineNoHistory(false);
+    setAllDoseOptions([]);
     setEditTime(""); 
     setEditForm({
       status: 'scheduled',
@@ -907,7 +911,15 @@ export default function AdminDashboard() {
                                     disabled={!isNewBooking && editForm.service === "Vaccine"}
                                     onChange={async e => {
                                         const val = e.target.value;
+                                        setVaccineNoHistory(false);
+                                        setAllDoseOptions([]);
+                                        setManualDates({});
                                         setEditForm(prev => ({...prev, items: [val], dose: 'Calculating...'}));
+
+                                        if (!val) {
+                                            setEditForm(prev => ({...prev, items: [], dose: ''}));
+                                            return;
+                                        }
 
                                         let tempIc = editForm.patient_ic;
                                         if (isNewBooking && isCreatingNewPatient) {
@@ -916,7 +928,7 @@ export default function AdminDashboard() {
                                                 tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
                                             } else { tempIc = rawIc; }
                                         }
-                                        
+
                                         if (val && tempIc) {
                                             try {
                                                 const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}`);
@@ -925,13 +937,25 @@ export default function AdminDashboard() {
                                                     if (data.is_brand_switch) {
                                                         alert(`⚠️ Brand Switch Detected:\nYou started a cycle with ${data.active_brand}. You must complete that cycle before switching to ${val}.`);
                                                         setEditForm(prev => ({...prev, items: [], dose: ''}));
+                                                    } else if (data.type_disabled) {
+                                                        // Full series done and repeat not allowed / interval not passed
+                                                        alert(`🚫 ${val} is not available for this patient.\n${data.disable_reason}`);
+                                                        setEditForm(prev => ({...prev, items: [], dose: ''}));
+                                                    } else if (data.no_history) {
+                                                        // No prior doses — let staff pick any dose
+                                                        setVaccineNoHistory(true);
+                                                        setAllDoseOptions(data.all_dose_options || []);
+                                                        const firstDose = (data.all_dose_options || [])[0] || data.next_dose || 'Dose 1';
+                                                        setEditForm(prev => ({...prev, items: [val], dose: firstDose}));
                                                     } else if (data.next_dose) {
+                                                        // History exists — auto-determine dose
+                                                        setVaccineNoHistory(false);
                                                         setEditForm(prev => ({...prev, items: [val], dose: data.next_dose}));
                                                     }
                                                 }
                                             } catch (err) { console.error(err); }
                                         }
-                                    }} 
+                                    }}
                                     className="w-full p-2 border rounded-lg bg-white outline-none disabled:bg-slate-100 disabled:text-slate-500"
                                 >
                                   <option value="">Select Vaccine</option>
@@ -943,8 +967,62 @@ export default function AdminDashboard() {
                                 </select>
                               </div>
                               <div>
-                                <label className="block text-xs font-bold text-slate-500 mb-1">Dose Sequence (Auto-Determined)</label>
-                                <input type="text" value={editForm.dose} disabled className="w-full p-2 border rounded-lg bg-slate-100 outline-none text-slate-500 font-bold" />
+                                <label className="block text-xs font-bold text-slate-500 mb-1">
+                                  {vaccineNoHistory && isNewBooking ? 'Dose Sequence (Select)' : 'Dose Sequence (Auto-Determined)'}
+                                </label>
+                                {vaccineNoHistory && isNewBooking ? (
+                                  <select
+                                    value={editForm.dose}
+                                    onChange={async e => {
+                                      const selectedDose = e.target.value;
+                                      setEditForm(prev => ({...prev, dose: selectedDose}));
+
+                                      // Collect missing prior dose dates for external_vaccine_record
+                                      const getDoseNum = (name: string) => {
+                                        if (name === 'Single Dose') return 1;
+                                        if (name === 'Booster') return 999;
+                                        const m = name.match(/Dose (\d+)/);
+                                        return m ? parseInt(m[1]) : 0;
+                                      };
+                                      const selectedNum = getDoseNum(selectedDose);
+                                      if (selectedNum > 1 && selectedNum !== 999) {
+                                        // Ask for all prior doses that are not Booster
+                                        const newManualDates: Record<string, string> = {};
+                                        for (let i = 1; i < selectedNum; i++) {
+                                          const priorDoseName = allDoseOptions[i - 1] || `Dose ${i}`;
+                                          let validDate = false;
+                                          while (!validDate) {
+                                            const entered = window.prompt(
+                                              `Patient has no recorded history.\nPlease enter the date for ${priorDoseName} taken at another clinic (YYYY-MM-DD):`
+                                            );
+                                            if (entered === null) {
+                                              // User cancelled — revert to first dose
+                                              setEditForm(prev => ({...prev, dose: allDoseOptions[0] || 'Dose 1'}));
+                                              return;
+                                            }
+                                            if (/^\d{4}-\d{2}-\d{2}$/.test(entered)) {
+                                              newManualDates[priorDoseName] = entered;
+                                              validDate = true;
+                                            } else {
+                                              alert('❌ Invalid date format. Please use YYYY-MM-DD.');
+                                            }
+                                          }
+                                        }
+                                        setManualDates(prev => ({...prev, ...newManualDates}));
+                                      } else {
+                                        // First dose selected — clear any previously entered manual dates
+                                        setManualDates({});
+                                      }
+                                    }}
+                                    className="w-full p-2 border rounded-lg bg-white outline-none font-bold text-blue-700"
+                                  >
+                                    {allDoseOptions.map(opt => (
+                                      <option key={opt} value={opt}>{opt}</option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input type="text" value={editForm.dose} disabled className="w-full p-2 border rounded-lg bg-slate-100 outline-none text-slate-500 font-bold" />
+                                )}
                               </div>
                             </div>
                           )}
