@@ -1428,13 +1428,31 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
+                    # --- SCHEDULING AGENT: Ensure further doses land on valid, open days ---
+                    target_dt = current_calc_time.date()
+                    for offset in range(30): # Scan up to 30 days ahead for an open slot
+                        search_dt = target_dt + timedelta(days=offset)
+                        
+                        # FIX: Use 3-letter day name ('mon', 'tue', etc.)
+                        day_str = search_dt.strftime("%a").lower() 
+                        
+                        # FIX: Use DoctorClinicAvailability
+                        oh = db.query(models.DoctorClinicAvailability).filter_by(clinic_id=new_appt.clinic_id, day_of_week=day_str).first()
+                        if oh:
+                            try: 
+                                # FIX: oh.start_time is already a time object in SQLAlchemy
+                                current_calc_time = datetime.combine(search_dt, oh.start_time)
+                                break # Found an open, valid day
+                            except Exception as e: 
+                                pass
+                            
                     stage = models.ApptStage(
                         appointment_id=new_appt.id, stage_name=stage_name, 
                         scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status="scheduled"
                     )
                     db.add(stage)
                     db.flush()
-                    prev_stage_id = stage.id 
+                    prev_stage_id = stage.id
                 
             if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
                 if start_dose_num == v_model.total_doses + 1:
@@ -3104,6 +3122,101 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
         "reasoning": "Recommended for faster availability.",
         "alternative_slots": alts
     }
+
+class SchedContextReq(BaseModel):
+    clinic_id: str
+    service_type: str
+    vaccine_name: Optional[str] = None
+    target_dose: Optional[str] = None
+    ic: Optional[str] = None
+
+@app.post("/scheduling-agent/context")
+def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    min_allowed_date = datetime.now().date()
+    
+    # --- VACCINE AGENT INTERVAL CHECK ---
+    if req.service_type == "Vaccine" and req.vaccine_name and req.target_dose and req.ic:
+        vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
+        if vaccine:
+            same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == vaccine.type).all()]
+            past_stages = db.query(models.ApptStage.scheduled_time)\
+                .select_from(models.ApptStage)\
+                .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
+                .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
+                .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
+                .filter(
+                    models.Patient.ic_passport_number == req.ic,
+                    models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
+                    models.ApptStage.status.notin_(['canceled', 'no-show'])
+                ).order_by(models.ApptStage.scheduled_time.desc()).all()
+            
+            if past_stages:
+                last_time = past_stages[0][0]
+                last_date = last_time.date() if isinstance(last_time, datetime) else last_time
+                if isinstance(last_date, str):
+                    try: last_date = datetime.strptime(last_date[:10], "%Y-%m-%d").date()
+                    except: pass
+                
+                try:
+                    target_num = int(req.target_dose.lower().replace("dose ", ""))
+                    sched = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id, dose_number=target_num).first()
+                    if sched and sched.interval_days:
+                        min_allowed_date = last_date + timedelta(days=sched.interval_days)
+                except: pass
+
+    # --- SCHEDULING AGENT: DOCTOR RATING ---
+    docs = db.query(models.ClinicStaff).filter_by(clinic_id=req.clinic_id, role="doctor").all()
+    doc_stats = []
+    for d in docs:
+        # FIX: Join Patient to get clinic_id, and query ApptStage for status
+        count = db.query(models.ApptStage)\
+            .join(models.Appointment)\
+            .join(models.Patient)\
+            .filter(
+                models.Appointment.doctor_ic == d.ic_passport_number,
+                models.Patient.clinic_id == req.clinic_id,
+                models.ApptStage.status.notin_(['canceled', 'no-show'])
+            ).count()
+        doc_stats.append({"ic": d.ic_passport_number, "name": d.name, "count": count})
+        
+    doc_stats.sort(key=lambda x: x["count"])
+    doc_res = [{"ic": "", "name": "Any Doctor", "label": "⭐⭐⭐"}]
+    for idx, d in enumerate(doc_stats):
+        stars = "⭐⭐⭐" if idx == 0 else ("⭐⭐" if idx == 1 else "⭐")
+        doc_res.append({"ic": d["ic"], "name": f"Dr. {d['name']}", "label": stars})
+        
+    # --- SCHEDULING AGENT: DATE WORKLOAD (Next 30 Days) ---
+    dates_res = []
+    for i in range(30):
+        dt_val = datetime.now().date() + timedelta(days=i)
+        dt_str = dt_val.strftime("%Y-%m-%d")
+        
+        day_name = dt_val.strftime('%a').lower()
+        oh = db.query(models.DoctorClinicAvailability).filter_by(clinic_id=req.clinic_id, day_of_week=day_name).first()
+        
+        if not oh or dt_val < min_allowed_date:
+            dates_res.append({"date": dt_str, "status": "Grey", "disabled": True})
+            continue
+            
+        # FIX: Join Patient to get clinic_id safely
+        appt_count = db.query(models.ApptStage)\
+            .join(models.Appointment)\
+            .join(models.Patient)\
+            .filter(
+                models.Patient.clinic_id == req.clinic_id,
+                func.date(models.ApptStage.scheduled_time) == dt_val,
+                models.ApptStage.status.notin_(['canceled', 'no-show'])
+            ).count()
+        
+        capacity = 32
+        if appt_count >= capacity * 0.8: status = "Red"
+        elif appt_count >= capacity * 0.4: status = "Yellow"
+        else: status = "Green"
+        
+        dates_res.append({"date": dt_str, "status": status, "disabled": False})
+        
+    return {"doctors": doc_res, "dates": dates_res}
 
 @app.post("/check-vaccine-history")
 def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get_db)):

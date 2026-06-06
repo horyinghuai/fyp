@@ -42,6 +42,9 @@ export default function AdminDashboard() {
   const [editDate, setEditDate] = useState("");
   const [editTime, setEditTime] = useState("");
 
+  const [agentContext, setAgentContext] = useState<any>(null);
+  const [aiRec, setAiRec] = useState<any>(null);
+
   const [minDate, setMinDate] = useState(moment().format("YYYY-MM-DD"));
   const [manualDates, setManualDates] = useState<Record<string, string>>({});
 
@@ -96,6 +99,37 @@ export default function AdminDashboard() {
     }, 15000); 
     return () => clearInterval(interval);
   }, [events, pendingReviewEvent]);
+
+  useEffect(() => {
+      if (isNewBooking && editForm.patient_ic && editForm.service) {
+          if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
+          
+          fetch(`http://127.0.0.1:8000/scheduling-agent/context`, {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                  clinic_id: activeClinicId, ic: editForm.patient_ic, 
+                  service_type: editForm.service, 
+                  vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
+                  target_dose: editForm.dose
+              })
+          }).then(r => r.json()).then(data => setAgentContext(data)).catch(console.error);
+
+          fetch(`http://127.0.0.1:8000/recommend-slots`, {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                  clinic_id: activeClinicId, base_date: moment().format("YYYY-MM-DD"),
+                  doctor_pref: editForm.doctor_ic || 'ANY', duration: editForm.service === 'Vaccine' ? 15 : 30,
+                  service_type: editForm.service,
+                  vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
+                  dose: editForm.dose, ic: editForm.patient_ic
+              })
+          }).then(r => r.json()).then(data => {
+              if (!data.error) setAiRec(data);
+          }).catch(console.error);
+      } else {
+          setAgentContext(null); setAiRec(null);
+      }
+  }, [isNewBooking, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic]);
 
   const loadDoctors = async (cid: string) => {
       try {
@@ -823,37 +857,105 @@ export default function AdminDashboard() {
               {isEditingEvent ? (
                 <div className="space-y-4 border-t pt-4">
                   <div className="grid grid-cols-3 gap-4">
-                      <div>
+                      <div className="col-span-2">
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Date</label>
-                        <input type="date" min={minDate} value={editDate} onChange={(e) => {
-                            setEditDate(e.target.value);
-                            setEditTime("");
-                            setEditForm(prev => ({...prev, doctor_ic: ''}));
-                        }} className="w-full p-2 border rounded-lg outline-none" />
+                        {isNewBooking && agentContext?.dates ? (
+                            <div className="flex overflow-x-auto gap-2 py-2 mb-2 pb-4 scrollbar-thin scrollbar-thumb-slate-300">
+                                {agentContext.dates.map((d: any, idx: number) => (
+                                    <button key={idx} type="button" disabled={d.disabled} onClick={() => { setEditDate(d.date); setEditTime(""); }} className={`min-w-[64px] p-2 rounded-xl flex flex-col items-center justify-center border transition-all ${d.disabled ? 'opacity-40 cursor-not-allowed bg-slate-100 border-slate-200' : 'cursor-pointer hover:bg-slate-50 border-slate-200'} ${editDate === d.date ? '!border-indigo-500 bg-indigo-50 ring-2 ring-indigo-200 shadow-sm' : ''}`}>
+                                        <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mb-1">{moment(d.date).format('ddd')}</span>
+                                        <span className="text-lg font-black text-slate-700">{moment(d.date).format('D')}</span>
+                                        <span className="text-[10px] text-slate-400 mb-1">{moment(d.date).format('MMM')}</span>
+                                        <span className={`mt-1 w-2.5 h-2.5 rounded-full shadow-inner ${d.disabled ? 'bg-slate-300' : d.status === 'Green' ? 'bg-emerald-400' : d.status === 'Yellow' ? 'bg-amber-400' : 'bg-rose-500'}`}></span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : (
+                            <input type="date" min={minDate} value={editDate} onChange={(e) => {
+                                setEditDate(e.target.value);
+                                setEditTime("");
+                            }} className="w-full p-2 border rounded-lg outline-none" />
+                        )}
                       </div>
+                      {editDate && (
+                          <div className="col-span-2">
+                              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Select Time</label>
+                              
+                              {/* --- AI RECOMMENDATION BOX --- */}
+                              {isNewBooking && aiRec && (
+                                  <div className="mb-4 bg-indigo-50 border border-indigo-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
+                                      <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+                                      <div className="flex items-center gap-2 mb-2">
+                                          <span className="bg-indigo-600 text-white text-[10px] px-2 py-0.5 rounded-full font-bold tracking-wide uppercase shadow-sm">AI Recommendation</span>
+                                          <span className="text-indigo-800 text-xs font-bold">Scheduling Agent</span>
+                                      </div>
+                                      <div className="text-sm text-indigo-900 mb-3">
+                                          <div className="font-semibold text-lg flex items-center gap-2">
+                                              Dr {aiRec.recommended_doctor} <span className="text-sm">⭐⭐⭐</span>
+                                          </div>
+                                          <div className="opacity-90">{moment(aiRec.raw_date).format("D MMMM YYYY")} at {aiRec.raw_time.substring(0,5)}</div>
+                                          <div className="mt-2 text-xs italic opacity-80 border-l-2 border-indigo-300 pl-2">"{aiRec.reasoning}"</div>
+                                      </div>
+                                      <button type="button" onClick={() => {
+                                          {/* Fixed: changed doctorsList to doctors */}
+                                          const docObj = doctors.find((d:any) => d.name === aiRec.recommended_doctor);
+                                          setEditForm(prev => ({...prev, doctor_ic: docObj ? docObj.ic_passport_number : ''}));
+                                          setEditDate(aiRec.raw_date);
+                                          setEditTime(aiRec.raw_time.substring(0,5));
+                                      }} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 rounded-lg transition-colors text-sm shadow-sm">
+                                          Use AI Recommendation
+                                      </button>
+                                  </div>
+                              )}
+
+                              {/* Fixed: Swapped timeOptions for availableTimes and fixed string mapping */}
+                              {availableTimes.length > 0 ? (
+                                  <div className="grid grid-cols-4 gap-2">
+                                      {availableTimes.map((t: string, idx: number) => {
+                                          let stars = "";
+                                          if (isNewBooking && aiRec) {
+                                              // Main recommendation uses raw_time
+                                              if (aiRec.raw_time && aiRec.raw_time.substring(0,5) === t.substring(0,5) && editDate === aiRec.raw_date) {
+                                                  stars = "⭐⭐⭐";
+                                              }
+                                              // FIX: Alternative slots use formatted_time, not raw_time
+                                              else if (aiRec.alternative_slots?.some((s:any) => s.formatted_time && s.formatted_time.substring(0,5) === t.substring(0,5) && s.date_str === editDate)) {
+                                                  stars = "⭐⭐";
+                                              }
+                                          }
+                                          return (
+                                              <button key={idx} type="button" onClick={() => setEditTime(t.substring(0, 5))}
+                                              className={`p-2 border rounded-lg text-sm transition-all flex flex-col items-center justify-center ${editTime === t.substring(0, 5) ? "bg-indigo-600 text-white border-indigo-600 shadow-md font-bold" : "bg-slate-50 text-slate-700 hover:bg-indigo-50 border-slate-200"}`}>
+                                                  <span>{t.substring(0, 5)}</span>
+                                                  {stars && <span className="text-[9px] mt-0.5 tracking-tighter">{stars}</span>}
+                                              </button>
+                                          )
+                                      })}
+                                  </div>
+                              ) : (
+                                  <div className="text-sm text-slate-500 italic p-4 bg-slate-50 rounded-lg text-center border border-dashed">No available slots for this date.</div>
+                              )}
+                          </div>
+                      )}
                       <div>
-                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Time</label>
-                        <select value={editTime} onChange={e => {
-                            const newTime = e.target.value;
-                            setEditTime(newTime);
-                            const docs = docsForTime[newTime] || [];
-                            // Automatically assign a free doctor for this slot if the current one is not valid
-                            if (docs.length > 0 && !docs.find(d => d.ic_passport_number === editForm.doctor_ic)) {
-                                setEditForm(prev => ({...prev, doctor_ic: docs[0].ic_passport_number}));
-                            } else if (docs.length === 0) {
-                                setEditForm(prev => ({...prev, doctor_ic: ''}));
-                            }
-                        }} className="w-full p-2 border rounded-lg outline-none bg-white">
-                            <option value="">Select Time</option>
-                            {availableTimes.length === 0 && editDate ? <option value="" disabled>No Slots</option> : 
-                             availableTimes.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assign Doctor</label>
-                        <select value={editForm.doctor_ic} onChange={(e) => setEditForm({...editForm, doctor_ic: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          {availableDocs.length === 0 ? <option value="">No Free Doctors</option> :
-                           availableDocs.map((d: any) => <option key={d.ic_passport_number} value={d.ic_passport_number}>{d.name}</option>)}
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assigned Doctor</label>
+                        <select value={editForm.doctor_ic} onChange={(e) => {
+                            setEditForm({...editForm, doctor_ic: e.target.value});
+                            setEditDate(""); setEditTime("");
+                        }} className="w-full p-2 border rounded-lg bg-white outline-none">
+                          {isNewBooking && agentContext?.doctors ? (
+                              agentContext.doctors.map((d: any) => (
+                                  <option key={d.ic} value={d.ic}>{d.name} {d.label}</option>
+                              ))
+                          ) : (
+                              <>
+                                <option value="">Any Available Doctor</option>
+                                {/* Fixed: changed doctorsList to doctors */}
+                                {doctors.map((doc: any) => (
+                                    <option key={doc.ic_passport_number} value={doc.ic_passport_number}>{doc.name}</option>
+                                ))}
+                              </>
+                          )}
                         </select>
                       </div>
                   </div>
