@@ -112,7 +112,13 @@ export default function AdminDashboard() {
                   vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
                   target_dose: editForm.dose
               })
-          }).then(r => r.json()).then(data => setAgentContext(data)).catch(console.error);
+          }).then(r => r.json()).then(data => {
+              setAgentContext(data);
+              // Auto-select the top recommended doctor if field is empty or "ANY"
+              if (data.doctors && data.doctors.length > 0 && (!editForm.doctor_ic || editForm.doctor_ic === 'ANY')) {
+                  setEditForm(prev => ({...prev, doctor_ic: data.doctors[0].ic}));
+              }
+          }).catch(console.error);
 
           fetch(`http://127.0.0.1:8000/recommend-slots`, {
               method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -784,7 +790,8 @@ export default function AdminDashboard() {
             </div>
 
             <div className="p-6 space-y-4">
-              <div>
+              {/* --- 1. PATIENT SELECTION --- */}
+              <div className="col-span-2">
                 <div className="flex justify-between items-end mb-1">
                     <label className="block text-xs font-bold text-slate-400 uppercase">Patient</label>
                     {isNewBooking && (
@@ -854,74 +861,200 @@ export default function AdminDashboard() {
                 )}
               </div>
 
-              {isEditingEvent ? (
-                <div className="space-y-4 border-t pt-4">
-                  <div className="grid grid-cols-3 gap-4">
+              {/* Define Disable State based on Patient Selection */}
+              {(() => {
+                const isPatientSelected = isNewBooking && isCreatingNewPatient 
+                    ? (newPatientForm.name && newPatientForm.ic_passport_number && newPatientForm.phone) 
+                    : !!editForm.patient_ic;
+                const isFieldsDisabled = isNewBooking && !isPatientSelected;
+
+                return (
+                  <div className={`space-y-4 border-t pt-4 transition-opacity ${isFieldsDisabled ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>
+                      
+                      {/* --- 2. SERVICE TYPE --- */}
+                      <div className="col-span-2">
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
+                        <select 
+                            value={editForm.service} 
+                            disabled={!isNewBooking && editForm.service === "Vaccine"}
+                            onChange={(e) => {
+                                setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
+                                setEditTime("");
+                            }} 
+                            className="w-full p-2 border rounded-lg bg-white outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                        >
+                          <option value="Others">Others</option>
+                          <option value="Vaccine">Vaccine</option>
+                          <option value="Blood Test">Blood Test</option>
+                        </select>
+                      </div>
+
+                      {/* --- 3. SERVICE DETAILS --- */}
+                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 col-span-2">
+                          {editForm.service === 'Vaccine' && (
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1">Vaccine Name</label>
+                                <select 
+                                    value={editForm.items[0] || ''} 
+                                    disabled={!isNewBooking && editForm.service === "Vaccine"}
+                                    onChange={async e => {
+                                        const val = e.target.value;
+                                        setEditForm(prev => ({...prev, items: [val], dose: 'Calculating...'}));
+
+                                        let tempIc = editForm.patient_ic;
+                                        if (isNewBooking && isCreatingNewPatient) {
+                                            let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
+                                            if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
+                                                tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
+                                            } else { tempIc = rawIc; }
+                                        }
+                                        
+                                        if (val && tempIc) {
+                                            try {
+                                                const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}`);
+                                                if (res.ok) {
+                                                    const data = await res.json();
+                                                    if (data.is_brand_switch) {
+                                                        alert(`⚠️ Brand Switch Detected:\nYou started a cycle with ${data.active_brand}. You must complete that cycle before switching to ${val}.`);
+                                                        setEditForm(prev => ({...prev, items: [], dose: ''}));
+                                                    } else if (data.next_dose) {
+                                                        setEditForm(prev => ({...prev, items: [val], dose: data.next_dose}));
+                                                    }
+                                                }
+                                            } catch (err) { console.error(err); }
+                                        }
+                                    }} 
+                                    className="w-full p-2 border rounded-lg bg-white outline-none disabled:bg-slate-100 disabled:text-slate-500"
+                                >
+                                  <option value="">Select Vaccine</option>
+                                  {Object.keys(groupedVaccines).map(type => (
+                                      <optgroup key={type} label={type}>
+                                          {groupedVaccines[type].filter((v:any) => !v.is_low_stock).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
+                                      </optgroup>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1">Dose Sequence (Auto-Determined)</label>
+                                <input type="text" value={editForm.dose} disabled className="w-full p-2 border rounded-lg bg-slate-100 outline-none text-slate-500 font-bold" />
+                              </div>
+                            </div>
+                          )}
+
+                          {editForm.service === 'Blood Test' && (
+                            <div>
+                              <label className="block text-xs font-bold text-slate-500 mb-2">1. Packages (Max 1)</label>
+                              <div className="grid grid-cols-2 gap-2 mb-4">
+                                 {pkgs.map((bt: any) => {
+                                    const isChecked = editForm.items.includes(bt.name);
+                                    const disabled = hasOnePackageSelected && !isChecked;
+                                    return (
+                                        <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
+                                        <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={disabled} checked={isChecked} 
+                                            onChange={e => {
+                                                if(disabled) return;
+                                                const newItems = e.target.checked ? [bt.name] : [];
+                                                setEditForm({...editForm, items: newItems});
+                                            }}
+                                        /> {bt.name}
+                                        </label>
+                                    );
+                                 })}
+                              </div>
+                              <label className="block text-xs font-bold text-slate-500 mb-2">2. Single Tests</label>
+                              <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
+                                 {sgls.map((bt: any) => {
+                                    const isIncluded = includedTestNames.has(bt.name);
+                                    return (
+                                        <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${isIncluded ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
+                                          <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={isIncluded} checked={isIncluded || editForm.items.includes(bt.name)} 
+                                             onChange={e => {
+                                                if(isIncluded) return;
+                                                const newItems = e.target.checked ? [...editForm.items, bt.name] : editForm.items.filter(i => i !== bt.name);
+                                                setEditForm({...editForm, items: newItems});
+                                             }}
+                                          /> {bt.name} {isIncluded && <span className="text-[10px] text-blue-500 font-bold ml-auto">(In Pkg)</span>}
+                                        </label>
+                                    );
+                                 })}
+                              </div>
+                            </div>
+                          )}
+
+                          {editForm.service === 'Others' && (
+                            <div>
+                              <label className="block text-xs font-bold text-slate-500 mb-1">Reason / Notes</label>
+                              <input type="text" value={editForm.reason || ''} onChange={e => setEditForm({...editForm, reason: e.target.value})} placeholder="e.g. Fever and cough" className="w-full p-2 border rounded-lg bg-white outline-none" />
+                            </div>
+                          )}
+                      </div>
+
+                      {/* --- 4. AI RECOMMENDATION BOX --- */}
+                      {isNewBooking && aiRec && (
+                          <div className="col-span-2 mb-4 bg-indigo-50 border border-indigo-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
+                              <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+                              <div className="flex items-center gap-2 mb-2">
+                                  <span className="bg-indigo-600 text-white text-[10px] px-2 py-0.5 rounded-full font-bold tracking-wide uppercase shadow-sm">AI Recommendation</span>
+                                  <span className="text-indigo-800 text-xs font-bold">Scheduling Agent</span>
+                              </div>
+                              <div className="text-sm text-indigo-900 mb-3">
+                                  <div className="font-semibold text-lg flex items-center gap-2">
+                                      Dr {aiRec.recommended_doctor} <span className="text-sm">⭐⭐⭐</span>
+                                  </div>
+                                  <div className="opacity-90">{moment(aiRec.raw_date).format("D MMMM YYYY")} at {aiRec.raw_time.substring(0,5)}</div>
+                                  <div className="mt-2 text-xs italic opacity-80 border-l-2 border-indigo-300 pl-2">"{aiRec.reasoning}"</div>
+                              </div>
+                              <button type="button" onClick={() => {
+                                  const docObj = doctors.find((d:any) => d.name === aiRec.recommended_doctor);
+                                  setEditForm(prev => ({...prev, doctor_ic: docObj ? docObj.ic_passport_number : ''}));
+                                  setEditDate(aiRec.raw_date);
+                                  setEditTime(aiRec.raw_time.substring(0,5));
+                              }} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 rounded-lg transition-colors text-sm shadow-sm">
+                                  Use AI Recommendation
+                              </button>
+                          </div>
+                      )}
+
+                      {/* --- 5. ASSIGNED DOCTOR --- */}
+                      <div className="col-span-2">
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assigned Doctor</label>
+                        <select value={editForm.doctor_ic} onChange={(e) => {
+                            setEditForm({...editForm, doctor_ic: e.target.value});
+                            setEditDate(""); setEditTime("");
+                        }} className="w-full p-2 border rounded-lg bg-white outline-none">
+                          {isNewBooking && agentContext?.doctors ? (
+                              agentContext.doctors.map((d: any) => (
+                                  <option key={d.ic} value={d.ic}>{d.name} {d.label}</option>
+                              ))
+                          ) : (
+                              doctors.map((doc: any) => (
+                                  <option key={doc.ic_passport_number} value={doc.ic_passport_number}>{doc.name}</option>
+                              ))
+                          )}
+                        </select>
+                      </div>
+
+                      {/* --- 6. UNLIMITED DATE SELECTION --- */}
                       <div className="col-span-2">
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Date</label>
-                        {isNewBooking && agentContext?.dates ? (
-                            <div className="flex overflow-x-auto gap-2 py-2 mb-2 pb-4 scrollbar-thin scrollbar-thumb-slate-300">
-                                {agentContext.dates.map((d: any, idx: number) => (
-                                    <button key={idx} type="button" disabled={d.disabled} onClick={() => { setEditDate(d.date); setEditTime(""); }} className={`min-w-[64px] p-2 rounded-xl flex flex-col items-center justify-center border transition-all ${d.disabled ? 'opacity-40 cursor-not-allowed bg-slate-100 border-slate-200' : 'cursor-pointer hover:bg-slate-50 border-slate-200'} ${editDate === d.date ? '!border-indigo-500 bg-indigo-50 ring-2 ring-indigo-200 shadow-sm' : ''}`}>
-                                        <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mb-1">{moment(d.date).format('ddd')}</span>
-                                        <span className="text-lg font-black text-slate-700">{moment(d.date).format('D')}</span>
-                                        <span className="text-[10px] text-slate-400 mb-1">{moment(d.date).format('MMM')}</span>
-                                        <span className={`mt-1 w-2.5 h-2.5 rounded-full shadow-inner ${d.disabled ? 'bg-slate-300' : d.status === 'Green' ? 'bg-emerald-400' : d.status === 'Yellow' ? 'bg-amber-400' : 'bg-rose-500'}`}></span>
-                                    </button>
-                                ))}
-                            </div>
-                        ) : (
-                            <input type="date" min={minDate} value={editDate} onChange={(e) => {
-                                setEditDate(e.target.value);
-                                setEditTime("");
-                            }} className="w-full p-2 border rounded-lg outline-none" />
-                        )}
+                        <input type="date" min={minDate} value={editDate} onChange={(e) => {
+                            setEditDate(e.target.value);
+                            setEditTime("");
+                        }} className="w-full p-2 border rounded-lg outline-none" />
                       </div>
+
+                      {/* --- 7. TIME SELECTION --- */}
                       {editDate && (
                           <div className="col-span-2">
                               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Select Time</label>
-                              
-                              {/* --- AI RECOMMENDATION BOX --- */}
-                              {isNewBooking && aiRec && (
-                                  <div className="mb-4 bg-indigo-50 border border-indigo-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
-                                      <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
-                                      <div className="flex items-center gap-2 mb-2">
-                                          <span className="bg-indigo-600 text-white text-[10px] px-2 py-0.5 rounded-full font-bold tracking-wide uppercase shadow-sm">AI Recommendation</span>
-                                          <span className="text-indigo-800 text-xs font-bold">Scheduling Agent</span>
-                                      </div>
-                                      <div className="text-sm text-indigo-900 mb-3">
-                                          <div className="font-semibold text-lg flex items-center gap-2">
-                                              Dr {aiRec.recommended_doctor} <span className="text-sm">⭐⭐⭐</span>
-                                          </div>
-                                          <div className="opacity-90">{moment(aiRec.raw_date).format("D MMMM YYYY")} at {aiRec.raw_time.substring(0,5)}</div>
-                                          <div className="mt-2 text-xs italic opacity-80 border-l-2 border-indigo-300 pl-2">"{aiRec.reasoning}"</div>
-                                      </div>
-                                      <button type="button" onClick={() => {
-                                          {/* Fixed: changed doctorsList to doctors */}
-                                          const docObj = doctors.find((d:any) => d.name === aiRec.recommended_doctor);
-                                          setEditForm(prev => ({...prev, doctor_ic: docObj ? docObj.ic_passport_number : ''}));
-                                          setEditDate(aiRec.raw_date);
-                                          setEditTime(aiRec.raw_time.substring(0,5));
-                                      }} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 rounded-lg transition-colors text-sm shadow-sm">
-                                          Use AI Recommendation
-                                      </button>
-                                  </div>
-                              )}
-
-                              {/* Fixed: Swapped timeOptions for availableTimes and fixed string mapping */}
                               {availableTimes.length > 0 ? (
                                   <div className="grid grid-cols-4 gap-2">
                                       {availableTimes.map((t: string, idx: number) => {
                                           let stars = "";
                                           if (isNewBooking && aiRec) {
-                                              // Main recommendation uses raw_time
-                                              if (aiRec.raw_time && aiRec.raw_time.substring(0,5) === t.substring(0,5) && editDate === aiRec.raw_date) {
-                                                  stars = "⭐⭐⭐";
-                                              }
-                                              // FIX: Alternative slots use formatted_time, not raw_time
-                                              else if (aiRec.alternative_slots?.some((s:any) => s.formatted_time && s.formatted_time.substring(0,5) === t.substring(0,5) && s.date_str === editDate)) {
-                                                  stars = "⭐⭐";
-                                              }
+                                              if (aiRec.raw_time && aiRec.raw_time.substring(0,5) === t.substring(0,5) && editDate === aiRec.raw_date) stars = "⭐⭐⭐";
+                                              else if (aiRec.alternative_slots?.some((s:any) => s.formatted_time && s.formatted_time.substring(0,5) === t.substring(0,5) && s.date_str === editDate)) stars = "⭐⭐";
                                           }
                                           return (
                                               <button key={idx} type="button" onClick={() => setEditTime(t.substring(0, 5))}
@@ -937,238 +1070,55 @@ export default function AdminDashboard() {
                               )}
                           </div>
                       )}
-                      <div>
-                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assigned Doctor</label>
-                        <select value={editForm.doctor_ic} onChange={(e) => {
-                            setEditForm({...editForm, doctor_ic: e.target.value});
-                            setEditDate(""); setEditTime("");
-                        }} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          {isNewBooking && agentContext?.doctors ? (
-                              agentContext.doctors.map((d: any) => (
-                                  <option key={d.ic} value={d.ic}>{d.name} {d.label}</option>
-                              ))
-                          ) : (
-                              <>
-                                <option value="">Any Available Doctor</option>
-                                {/* Fixed: changed doctorsList to doctors */}
-                                {doctors.map((doc: any) => (
-                                    <option key={doc.ic_passport_number} value={doc.ic_passport_number}>{doc.name}</option>
-                                ))}
-                              </>
-                          )}
-                        </select>
-                      </div>
-                  </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                      {/* --- 8. STATUS / CANCEL REASON (ONLY IF EDITING) --- */}
                       {!isNewBooking && (
-                        <div>
+                        <div className="col-span-2">
                             <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Booking Status</label>
-                            <select value={editForm.status} onChange={(e) => setEditForm({...editForm, status: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none">
+                            <select value={editForm.status} onChange={(e) => setEditForm({...editForm, status: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none mb-2">
                                 <option value="scheduled">Scheduled</option>
                                 <option value="completed">Completed</option>
                                 <option value="no-show">No-Show</option>
                                 <option value="canceled">Canceled</option>
                             </select>
-                        </div>
-                      )}
-                      <div className={isNewBooking ? "col-span-2" : ""}>
-                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
-                        <select 
-                            value={editForm.service} 
-                            disabled={!isNewBooking && editForm.service === "Vaccine"}
-                            onChange={(e) => {
-                                setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
-                                setEditTime(""); // Clear the time to refresh 15/30 min intervals correctly
-                            }} 
-                            className="w-full p-2 border rounded-lg bg-white outline-none disabled:bg-slate-100 disabled:text-slate-500"
-                        >
-                          <option value="Others">Others</option>
-                          <option value="Vaccine">Vaccine</option>
-                          <option value="Blood Test">Blood Test</option>
-                        </select>
-                      </div>
-                  </div>
-
-                  {editForm.status === 'canceled' && (
-                      <div className="col-span-2">
-                          <label className="block text-xs font-bold text-red-500 uppercase mb-1">Cancellation Reason <span className="text-red-500">*</span></label>
-                          <select
-                              value={["Change of schedule", "Feeling better", "Booked wrong service", "Personal reasons"].includes(inlineCancelReason) ? inlineCancelReason : (inlineCancelReason ? "Other" : "")}
-                              onChange={(e) => {
-                                  if (e.target.value !== "Other") {
-                                      setInlineCancelReason(e.target.value);
-                                  } else {
-                                      setInlineCancelReason(""); // Clear to allow typing
-                                  }
-                              }}
-                              className="w-full p-2 border rounded-lg bg-white outline-none border-red-300 mb-2"
-                          >
-                              <option value="" disabled>Select Reason...</option>
-                              <option value="Change of schedule">Change of schedule</option>
-                              <option value="Feeling better">Feeling better</option>
-                              <option value="Booked wrong service">Booked wrong service</option>
-                              <option value="Personal reasons">Personal reasons</option>
-                              <option value="Other">Other (Type below)</option>
-                          </select>
-                          
-                          {/* Only show the text input if they choose 'Other' or haven't picked a preset reason */}
-                          {!["Change of schedule", "Feeling better", "Booked wrong service", "Personal reasons"].includes(inlineCancelReason) && (
-                              <input 
-                                  type="text" 
-                                  value={inlineCancelReason} 
-                                  onChange={e => setInlineCancelReason(e.target.value)} 
-                                  className="w-full p-2 border rounded-lg bg-white outline-none border-red-300" 
-                                  placeholder="Please specify why this was canceled..." 
-                              />
-                          )}
-                      </div>
-                  )}
-
-                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                      {editForm.service === 'Vaccine' && (
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <label className="block text-xs font-bold text-slate-500 mb-1">Vaccine Name</label>
-                            <select 
-                                value={editForm.items[0] || ''} 
-                                disabled={!isNewBooking && editForm.service === "Vaccine"}
-                                onChange={async e => {
-                                    const val = e.target.value;
-                                    setEditForm(prev => ({...prev, items: [val], dose: 'Calculating...'}));
-
-                                    let tempIc = editForm.patient_ic;
-                                    if (isNewBooking && isCreatingNewPatient) {
-                                        let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
-                                        if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
-                                            tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
-                                        } else { tempIc = rawIc; }
-                                    }
-                                    
-                                    if (val && tempIc) {
-                                        try {
-                                            const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}`);
-                                            if (res.ok) {
-                                                const data = await res.json();
-                                                if (data.is_brand_switch) {
-                                                    alert(`⚠️ Brand Switch Detected:\nYou started a cycle with ${data.active_brand}. You must complete that cycle before switching to ${val}.`);
-                                                    setEditForm(prev => ({...prev, items: [], dose: ''})); // Reset selection
-                                                } else if (data.next_dose) {
-                                                    setEditForm(prev => ({...prev, items: [val], dose: data.next_dose}));
-                                                }
-                                            }
-                                        } catch (err) { console.error(err); }
-                                    }
-                                }} 
-                                className="w-full p-2 border rounded-lg bg-white outline-none disabled:bg-slate-100 disabled:text-slate-500"
-                            >
-                              <option value="">Select Vaccine</option>
-                              {Object.keys(groupedVaccines).map(type => (
-                                  <optgroup key={type} label={type}>
-                                      {groupedVaccines[type].filter((v:any) => !v.is_low_stock).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
-                                  </optgroup>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs font-bold text-slate-500 mb-1">Dose Sequence (Auto-Determined)</label>
-                            <input type="text" value={editForm.dose} disabled className="w-full p-2 border rounded-lg bg-slate-100 outline-none text-slate-500 font-bold" />
-                          </div>
-                        </div>
-                      )}
-
-                      {editForm.service === 'Blood Test' && (
-                        <div>
-                          <label className="block text-xs font-bold text-slate-500 mb-2">1. Packages (Max 1)</label>
-                          <div className="grid grid-cols-2 gap-2 mb-4">
-                             {pkgs.map((bt: any) => {
-                                const isChecked = editForm.items.includes(bt.name);
-                                const disabled = hasOnePackageSelected && !isChecked;
-                                return (
-                                    <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
-                                    <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={disabled} checked={isChecked} 
-                                        onChange={e => {
-                                            if(disabled) return;
-                                            const newItems = e.target.checked ? [bt.name] : [];
-                                            setEditForm({...editForm, items: newItems});
-                                        }}
-                                    /> {bt.name}
-                                    </label>
-                                );
-                             })}
-                          </div>
-                          
-                          <label className="block text-xs font-bold text-slate-500 mb-2">2. Single Tests</label>
-                          <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
-                             {sgls.map((bt: any) => {
-                                const isIncluded = includedTestNames.has(bt.name);
-                                return (
-                                    <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${isIncluded ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
-                                      <input type="checkbox" className="w-4 h-4 accent-blue-600" disabled={isIncluded} checked={isIncluded || editForm.items.includes(bt.name)} 
-                                         onChange={e => {
-                                            if(isIncluded) return;
-                                            const newItems = e.target.checked ? [...editForm.items, bt.name] : editForm.items.filter(i => i !== bt.name);
-                                            setEditForm({...editForm, items: newItems});
-                                         }}
-                                      /> {bt.name} {isIncluded && <span className="text-[10px] text-blue-500 font-bold ml-auto">(In Pkg)</span>}
-                                    </label>
-                                );
-                             })}
-                          </div>
-                        </div>
-                      )}
-
-                      {editForm.service === 'Others' && (
-                        <div>
-                          <label className="block text-xs font-bold text-slate-500 mb-1">Reason / Notes</label>
-                          <input type="text" value={editForm.reason || ''} onChange={e => setEditForm({...editForm, reason: e.target.value})} placeholder="e.g. Fever and cough" className="w-full p-2 border rounded-lg bg-white outline-none" />
+                            
+                            {editForm.status === 'canceled' && (
+                              <div className="col-span-2 mt-2 border-t pt-2">
+                                  <label className="block text-xs font-bold text-red-500 uppercase mb-1">Cancellation Reason <span className="text-red-500">*</span></label>
+                                  <select
+                                      value={["Change of schedule", "Feeling better", "Booked wrong service", "Personal reasons"].includes(inlineCancelReason) ? inlineCancelReason : (inlineCancelReason ? "Other" : "")}
+                                      onChange={(e) => {
+                                          if (e.target.value !== "Other") {
+                                              setInlineCancelReason(e.target.value);
+                                          } else {
+                                              setInlineCancelReason("");
+                                          }
+                                      }}
+                                      className="w-full p-2 border rounded-lg bg-white outline-none border-red-300 mb-2"
+                                  >
+                                      <option value="" disabled>Select Reason...</option>
+                                      <option value="Change of schedule">Change of schedule</option>
+                                      <option value="Feeling better">Feeling better</option>
+                                      <option value="Booked wrong service">Booked wrong service</option>
+                                      <option value="Personal reasons">Personal reasons</option>
+                                      <option value="Other">Other (Type below)</option>
+                                  </select>
+                                  {!["Change of schedule", "Feeling better", "Booked wrong service", "Personal reasons"].includes(inlineCancelReason) && (
+                                      <input 
+                                          type="text" 
+                                          value={inlineCancelReason} 
+                                          onChange={e => setInlineCancelReason(e.target.value)} 
+                                          className="w-full p-2 border rounded-lg bg-white outline-none border-red-300" 
+                                          placeholder="Please specify why this was canceled..." 
+                                      />
+                                  )}
+                              </div>
+                            )}
                         </div>
                       )}
                   </div>
-                </div>
-              ) : (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
-                      <span className="inline-block px-3 py-1 bg-slate-100 rounded-full text-xs font-bold text-slate-600">{selectedEvent?.service || 'Unknown'}</span>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Doctor</label>
-                      <p className="font-medium">{selectedEvent?.doctor || 'Unassigned'}</p>
-                    </div>
-                  </div>
-
-                  <div className="col-span-2 mt-2">
-                    <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Specific Details</label>
-                    <div className="p-3 bg-slate-50 border rounded-lg text-sm text-slate-700">
-                      {selectedEvent?.service_details || 'N/A'}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Schedule Date & Time</label>
-                      <p className="font-medium">{selectedEvent?.start ? moment(selectedEvent.start).format("dddd, MMMM Do YYYY, h:mm a") : ''}</p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Status</label>
-                      <div>
-                          <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold capitalize mb-1
-                            ${selectedEvent?.status === 'completed' ? 'bg-emerald-100 text-emerald-700' 
-                            : selectedEvent?.status === 'canceled' ? 'bg-slate-200 text-slate-600' 
-                            : selectedEvent?.status === 'no-show' ? 'bg-red-100 text-red-700'
-                            : 'bg-blue-100 text-blue-700'}`}>
-                              {selectedEvent?.status}
-                          </span>
-                          {selectedEvent?.status === 'canceled' && selectedEvent?.cancel_reason && (
-                              <p className="text-xs text-slate-500 mt-1"><span className="font-bold text-slate-600">Reason:</span> {selectedEvent.cancel_reason}</p>
-                          )}
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
+                );
+              })()}
             </div>
 
             <div className="px-6 py-4 bg-slate-50 flex justify-between gap-3 border-t border-slate-100">

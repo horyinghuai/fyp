@@ -1400,11 +1400,15 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         else:
             # Create brand new parent
             new_appt = models.Appointment(
-                patient_id=patient.id, doctor_ic=doc_ic, appt_type=mapped_appt_type, 
-                total_stages=total_stages, general_notes=booking.details.get('general_notes')  
+                patient_id=patient.id, 
+                clinic_id=booking.clinic_id, # <--- NEW: Synchronized with DB
+                doctor_ic=doc_ic, 
+                appt_type=mapped_appt_type, 
+                total_stages=total_stages, 
+                general_notes=booking.details.get('general_notes')  
             )
             db.add(new_appt)
-            db.flush() 
+            db.flush()
             
             # Only create junction row if it's a completely new appointment parent
             if booking.service_type == 'Vaccine' and items_list and v_model:
@@ -3186,37 +3190,28 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
         stars = "⭐⭐⭐" if idx == 0 else ("⭐⭐" if idx == 1 else "⭐")
         doc_res.append({"ic": d["ic"], "name": f"Dr. {d['name']}", "label": stars})
         
-    # --- SCHEDULING AGENT: DATE WORKLOAD (Next 30 Days) ---
-    dates_res = []
-    for i in range(30):
-        dt_val = datetime.now().date() + timedelta(days=i)
-        dt_str = dt_val.strftime("%Y-%m-%d")
-        
-        day_name = dt_val.strftime('%a').lower()
-        oh = db.query(models.DoctorClinicAvailability).filter_by(clinic_id=req.clinic_id, day_of_week=day_name).first()
-        
-        if not oh or dt_val < min_allowed_date:
-            dates_res.append({"date": dt_str, "status": "Grey", "disabled": True})
-            continue
-            
-        # FIX: Join Patient to get clinic_id safely
-        appt_count = db.query(models.ApptStage)\
+    # --- SCHEDULING AGENT: DOCTOR RATING ---
+    docs = db.query(models.ClinicStaff).filter_by(clinic_id=req.clinic_id, role="doctor").all()
+    doc_stats = []
+    for d in docs:
+        count = db.query(models.ApptStage)\
             .join(models.Appointment)\
             .join(models.Patient)\
             .filter(
+                models.Appointment.doctor_ic == d.ic_passport_number,
                 models.Patient.clinic_id == req.clinic_id,
-                func.date(models.ApptStage.scheduled_time) == dt_val,
                 models.ApptStage.status.notin_(['canceled', 'no-show'])
             ).count()
+        doc_stats.append({"ic": d.ic_passport_number, "name": d.name, "count": count})
         
-        capacity = 32
-        if appt_count >= capacity * 0.8: status = "Red"
-        elif appt_count >= capacity * 0.4: status = "Yellow"
-        else: status = "Green"
+    doc_stats.sort(key=lambda x: x["count"])
+    doc_res = [] # FIX: "Any Doctor" completely removed
+    for idx, d in enumerate(doc_stats):
+        stars = "⭐⭐⭐" if idx == 0 else ("⭐⭐" if idx == 1 else "⭐")
+        doc_res.append({"ic": d["ic"], "name": f"Dr. {d['name']}", "label": stars})
         
-        dates_res.append({"date": dt_str, "status": status, "disabled": False})
-        
-    return {"doctors": doc_res, "dates": dates_res}
+    # Return only doctors. Frontend will use an unlimited native date picker.
+    return {"doctors": doc_res}
 
 @app.post("/check-vaccine-history")
 def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get_db)):

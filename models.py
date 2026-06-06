@@ -69,6 +69,8 @@ class Appointment(Base):
     __tablename__ = "appointments"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False) 
+    
     doctor_ic = Column(String(20), ForeignKey("doctors.ic_passport_number"), nullable=True) 
     appt_type = Column("type", String(50)) 
     total_stages = Column(Integer, default=1)
