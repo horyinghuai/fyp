@@ -44,6 +44,7 @@ export default function AdminDashboard() {
 
   const [agentContext, setAgentContext] = useState<any>(null);
   const [aiRec, setAiRec] = useState<any>(null);
+  const [isLoadingContext, setIsLoadingContext] = useState(false);
 
   const [minDate, setMinDate] = useState(moment().format("YYYY-MM-DD"));
   const [manualDates, setManualDates] = useState<Record<string, string>>({});
@@ -104,6 +105,7 @@ export default function AdminDashboard() {
       if (isNewBooking && editForm.patient_ic && editForm.service) {
           if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
           
+          setIsLoadingContext(true);
           fetch(`http://127.0.0.1:8000/scheduling-agent/context`, {
               method: 'POST', headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({
@@ -114,11 +116,15 @@ export default function AdminDashboard() {
               })
           }).then(r => r.json()).then(data => {
               setAgentContext(data);
+              setIsLoadingContext(false);
               // Auto-select the top recommended doctor if field is empty or "ANY"
               if (data.doctors && data.doctors.length > 0 && (!editForm.doctor_ic || editForm.doctor_ic === 'ANY')) {
                   setEditForm(prev => ({...prev, doctor_ic: data.doctors[0].ic}));
               }
-          }).catch(console.error);
+          }).catch(err => {
+              console.error('Failed to load scheduling context:', err);
+              setIsLoadingContext(false);
+          });
 
           fetch(`http://127.0.0.1:8000/recommend-slots`, {
               method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -131,11 +137,11 @@ export default function AdminDashboard() {
               })
           }).then(r => r.json()).then(data => {
               if (!data.error) setAiRec(data);
-          }).catch(console.error);
+          }).catch(err => console.error('Failed to load AI recommendations:', err));
       } else {
-          setAgentContext(null); setAiRec(null);
+          setAgentContext(null); setAiRec(null); setIsLoadingContext(false);
       }
-  }, [isNewBooking, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic]);
+  }, [isNewBooking, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose]);
 
   const loadDoctors = async (cid: string) => {
       try {
@@ -1018,34 +1024,93 @@ export default function AdminDashboard() {
 
                       {/* --- 5. ASSIGNED DOCTOR --- */}
                       <div className="col-span-2">
-                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assigned Doctor</label>
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assigned Doctor <span className="text-red-500">*</span></label>
                         <select value={editForm.doctor_ic} onChange={(e) => {
                             setEditForm({...editForm, doctor_ic: e.target.value});
                             setEditDate(""); setEditTime("");
                         }} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          {isNewBooking && agentContext?.doctors ? (
-                              agentContext.doctors.map((d: any) => (
-                                  <option key={d.ic} value={d.ic}>{d.name} {d.label}</option>
-                              ))
-                          ) : (
-                              doctors.map((doc: any) => (
-                                  <option key={doc.ic_passport_number} value={doc.ic_passport_number}>{doc.name}</option>
-                              ))
-                          )}
+                          <option value="">-- Select a Doctor --</option>
+                          {doctors.map((doc: any) => {
+                              const aiLabel = agentContext?.doctors?.find((d: any) => d.ic === doc.ic_passport_number)?.label;
+                              return (
+                                  <option key={doc.ic_passport_number} value={doc.ic_passport_number}>
+                                      {doc.name} {aiLabel ? `${aiLabel}` : ""}
+                                  </option>
+                              );
+                          })}
                         </select>
                       </div>
 
-                      {/* --- 6. UNLIMITED DATE SELECTION --- */}
+                      {/* --- 6. CUSTOM COLOR-CODED DATE PICKER --- */}
                       <div className="col-span-2">
-                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Date</label>
-                        <input type="date" min={minDate} value={editDate} onChange={(e) => {
-                            setEditDate(e.target.value);
-                            setEditTime("");
-                        }} className="w-full p-2 border rounded-lg outline-none" />
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Select Date</label>
+                        {!editForm.doctor_ic ? (
+                            <div className="text-sm text-slate-500 italic p-4 bg-slate-50 rounded-lg text-center border border-dashed">Please select a doctor first</div>
+                        ) : isLoadingContext ? (
+                            <div className="text-sm text-slate-500 italic p-4 bg-slate-50 rounded-lg text-center border border-dashed">Loading available dates...</div>
+                        ) : agentContext?.dates ? (
+                            <div>
+                                <div className="flex items-center justify-between mb-3">
+                                    <div className="flex gap-2 text-xs">
+                                        <div className="flex items-center gap-1"><div className="w-4 h-4 bg-green-400 rounded border border-green-600"></div><span>Low Load</span></div>
+                                        <div className="flex items-center gap-1"><div className="w-4 h-4 bg-yellow-300 rounded border border-yellow-600"></div><span>Medium</span></div>
+                                        <div className="flex items-center gap-1"><div className="w-4 h-4 bg-red-400 rounded border border-red-600"></div><span>Busy</span></div>
+                                        <div className="flex items-center gap-1"><div className="w-4 h-4 bg-slate-300 rounded border border-slate-400"></div><span>Unavailable</span></div>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-7 gap-2">
+                                    {agentContext.dates.map((dateInfo: any, idx: number) => {
+                                        let bgColor = "bg-slate-100 text-slate-400 cursor-not-allowed";
+                                        let borderColor = "border-slate-300";
+                                        let hoverClass = "";
+                                        
+                                        if (!dateInfo.disabled) {
+                                            if (dateInfo.status === "Green") {
+                                                bgColor = "bg-green-100 text-green-900";
+                                                borderColor = "border-green-300";
+                                                hoverClass = "hover:bg-green-200 cursor-pointer";
+                                            } else if (dateInfo.status === "Yellow") {
+                                                bgColor = "bg-yellow-100 text-yellow-900";
+                                                borderColor = "border-yellow-300";
+                                                hoverClass = "hover:bg-yellow-200 cursor-pointer";
+                                            } else if (dateInfo.status === "Red") {
+                                                bgColor = "bg-red-100 text-red-900";
+                                                borderColor = "border-red-300";
+                                                hoverClass = "hover:bg-red-200 cursor-pointer";
+                                            }
+                                        }
+                                        
+                                        const isSelected = editDate === dateInfo.date;
+                                        
+                                        return (
+                                            <button
+                                                key={idx}
+                                                type="button"
+                                                disabled={dateInfo.disabled}
+                                                onClick={() => {
+                                                    setEditDate(dateInfo.date);
+                                                    setEditTime("");
+                                                }}
+                                                className={`p-2 rounded border transition-all text-xs font-semibold flex flex-col items-center justify-center min-h-[50px] ${
+                                                    isSelected
+                                                        ? "ring-2 ring-blue-500 ring-offset-1 shadow-md"
+                                                        : ""
+                                                } ${bgColor} ${borderColor} ${hoverClass}`}
+                                            >
+                                                <span className="text-[10px] opacity-60">{moment(dateInfo.date).format("ddd")}</span>
+                                                <span>{moment(dateInfo.date).format("D")}</span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="text-sm text-red-500 italic p-4 bg-red-50 rounded-lg text-center border border-red-300 border-dashed">Failed to load dates. Please try again.</div>
+                        )}
                       </div>
 
                       {/* --- 7. TIME SELECTION --- */}
-                      {editDate && (
+                      {editDate && editForm.doctor_ic ? (
                           <div className="col-span-2">
                               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Select Time</label>
                               {availableTimes.length > 0 ? (
@@ -1069,7 +1134,7 @@ export default function AdminDashboard() {
                                   <div className="text-sm text-slate-500 italic p-4 bg-slate-50 rounded-lg text-center border border-dashed">No available slots for this date.</div>
                               )}
                           </div>
-                      )}
+                      ) : null}
 
                       {/* --- 8. STATUS / CANCEL REASON (ONLY IF EDITING) --- */}
                       {!isNewBooking && (
