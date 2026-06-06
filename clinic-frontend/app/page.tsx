@@ -21,6 +21,9 @@ export default function AdminDashboard() {
   const [patients, setPatients] = useState<any[]>([]);
   const [vaccinesList, setVaccinesList] = useState<any[]>([]);
   const [bloodTestsList, setBloodTestsList] = useState<any[]>([]);
+
+  const [viewMonth, setViewMonth] = useState(new Date().getMonth());
+  const [viewYear, setViewYear] = useState(new Date().getFullYear());
   
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -104,47 +107,56 @@ export default function AdminDashboard() {
   }, [events, pendingReviewEvent]);
 
   useEffect(() => {
-      if (isNewBooking && editForm.patient_ic && editForm.service) {
-          if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
-          
-          setIsLoadingContext(true);
-          fetch(`http://127.0.0.1:8000/scheduling-agent/context`, {
-              method: 'POST', headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({
-                  clinic_id: activeClinicId, ic: editForm.patient_ic, 
-                  service_type: editForm.service, 
-                  vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
-                  target_dose: editForm.dose,
-                  doctor_ic: editForm.doctor_ic || null   // <-- NEW: send selected doctor so calendar colors are per-doctor
-              })
-          }).then(r => r.json()).then(data => {
-              setAgentContext(data);
-              setIsLoadingContext(false);
-              // Auto-select the top recommended doctor if field is empty or "ANY"
-              if (data.doctors && data.doctors.length > 0 && (!editForm.doctor_ic || editForm.doctor_ic === 'ANY')) {
-                  setEditForm(prev => ({...prev, doctor_ic: data.doctors[0].ic}));
-              }
-          }).catch(err => {
-              console.error('Failed to load scheduling context:', err);
-              setIsLoadingContext(false);
-          });
+    if (isNewBooking && editForm.patient_ic && editForm.service) {
+        if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
 
-          fetch(`http://127.0.0.1:8000/recommend-slots`, {
-              method: 'POST', headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({
-                  clinic_id: activeClinicId, base_date: moment().format("YYYY-MM-DD"),
-                  doctor_pref: editForm.doctor_ic || 'ANY', duration: editForm.service === 'Vaccine' ? 15 : 30,
-                  service_type: editForm.service,
-                  vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
-                  dose: editForm.dose, ic: editForm.patient_ic
-              })
-          }).then(r => r.json()).then(data => {
-              if (!data.error) setAiRec(data);
-          }).catch(err => console.error('Failed to load AI recommendations:', err));
-      } else {
-          setAgentContext(null); setAiRec(null); setIsLoadingContext(false);
-      }
-  }, [isNewBooking, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose]);
+        setIsLoadingContext(true);
+
+        // Pass the first day of the currently-viewed month
+        const viewStartDate = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-01`;
+
+        fetch(`http://127.0.0.1:8000/scheduling-agent/context`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                clinic_id: activeClinicId,
+                ic: editForm.patient_ic,
+                service_type: editForm.service,
+                vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
+                target_dose: editForm.dose,
+                doctor_ic: editForm.doctor_ic || null,
+                view_start_date: viewStartDate,
+                view_days: 42
+            })
+        }).then(r => r.json()).then(data => {
+            setAgentContext(data);
+            setIsLoadingContext(false);
+            // Auto-select the top recommended doctor only when none is chosen yet
+            if (data.doctors && data.doctors.length > 0 && (!editForm.doctor_ic || editForm.doctor_ic === 'ANY')) {
+                setEditForm(prev => ({...prev, doctor_ic: data.doctors[0].ic}));
+            }
+        }).catch(err => {
+            console.error('Failed to load scheduling context:', err);
+            setIsLoadingContext(false);
+        });
+
+        // Re-fetch AI recommendations only when booking parameters change (not month navigation)
+        fetch(`http://127.0.0.1:8000/recommend-slots`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                clinic_id: activeClinicId, base_date: moment().format("YYYY-MM-DD"),
+                doctor_pref: editForm.doctor_ic || 'ANY', duration: editForm.service === 'Vaccine' ? 15 : 30,
+                service_type: editForm.service,
+                vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
+                dose: editForm.dose, ic: editForm.patient_ic
+            })
+        }).then(r => r.json()).then(data => {
+            if (!data.error) setAiRec(data);
+        }).catch(err => console.error('Failed to load AI recommendations:', err));
+
+    } else {
+        setAgentContext(null); setAiRec(null); setIsLoadingContext(false);
+    }
+  }, [isNewBooking, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear]);
 
   const loadDoctors = async (cid: string) => {
       try {
@@ -254,6 +266,8 @@ export default function AdminDashboard() {
       const docsForTime: Record<string, any[]> = {};
 
       doctors.forEach(doc => {
+          // Only show availability for the selected doctor (or all if none chosen)
+          if (editForm.doctor_ic && doc.ic_passport_number !== editForm.doctor_ic) return;
           if(!doc.schedules) return;
           // Case-insensitive day check
           const todayScheds = doc.schedules.filter((s: any) => s.day_of_week && s.day_of_week.toLowerCase() === dayOfWeek);
@@ -557,6 +571,8 @@ export default function AdminDashboard() {
   };
 
   const openNewBookingModal = () => {
+    setViewMonth(new Date().getMonth());   // ← ADD
+    setViewYear(new Date().getFullYear()); // ← ADD
     setEditDate(moment().format("YYYY-MM-DD"));
     setMinDate(moment().format("YYYY-MM-DD")); 
     setManualDates({});
@@ -1129,58 +1145,142 @@ export default function AdminDashboard() {
                             <div className="text-sm text-slate-500 italic p-4 bg-slate-50 rounded-lg text-center border border-dashed">Loading available dates...</div>
                         ) : agentContext?.dates ? (
                             <div>
-                                <div className="flex items-center justify-between mb-3">
-                                    <div className="flex gap-2 text-xs">
-                                        <div className="flex items-center gap-1"><div className="w-4 h-4 bg-green-400 rounded border border-green-600"></div><span>Low Load</span></div>
-                                        <div className="flex items-center gap-1"><div className="w-4 h-4 bg-yellow-300 rounded border border-yellow-600"></div><span>Medium</span></div>
-                                        <div className="flex items-center gap-1"><div className="w-4 h-4 bg-red-400 rounded border border-red-600"></div><span>Busy</span></div>
-                                        <div className="flex items-center gap-1"><div className="w-4 h-4 bg-slate-300 rounded border border-slate-400"></div><span>Unavailable</span></div>
-                                    </div>
+                                {/* Legend */}
+                                <div className="flex items-center gap-3 mb-3 flex-wrap text-xs">
+                                    <div className="flex items-center gap-1"><div className="w-3.5 h-3.5 bg-green-400 rounded border border-green-600"></div><span>Low Load</span></div>
+                                    <div className="flex items-center gap-1"><div className="w-3.5 h-3.5 bg-yellow-300 rounded border border-yellow-600"></div><span>Medium</span></div>
+                                    <div className="flex items-center gap-1"><div className="w-3.5 h-3.5 bg-red-400 rounded border border-red-600"></div><span>Busy</span></div>
+                                    <div className="flex items-center gap-1"><div className="w-3.5 h-3.5 bg-slate-300 rounded border border-slate-400"></div><span>Unavailable</span></div>
                                 </div>
-                                <div className="grid grid-cols-7 gap-2">
-                                    {agentContext.dates.map((dateInfo: any, idx: number) => {
-                                        let bgColor = "bg-slate-100 text-slate-400 cursor-not-allowed";
-                                        let borderColor = "border-slate-300";
-                                        let hoverClass = "";
-                                        
-                                        if (!dateInfo.disabled) {
-                                            if (dateInfo.status === "Green") {
-                                                bgColor = "bg-green-100 text-green-900";
-                                                borderColor = "border-green-300";
-                                                hoverClass = "hover:bg-green-200 cursor-pointer";
-                                            } else if (dateInfo.status === "Yellow") {
-                                                bgColor = "bg-yellow-100 text-yellow-900";
-                                                borderColor = "border-yellow-300";
-                                                hoverClass = "hover:bg-yellow-200 cursor-pointer";
-                                            } else if (dateInfo.status === "Red") {
-                                                bgColor = "bg-red-100 text-red-900";
-                                                borderColor = "border-red-300";
-                                                hoverClass = "hover:bg-red-200 cursor-pointer";
-                                            }
-                                        }
-                                        
-                                        const isSelected = editDate === dateInfo.date;
-                                        
-                                        return (
-                                            <button
-                                                key={idx}
-                                                type="button"
-                                                disabled={dateInfo.disabled}
-                                                onClick={() => {
-                                                    setEditDate(dateInfo.date);
-                                                    setEditTime("");
-                                                }}
-                                                className={`p-2 rounded border transition-all text-xs font-semibold flex flex-col items-center justify-center min-h-[50px] ${
-                                                    isSelected
-                                                        ? "ring-2 ring-blue-500 ring-offset-1 shadow-md"
-                                                        : ""
-                                                } ${bgColor} ${borderColor} ${hoverClass}`}
-                                            >
-                                                <span className="text-[10px] opacity-60">{moment(dateInfo.date).format("ddd")}</span>
-                                                <span>{moment(dateInfo.date).format("D")}</span>
-                                            </button>
+
+                                {/* Month / Year Navigation */}
+                                <div className="flex items-center justify-between mb-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const d = new Date(viewYear, viewMonth - 1, 1);
+                                            setViewMonth(d.getMonth());
+                                            setViewYear(d.getFullYear());
+                                        }}
+                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 font-bold text-base shadow-sm"
+                                    >‹</button>
+
+                                    <div className="flex items-center gap-2">
+                                        <select
+                                            value={viewMonth}
+                                            onChange={e => setViewMonth(parseInt(e.target.value))}
+                                            className="p-1 border border-slate-200 rounded-lg text-sm outline-none bg-white font-semibold text-slate-700"
+                                        >
+                                            {['January','February','March','April','May','June','July','August','September','October','November','December'].map((m, i) => (
+                                                <option key={i} value={i}>{m}</option>
+                                            ))}
+                                        </select>
+                                        <select
+                                            value={viewYear}
+                                            onChange={e => setViewYear(parseInt(e.target.value))}
+                                            className="p-1 border border-slate-200 rounded-lg text-sm outline-none bg-white font-semibold text-slate-700"
+                                        >
+                                            {[new Date().getFullYear(), new Date().getFullYear() + 1, new Date().getFullYear() + 2].map(y => (
+                                                <option key={y} value={y}>{y}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const d = new Date(viewYear, viewMonth + 1, 1);
+                                            setViewMonth(d.getMonth());
+                                            setViewYear(d.getFullYear());
+                                        }}
+                                        className="w-8 h-8 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 font-bold text-base shadow-sm"
+                                    >›</button>
+                                </div>
+
+                                {/* Day-of-week headers */}
+                                <div className="grid grid-cols-7 gap-1 mb-1">
+                                    {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => (
+                                        <div key={d} className="text-center text-[10px] font-bold text-slate-400 py-0.5">{d}</div>
+                                    ))}
+                                </div>
+
+                                {/* Calendar grid */}
+                                <div className="grid grid-cols-7 gap-1">
+                                    {(() => {
+                                        const todayDate = new Date();
+                                        todayDate.setHours(0, 0, 0, 0);
+
+                                        const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
+                                        const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+
+                                        // Build a quick lookup map from the backend response
+                                        const dateMap = new Map<string, any>(
+                                            (agentContext.dates as any[]).map((d: any) => [d.date, d])
                                         );
-                                    })}
+
+                                        const cells: React.ReactElement[] = [];
+
+                                        // Leading empty cells
+                                        for (let i = 0; i < firstDayOfWeek; i++) {
+                                            cells.push(<div key={`empty-${i}`} className="min-h-[42px]" />);
+                                        }
+
+                                        // Day cells
+                                        for (let day = 1; day <= daysInMonth; day++) {
+                                            const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                                            const cellDate = new Date(viewYear, viewMonth, day);
+                                            const isPast = cellDate < todayDate;
+                                            const dateInfo = dateMap.get(dateStr);
+                                            const isSelected = editDate === dateStr;
+
+                                            let bgColor = "bg-slate-100 text-slate-300";
+                                            let borderColor = "border-slate-200";
+                                            let hoverClass = "cursor-not-allowed";
+                                            let isDisabled = true;
+
+                                            if (!isPast) {
+                                                if (dateInfo && !dateInfo.disabled) {
+                                                    isDisabled = false;
+                                                    if (dateInfo.status === "Green") {
+                                                        bgColor = "bg-green-100 text-green-900";
+                                                        borderColor = "border-green-300";
+                                                        hoverClass = "hover:bg-green-200 cursor-pointer";
+                                                    } else if (dateInfo.status === "Yellow") {
+                                                        bgColor = "bg-yellow-100 text-yellow-900";
+                                                        borderColor = "border-yellow-300";
+                                                        hoverClass = "hover:bg-yellow-200 cursor-pointer";
+                                                    } else if (dateInfo.status === "Red") {
+                                                        bgColor = "bg-red-100 text-red-900";
+                                                        borderColor = "border-red-300";
+                                                        hoverClass = "hover:bg-red-200 cursor-pointer";
+                                                    }
+                                                    // Grey (disabled) falls through to defaults
+                                                }
+                                                // dates not yet fetched (future months beyond range) stay grey/disabled
+                                            }
+
+                                            cells.push(
+                                                <button
+                                                    key={dateStr}
+                                                    type="button"
+                                                    disabled={isDisabled}
+                                                    onClick={() => {
+                                                        setEditDate(dateStr);
+                                                        setEditTime("");
+                                                    }}
+                                                    className={`
+                                                        min-h-[42px] rounded border transition-all text-xs font-semibold
+                                                        flex flex-col items-center justify-center
+                                                        ${isSelected ? "ring-2 ring-blue-500 ring-offset-1 shadow-md" : ""}
+                                                        ${bgColor} ${borderColor} ${hoverClass}
+                                                    `}
+                                                >
+                                                    <span className="text-sm font-bold">{day}</span>
+                                                </button>
+                                            );
+                                        }
+                                        return cells;
+                                    })()}
                                 </div>
                             </div>
                         ) : (

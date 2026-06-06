@@ -1431,23 +1431,46 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
-                    # --- SCHEDULING AGENT: Ensure further doses land on valid, open days ---
+                    # --- SCHEDULING AGENT: Find nearest valid slot for assigned doctor ---
+                    assigned_doc_ic = new_appt.doctor_ic
                     target_dt = current_calc_time.date()
-                    for offset in range(30): # Scan up to 30 days ahead for an open slot
+                    found_slot = False
+                    for offset in range(60):  # scan up to 60 days
                         search_dt = target_dt + timedelta(days=offset)
-                        
-                        # FIX: Use 3-letter day name ('mon', 'tue', etc.)
-                        day_str = search_dt.strftime("%a").lower() 
-                        
-                        # FIX: Use DoctorClinicAvailability
-                        oh = db.query(models.DoctorClinicAvailability).filter_by(clinic_id=new_appt.clinic_id, day_of_week=day_str).first()
-                        if oh:
-                            try: 
-                                # FIX: oh.start_time is already a time object in SQLAlchemy
-                                current_calc_time = datetime.combine(search_dt, oh.start_time)
-                                break # Found an open, valid day
-                            except Exception as e: 
+                        day_str = search_dt.strftime("%a").lower()
+
+                        # Check the SPECIFIC doctor's schedule first, fall back to any doctor
+                        if assigned_doc_ic:
+                            oh = db.query(models.DoctorClinicAvailability).filter(
+                                models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
+                                models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic,
+                                models.DoctorClinicAvailability.day_of_week == day_str,
+                                models.DoctorClinicAvailability.status == 'active'
+                            ).first()
+                        else:
+                            oh = db.query(models.DoctorClinicAvailability).filter(
+                                models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
+                                models.DoctorClinicAvailability.day_of_week == day_str,
+                                models.DoctorClinicAvailability.status == 'active'
+                            ).first()
+
+                        if oh and oh.day_of_week != 'none':
+                            try:
+                                candidate_time = datetime.combine(search_dt, oh.start_time)
+                                # Verify no scheduling conflict for this doctor at this time
+                                check_ic = assigned_doc_ic or oh.doctor_ic
+                                conflict = db.query(models.ApptStage).join(models.Appointment).filter(
+                                    models.Appointment.doctor_ic == check_ic,
+                                    models.ApptStage.scheduled_time == candidate_time,
+                                    models.ApptStage.status == 'scheduled'
+                                ).first() if check_ic else None
+                                if not conflict:
+                                    current_calc_time = candidate_time
+                                    found_slot = True
+                                    break
+                            except Exception:
                                 pass
+                    # If no open slot found in 60 days, keep the calculated time as fallback
                             
                     stage = models.ApptStage(
                         appointment_id=new_appt.id, stage_name=stage_name, 
@@ -1466,15 +1489,46 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
                 if current_calc_time:
-                    stage = models.ApptStage(
-                        appointment_id=new_appt.id, 
-                        stage_name="Booster", 
-                        scheduled_time=current_calc_time, 
-                        depends_on_stage_id=prev_stage_id, 
-                        status="scheduled"
-                    )
-                    db.add(stage)
-                    db.flush()
+                    # --- SCHEDULING AGENT: Find nearest valid slot for assigned doctor ---
+                    assigned_doc_ic = new_appt.doctor_ic
+                    target_dt = current_calc_time.date()
+                    found_slot = False
+                    for offset in range(60):  # scan up to 60 days
+                        search_dt = target_dt + timedelta(days=offset)
+                        day_str = search_dt.strftime("%a").lower()
+
+                        # Check the SPECIFIC doctor's schedule first, fall back to any doctor
+                        if assigned_doc_ic:
+                            oh = db.query(models.DoctorClinicAvailability).filter(
+                                models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
+                                models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic,
+                                models.DoctorClinicAvailability.day_of_week == day_str,
+                                models.DoctorClinicAvailability.status == 'active'
+                            ).first()
+                        else:
+                            oh = db.query(models.DoctorClinicAvailability).filter(
+                                models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
+                                models.DoctorClinicAvailability.day_of_week == day_str,
+                                models.DoctorClinicAvailability.status == 'active'
+                            ).first()
+
+                        if oh and oh.day_of_week != 'none':
+                            try:
+                                candidate_time = datetime.combine(search_dt, oh.start_time)
+                                # Verify no scheduling conflict for this doctor at this time
+                                check_ic = assigned_doc_ic or oh.doctor_ic
+                                conflict = db.query(models.ApptStage).join(models.Appointment).filter(
+                                    models.Appointment.doctor_ic == check_ic,
+                                    models.ApptStage.scheduled_time == candidate_time,
+                                    models.ApptStage.status == 'scheduled'
+                                ).first() if check_ic else None
+                                if not conflict:
+                                    current_calc_time = candidate_time
+                                    found_slot = True
+                                    break
+                            except Exception:
+                                pass
+                    # If no open slot found in 60 days, keep the calculated time as fallback
         else:
             # Strictly determine the stage name based on the service type
             final_stage_name = booking.service_type
@@ -3132,7 +3186,9 @@ class SchedContextReq(BaseModel):
     vaccine_name: Optional[str] = None
     target_dose: Optional[str] = None
     ic: Optional[str] = None
-    doctor_ic: Optional[str] = None   # <-- NEW: used for per-doctor date coloring
+    doctor_ic: Optional[str] = None
+    view_start_date: Optional[str] = None   # first day of the calendar month being viewed
+    view_days: Optional[int] = 42           # 6-week grid covers any month
 
 @app.post("/scheduling-agent/context")
 def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
@@ -3222,10 +3278,26 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
         ).all()
         working_days = set(row.day_of_week for row in avail_rows)
 
+    # Determine the start date for the calendar view
+    if req.view_start_date:
+        try:
+            view_start = datetime.strptime(req.view_start_date, "%Y-%m-%d").date()
+        except:
+            view_start = today
+    else:
+        view_start = today
+
+    view_days_count = req.view_days or 42
+
     dates_res = []
-    for day_offset in range(30):
-        target_date = today + timedelta(days=day_offset)
+    for day_offset in range(view_days_count):
+        target_date = view_start + timedelta(days=day_offset)
         day_str = target_date.strftime("%a").lower()  # "mon", "tue", …
+
+        # Past dates are always disabled
+        if target_date < today:
+            dates_res.append({"date": target_date.isoformat(), "status": "Grey", "disabled": True})
+            continue
 
         # Dates before vaccine minimum interval are disabled
         if target_date < min_allowed_date:
@@ -3260,13 +3332,12 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
         # Workload color thresholds (per-doctor view)
         if target_doc_ic:
             if day_appt_count >= 10:
-                status = "Red"     # Overloaded — doctor too busy
+                status = "Red"
             elif day_appt_count >= 5:
-                status = "Yellow"  # Medium load
+                status = "Yellow"
             else:
-                status = "Green"   # Low load
+                status = "Green"
         else:
-            # Clinic-wide fallback: scale thresholds by number of active doctors
             num_docs = max(len(docs), 1)
             if day_appt_count >= 10 * num_docs:
                 status = "Red"
