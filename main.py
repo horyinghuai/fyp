@@ -3132,24 +3132,14 @@ class SchedContextReq(BaseModel):
     vaccine_name: Optional[str] = None
     target_dose: Optional[str] = None
     ic: Optional[str] = None
+    doctor_ic: Optional[str] = None   # <-- NEW: used for per-doctor date coloring
 
 @app.post("/scheduling-agent/context")
 def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
-    # Simple fallback: just generate 30 days of data without database queries
     from datetime import datetime, timedelta
     today = datetime.now().date()
-    
-    dates_res = []
-    for day_offset in range(30):
-        target_date = today + timedelta(days=day_offset)
-        # Simple color rotation for demo
-        colors = ["Green", "Green", "Yellow", "Red"]
-        status = colors[day_offset % 4]
-        dates_res.append({"date": target_date.isoformat(), "status": status, "disabled": False})
-    
-    # Return empty doctors list for now
-    return {"doctors": [], "dates": dates_res}
-    
+    min_allowed_date = today  # default; may be pushed forward by vaccine interval logic
+
     # --- VACCINE AGENT INTERVAL CHECK ---
     if req.service_type == "Vaccine" and req.vaccine_name and req.target_dose and req.ic:
         vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
@@ -3165,77 +3155,128 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
                     models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
                     models.ApptStage.status.notin_(['canceled', 'no-show'])
                 ).order_by(models.ApptStage.scheduled_time.desc()).all()
-            
+
             if past_stages:
                 last_time = past_stages[0][0]
                 last_date = last_time.date() if isinstance(last_time, datetime) else last_time
-                if isinstance(last_date, str):
-                    try: last_date = datetime.strptime(last_date[:10], "%Y-%m-%d").date()
-                    except: pass
-                
                 try:
                     target_num = int(req.target_dose.lower().replace("dose ", ""))
                     sched = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id, dose_number=target_num).first()
                     if sched and sched.interval_days:
                         min_allowed_date = last_date + timedelta(days=sched.interval_days)
-                except: pass
+                except:
+                    pass
 
-    # --- SCHEDULING AGENT: DOCTOR RATING ---
-    docs = db.query(models.ClinicStaff).filter_by(clinic_id=req.clinic_id, role="doctor").all()
+    # --- SCHEDULING AGENT: DOCTOR RATING (sorted by lowest workload = best) ---
+    docs = db.query(models.Doctor)\
+        .join(models.DoctorClinicAvailability,
+              models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic)\
+        .filter(
+            models.DoctorClinicAvailability.clinic_id == req.clinic_id,
+            models.DoctorClinicAvailability.status == 'active'
+        ).distinct().all()
+
     doc_stats = []
     for d in docs:
         count = db.query(models.ApptStage)\
             .join(models.Appointment)\
-            .join(models.Patient)\
             .filter(
                 models.Appointment.doctor_ic == d.ic_passport_number,
-                models.Patient.clinic_id == req.clinic_id,
-                models.ApptStage.status.notin_(['canceled', 'no-show'])
+                models.Appointment.clinic_id == req.clinic_id,
+                models.ApptStage.status.notin_(['canceled', 'no-show']),
+                models.ApptStage.scheduled_time >= datetime.now()
             ).count()
         doc_stats.append({"ic": d.ic_passport_number, "name": d.name, "count": count})
-        
+
     doc_stats.sort(key=lambda x: x["count"])
     doc_res = []
     for idx, d in enumerate(doc_stats):
         stars = "⭐⭐⭐" if idx == 0 else ("⭐⭐" if idx == 1 else "⭐")
         doc_res.append({"ic": d["ic"], "name": f"Dr. {d['name']}", "label": stars})
-    
-    # --- SCHEDULING AGENT: 30-DAY WORKLOAD COLORS ---
-    today = datetime.now().date()
+
+    # --- SCHEDULING AGENT: 30-DAY WORKLOAD COLORS (per selected doctor) ---
+    #
+    # Color logic:
+    #   Grey   → doctor has no availability (not working) on that day_of_week
+    #   Red    → doctor has >= 10 upcoming appointments that day (overloaded)
+    #   Yellow → doctor has 5-9 appointments that day (medium)
+    #   Green  → doctor has 0-4 appointments that day (low load)
+    #
+    # If no specific doctor is selected we fall back to clinic-wide counts.
+
+    target_doc_ic = req.doctor_ic  # may be None / empty
+
+    # Pre-fetch the working days for the target doctor (or all clinic doctors)
+    if target_doc_ic:
+        avail_rows = db.query(models.DoctorClinicAvailability).filter(
+            models.DoctorClinicAvailability.doctor_ic == target_doc_ic,
+            models.DoctorClinicAvailability.clinic_id == req.clinic_id,
+            models.DoctorClinicAvailability.status == 'active'
+        ).all()
+        working_days = set(row.day_of_week for row in avail_rows)  # e.g. {"mon","tue","wed"}
+    else:
+        # Any doctor works → every day that at least one doctor is available
+        avail_rows = db.query(models.DoctorClinicAvailability).filter(
+            models.DoctorClinicAvailability.clinic_id == req.clinic_id,
+            models.DoctorClinicAvailability.status == 'active'
+        ).all()
+        working_days = set(row.day_of_week for row in avail_rows)
+
     dates_res = []
-    
     for day_offset in range(30):
         target_date = today + timedelta(days=day_offset)
-        is_disabled = target_date < min_allowed_date
-        
-        # If disabled (past date or min interval not met), mark as Grey
-        if is_disabled:
+        day_str = target_date.strftime("%a").lower()  # "mon", "tue", …
+
+        # Dates before vaccine minimum interval are disabled
+        if target_date < min_allowed_date:
             dates_res.append({"date": target_date.isoformat(), "status": "Grey", "disabled": True})
             continue
-        
-        # Count appointments for this date
+
+        # Doctor not working this day_of_week → Grey + disabled
+        if day_str not in working_days:
+            dates_res.append({"date": target_date.isoformat(), "status": "Grey", "disabled": True})
+            continue
+
+        # Count upcoming scheduled appointments for this date
         try:
-            day_appt_count = db.query(func.count(models.ApptStage.id))\
+            day_start = datetime.combine(target_date, datetime.min.time())
+            day_end = datetime.combine(target_date, datetime.max.time())
+
+            appt_query = db.query(models.ApptStage)\
                 .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
-                .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
                 .filter(
-                    models.Patient.clinic_id == req.clinic_id,
-                    cast(models.ApptStage.scheduled_time, Date) == target_date,
+                    models.Appointment.clinic_id == req.clinic_id,
+                    models.ApptStage.scheduled_time >= day_start,
+                    models.ApptStage.scheduled_time <= day_end,
                     models.ApptStage.status.notin_(['canceled', 'no-show'])
-                ).scalar() or 0
-        except Exception as e:
+                )
+            if target_doc_ic:
+                appt_query = appt_query.filter(models.Appointment.doctor_ic == target_doc_ic)
+
+            day_appt_count = appt_query.count()
+        except Exception:
             day_appt_count = 0
-        
-        # Color coding
-        if day_appt_count <= 2:
-            status = "Green"
-        elif day_appt_count <= 5:
-            status = "Yellow"
+
+        # Workload color thresholds (per-doctor view)
+        if target_doc_ic:
+            if day_appt_count >= 10:
+                status = "Red"     # Overloaded — doctor too busy
+            elif day_appt_count >= 5:
+                status = "Yellow"  # Medium load
+            else:
+                status = "Green"   # Low load
         else:
-            status = "Red"
-        
+            # Clinic-wide fallback: scale thresholds by number of active doctors
+            num_docs = max(len(docs), 1)
+            if day_appt_count >= 10 * num_docs:
+                status = "Red"
+            elif day_appt_count >= 5 * num_docs:
+                status = "Yellow"
+            else:
+                status = "Green"
+
         dates_res.append({"date": target_date.isoformat(), "status": status, "disabled": False})
-    
+
     return {"doctors": doc_res, "dates": dates_res}
 
 @app.post("/check-vaccine-history")

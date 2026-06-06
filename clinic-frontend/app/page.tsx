@@ -112,7 +112,8 @@ export default function AdminDashboard() {
                   clinic_id: activeClinicId, ic: editForm.patient_ic, 
                   service_type: editForm.service, 
                   vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
-                  target_dose: editForm.dose
+                  target_dose: editForm.dose,
+                  doctor_ic: editForm.doctor_ic || null   // <-- NEW: send selected doctor so calendar colors are per-doctor
               })
           }).then(r => r.json()).then(data => {
               setAgentContext(data);
