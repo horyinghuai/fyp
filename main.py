@@ -1411,12 +1411,11 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             db.flush()
             
             # Only create junction row if it's a completely new appointment parent
+            # NOTE: Blood Test junction rows are handled further below with a
+            # duplicate-existence check, preventing UniqueViolation errors
+            # when autoflush=False is in effect on the session.
             if booking.service_type == 'Vaccine' and items_list and v_model:
                 db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
-            elif booking.service_type == 'Blood Test' and items_list:
-                for t_name in items_list:
-                    bt = db.query(models.BloodTest).filter_by(name=t_name).first()
-                    if bt: db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
         
         start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
         
