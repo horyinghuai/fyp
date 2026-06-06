@@ -286,6 +286,17 @@ class VaccineCreate(BaseModel):
 class VaccineAIRequest(BaseModel):
     search_query: str
 
+class AgentLogCreateReq(BaseModel):
+    clinic_id: str
+    action: str
+    reasoning: str
+
+class CancelNotifyReq(BaseModel):
+    clinic_id: str
+    stage_id: str
+    cancel_reason: str
+    total_cancelled: Optional[int] = 1
+
 class BloodTestCreate(BaseModel):
     clinic_id: str
     name: str
@@ -1735,46 +1746,124 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
         start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
         status_val = booking.status
 
-        # -- ISSUE 2 FIX: If staying in multi-stage and vaccine is same, UPDATE in place --
+        # -- Rescheduling Agent: UPDATE in place if same vaccine brand, cascade by delta --
         if appt.appt_type == 'multi-stage' and mapped_appt_type == 'multi-stage' and v_model:
             vac_rec = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).first()
             if vac_rec and vac_rec.vaccine_id == v_model.id:
                 stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id, stage_name=dose_val).first()
                 if not stage:
                     stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id).order_by(models.ApptStage.id).first()
-                
+
                 if stage:
+                    # Capture ORIGINAL time before modification to compute the shift delta
+                    original_stage_time = stage.scheduled_time
+                    time_delta = start_time - original_stage_time   # e.g. +2 days
+
                     stage.scheduled_time = start_time
                     stage.status = status_val
                     if status_val == 'canceled' and hasattr(booking, 'cancel_reason'):
                         stage.cancel_reason = booking.cancel_reason
-                        
-                    schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
+
                     all_stages = db.query(models.ApptStage).filter_by(appointment_id=appt.id).order_by(models.ApptStage.id).all()
-                    
-                    current_calc_time = start_time
                     found_edited = False
+                    assigned_doc_ic = appt.doctor_ic
+
                     for s in all_stages:
                         if s.id == stage.id:
                             found_edited = True
                             continue
-                        
-                        # Only shift times for uncompleted stages that come AFTER the edited stage
+
+                        # Shift future uncompleted doses by the same delta (not interval recalc)
                         if found_edited and s.status != 'completed':
-                            target_num = 1
-                            if s.stage_name.lower().startswith('dose '):
-                                try: target_num = int(s.stage_name.split(" ")[1])
-                                except: pass
-                            elif s.stage_name.lower() == 'booster':
-                                target_num = v_model.total_doses + 1
-                                
-                            sched = next((sch for sch in schedules if sch.dose_number == target_num), None)
-                            interval_days = sched.interval_days if sched and sched.interval_days is not None else (180 if target_num > v_model.total_doses else 30)
-                            
-                            current_calc_time = current_calc_time + timedelta(days=interval_days)
-                            s.scheduled_time = current_calc_time
-                            
+                            new_calc_time = s.scheduled_time + time_delta
+                            target_dt = new_calc_time.date()
+
+                            # Scan ±7 days (closest first) to find nearest available doctor slot
+                            for raw_off in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7]:
+                                search_dt = target_dt + timedelta(days=raw_off)
+                                if search_dt < datetime.now().date():
+                                    continue
+                                day_s = search_dt.strftime("%a").lower()
+                                avail_q = db.query(models.DoctorClinicAvailability).filter(
+                                    models.DoctorClinicAvailability.clinic_id == appt.clinic_id,
+                                    models.DoctorClinicAvailability.day_of_week == day_s,
+                                    models.DoctorClinicAvailability.status == 'active'
+                                )
+                                if assigned_doc_ic:
+                                    avail_q = avail_q.filter(models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic)
+                                avail_row = avail_q.first()
+                                if avail_row and avail_row.day_of_week != 'none':
+                                    try:
+                                        # Preserve original time-of-day; fallback to avail start if conflict
+                                        candidate = datetime.combine(search_dt, new_calc_time.time())
+                                        check_ic = assigned_doc_ic or avail_row.doctor_ic
+                                        conflict = db.query(models.ApptStage).join(models.Appointment).filter(
+                                            models.Appointment.doctor_ic == check_ic,
+                                            models.ApptStage.scheduled_time == candidate,
+                                            models.ApptStage.status == 'scheduled',
+                                            models.ApptStage.id != s.id
+                                        ).first() if check_ic else None
+                                        if not conflict:
+                                            new_calc_time = candidate
+                                            break
+                                        candidate2 = datetime.combine(search_dt, avail_row.start_time)
+                                        if candidate2 != candidate:
+                                            conflict2 = db.query(models.ApptStage).join(models.Appointment).filter(
+                                                models.Appointment.doctor_ic == check_ic,
+                                                models.ApptStage.scheduled_time == candidate2,
+                                                models.ApptStage.status == 'scheduled',
+                                                models.ApptStage.id != s.id
+                                            ).first() if check_ic else None
+                                            if not conflict2:
+                                                new_calc_time = candidate2
+                                                break
+                                    except Exception:
+                                        pass
+
+                            s.scheduled_time = new_calc_time
+
                     db.commit()
+
+                    # ── Send notification (was skipped due to early return bug) ──
+                    if getattr(booking, 'source', 'web') == 'web' and not booking.skip_notification and booking.status not in ['completed', 'no-show']:
+                        try:
+                            patient_n = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
+                            if patient_n:
+                                dic_n = booking.details.get('assigned_doctor_id')
+                                doc_name_n = "ANY"
+                                if dic_n and str(dic_n).upper() not in ["ANY", "NONE", "NULL", ""]:
+                                    dm = db.query(models.Doctor).filter_by(ic_passport_number=dic_n).first()
+                                    if dm: doc_name_n = dm.name
+                                items_n = booking.details.get('items', [])
+                                dose_n  = booking.details.get('dose')
+                                notes_n = booking.details.get('general_notes')
+                                if booking.service_type == 'Vaccine':
+                                    det_n = f"{items_n[0] if items_n else ''} ({dose_n})" if dose_n else ", ".join(items_n)
+                                elif booking.service_type == 'Blood Test':
+                                    det_n = ", ".join(items_n) if items_n else ""
+                                else:
+                                    det_n = str(notes_n) if notes_n else "General Consultation"
+                                doc_str_n = f"\nDoctor: {doc_name_n}"
+                                if booking.status == 'canceled':
+                                    reason_n = (booking.cancel_reason or "Not specified").capitalize()
+                                    msg_n = (f"❌ Appointment Cancelled\n\nName: {patient_n.name}\nIC/Passport: {patient_n.ic_passport_number}\nPhone: {patient_n.phone}\nDate: {start_time.strftime('%Y-%m-%d')}\nTime: {start_time.strftime('%H:%M')}\nService: {booking.service_type}\nDetails: {det_n}{doc_str_n}\nCancellation Reason: {reason_n}")
+                                else:
+                                    msg_n = (f"✏️ Booking Successfully Modified!\n\nName: {patient_n.name}\nIC/Passport: {patient_n.ic_passport_number}\nPhone: {patient_n.phone}\nNew Date: {start_time.strftime('%Y-%m-%d')}\nNew Time: {start_time.strftime('%H:%M')}\nService: {booking.service_type}\nDetails: {det_n}{doc_str_n}")
+                                bot_u = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
+                                if patient_n.telegram_id:
+                                    msg_n += "\n\nTo rebook, type /start." if booking.status == 'canceled' else "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
+                                    tok = os.getenv("TELEGRAM_BOT_TOKEN")
+                                    async with httpx.AsyncClient() as hclient:
+                                        await hclient.post(f"https://api.telegram.org/bot{tok}/sendMessage", json={"chat_id": patient_n.telegram_id, "text": msg_n})
+                                    db.add(models.ChatMessage(clinic_id=patient_n.clinic_id, phone=patient_n.phone, telegram_id=patient_n.telegram_id, channel='telegram', message=None, reply=msg_n, status='replied'))
+                                else:
+                                    msg_n += f"\n\nTo rebook, visit https://t.me/{bot_u}?start={patient_n.clinic_id}" if booking.status == 'canceled' else f"\n\nContact us via https://t.me/{bot_u}?start={patient_n.clinic_id}"
+                                    await send_sms_async(patient_n.phone, msg_n)
+                                    db.add(models.ChatMessage(clinic_id=patient_n.clinic_id, phone=patient_n.phone, telegram_id=None, channel='sms', message=None, reply=msg_n, status='replied'))
+                                db.commit()
+                        except Exception as en:
+                            print(f"Failed to send inline update notification: {en}")
+
                     return {"status": "success"}
 
         # -- FALLBACK: Change of service type or vaccine type -> Delete and recreate --
@@ -1886,35 +1975,51 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                         
                     doctor_str = f"\nDoctor: {actual_doc_name}"
                     
-                    summary = (f"✏️ Booking Successfully Modified!\n\n"
-                               f"Name: {patient.name}\n"
-                               f"IC/Passport: {patient.ic_passport_number}\n"
-                               f"Phone: {patient.phone}\n"
-                               f"New Date: {start_time.strftime('%Y-%m-%d')}\n"
-                               f"New Time: {start_time.strftime('%H:%M')}\n"
-                               f"Service: {booking.service_type}\n"
-                               f"Details: {details_str}{doctor_str}")
-                               
+                    if booking.status == 'canceled':
+                        reason_text = (booking.cancel_reason or "Not specified").capitalize()
+                        summary = (f"❌ Appointment Cancelled\n\n"
+                                f"Name: {patient.name}\n"
+                                f"IC/Passport: {patient.ic_passport_number}\n"
+                                f"Phone: {patient.phone}\n"
+                                f"Date: {start_time.strftime('%Y-%m-%d')}\n"
+                                f"Time: {start_time.strftime('%H:%M')}\n"
+                                f"Service: {booking.service_type}\n"
+                                f"Details: {details_str}{doctor_str}\n"
+                                f"Cancellation Reason: {reason_text}")
+                    else:
+                        summary = (f"✏️ Booking Successfully Modified!\n\n"
+                                f"Name: {patient.name}\n"
+                                f"IC/Passport: {patient.ic_passport_number}\n"
+                                f"Phone: {patient.phone}\n"
+                                f"New Date: {start_time.strftime('%Y-%m-%d')}\n"
+                                f"New Time: {start_time.strftime('%H:%M')}\n"
+                                f"Service: {booking.service_type}\n"
+                                f"Details: {details_str}{doctor_str}")
+
                     bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
-                    
+
                     if patient.telegram_id:
-                        summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
+                        if booking.status == 'canceled':
+                            summary += "\n\nTo rebook, please type /start."
+                        else:
+                            summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
                         token = os.getenv("TELEGRAM_BOT_TOKEN")
                         async with httpx.AsyncClient() as client:
-                            await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": patient.telegram_id, 
-                                "text": summary
-                            })
-                            
-                        # Save notification to Chat_Messages table
-                        db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone, telegram_id=patient.telegram_id, channel='telegram', message=None, reply=summary, status='replied'))
+                            await client.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                            json={"chat_id": patient.telegram_id, "text": summary})
+                        db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone,
+                                                telegram_id=patient.telegram_id, channel='telegram',
+                                                message=None, reply=summary, status='replied'))
                         db.commit()
                     else:
-                        summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={patient.clinic_id}"
+                        if booking.status == 'canceled':
+                            summary += f"\n\nTo rebook, visit https://t.me/{bot_username}?start={patient.clinic_id}"
+                        else:
+                            summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={patient.clinic_id}"
                         await send_sms_async(patient.phone, summary)
-                        
-                        # Save notification to Chat_Messages table
-                        db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone, telegram_id=None, channel='sms', message=None, reply=summary, status='replied'))
+                        db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone,
+                                                telegram_id=None, channel='sms',
+                                                message=None, reply=summary, status='replied'))
                         db.commit()
             except Exception as e:
                 print(f"Failed to send update summary: {e}")
@@ -1967,6 +2072,82 @@ async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends
         except Exception as e:
             print(f"Failed to send cancel summary: {e}")
             
+    return {"status": "success"}
+
+@app.post("/admin/notify-cancellation")
+async def notify_cancellation(req: CancelNotifyReq, db: Session = Depends(get_db)):
+    stage = db.query(models.ApptStage).filter_by(id=req.stage_id).first()
+    if not stage: return {"status": "skip"}
+    appt = db.query(models.Appointment).filter_by(id=stage.appointment_id).first()
+    if not appt: return {"status": "skip"}
+    patient = db.query(models.Patient).filter_by(id=appt.patient_id).first()
+    if not patient: return {"status": "skip"}
+
+    doc = db.query(models.Doctor).filter_by(ic_passport_number=appt.doctor_ic).first() if appt.doctor_ic else None
+    appt_vaccines = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).all()
+    appt_tests = db.query(models.AppointmentBloodTest).filter_by(appointment_id=appt.id).all()
+
+    service = "Others"
+    details_str = appt.general_notes or "General Consultation"
+    if appt_vaccines:
+        service = "Vaccine"
+        v = db.query(models.Vaccine).filter_by(id=appt_vaccines[0].vaccine_id).first()
+        details_str = f"{v.name} ({stage.stage_name})" if v else stage.stage_name
+    elif appt_tests:
+        service = "Blood Test"
+        test_names = []
+        for at in appt_tests:
+            bt = db.query(models.BloodTest).filter_by(id=at.blood_test_id).first()
+            if bt: test_names.append(bt.name)
+        details_str = ", ".join(test_names)
+
+    doctor_str = doc.name if doc else "ANY"
+    reason_text = req.cancel_reason.capitalize() if req.cancel_reason else "Not specified"
+    cascade_note = f"\n(+ {req.total_cancelled - 1} additional dependent dose(s) cancelled)" if req.total_cancelled > 1 else ""
+
+    summary = (f"❌ Appointment Cancelled\n\n"
+               f"Name: {patient.name}\n"
+               f"IC/Passport: {patient.ic_passport_number}\n"
+               f"Service: {service}\n"
+               f"Details: {details_str}\n"
+               f"Date: {stage.scheduled_time.strftime('%Y-%m-%d')}\n"
+               f"Time: {stage.scheduled_time.strftime('%H:%M')}\n"
+               f"Doctor: {doctor_str}\n"
+               f"Cancellation Reason: {reason_text}{cascade_note}")
+
+    bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
+    try:
+        if patient.telegram_id:
+            summary += "\n\nTo rebook, please type /start."
+            token = os.getenv("TELEGRAM_BOT_TOKEN")
+            async with httpx.AsyncClient() as client:
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                  json={"chat_id": patient.telegram_id, "text": summary})
+            db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone,
+                                      telegram_id=patient.telegram_id, channel='telegram',
+                                      message=None, reply=summary, status='replied'))
+            db.commit()
+        else:
+            summary += f"\n\nTo rebook, visit https://t.me/{bot_username}?start={patient.clinic_id}"
+            await send_sms_async(patient.phone, summary)
+            db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone,
+                                      telegram_id=None, channel='sms',
+                                      message=None, reply=summary, status='replied'))
+            db.commit()
+    except Exception as e:
+        print(f"Failed to send cancellation notification: {e}")
+    return {"status": "success"}
+
+@app.post("/admin/agent-log")
+def create_agent_log_entry(req: AgentLogCreateReq, db: Session = Depends(get_db)):
+    try:
+        import uuid as _uuid
+        _uuid.UUID(req.clinic_id)
+    except (ValueError, TypeError):
+        req.clinic_id = "c1111111-1111-1111-1111-111111111111"
+    log = models.AgentLog(clinic_id=req.clinic_id, action=req.action, reasoning=req.reasoning)
+    db.add(log)
+    db.commit()
     return {"status": "success"}
 
 @app.delete("/delete-appointment/{stage_id}")
@@ -3686,6 +3867,12 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
             break
 
     if highest_interrupted_num > highest_completed_num:
+        # If no dose was ever completed (e.g. entire series cancelled), treat as fresh start
+        if highest_completed_num == 0:
+            return {"next_dose": ("Dose 1" if vaccine.total_doses > 1 else "Single Dose"),
+                    "is_brand_switch": False, "active_brand": None,
+                    "no_history": True, "all_dose_options": all_dose_options_for(vaccine),
+                    "type_disabled": False, "disable_reason": None}
         # Latest dose was missed — check interruption restart condition
         should_restart = False
         if vaccine.restart_if_interrupted and vaccine.interruption_restart_days and last_completed_date:

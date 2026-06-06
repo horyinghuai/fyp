@@ -11,6 +11,15 @@ const toTitleCase = (str: string) => {
     return str.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
 };
 
+const getDoseNum = (name: string): number => {
+  if (!name) return 0;
+  const n = name.toLowerCase().trim();
+  if (n === 'single dose') return 1;
+  if (n === 'booster') return 9999;
+  const m = n.match(/^dose\s+(\d+)$/);
+  return m ? parseInt(m[1]) : 0;
+};
+
 const localizer = momentLocalizer(moment);
 
 export default function AdminDashboard() {
@@ -68,8 +77,18 @@ export default function AdminDashboard() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<View>('week'); 
 
-  const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
+const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
   const [showNotifications, setShowNotifications] = useState(false);
+
+  // --- Rescheduling Agent ---
+  const [isSystemGenerated, setIsSystemGenerated] = useState<boolean>(false);
+  const [rescheduleWarning, setRescheduleWarning] = useState<{
+    message: string;
+    stagesToCancel: string[];
+  } | null>(null);
+  const [cascadeCancelReason, setCascadeCancelReason] = useState("Change of schedule");
+  const [cascadeCancelCustom, setCascadeCancelCustom] = useState("");
+  const [minEditDate, setMinEditDate] = useState<string>(moment().format("YYYY-MM-DD"));
 
   useEffect(() => { 
       const userStr = localStorage.getItem('aicas_user');
@@ -107,13 +126,16 @@ export default function AdminDashboard() {
   }, [events, pendingReviewEvent]);
 
   useEffect(() => {
-    if (isNewBooking && editForm.patient_ic && editForm.service) {
+    if ((isNewBooking || isEditingEvent) && editForm.patient_ic && editForm.service) {
         if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
 
         setIsLoadingContext(true);
 
-        // Pass the first day of the currently-viewed month
         const viewStartDate = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-01`;
+        // For system-generated dose edits, start from the minimum allowed date if later
+        const effectiveStart = (isEditingEvent && isSystemGenerated && minEditDate > viewStartDate)
+            ? minEditDate
+            : viewStartDate;
 
         fetch(`http://127.0.0.1:8000/scheduling-agent/context`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -124,14 +146,13 @@ export default function AdminDashboard() {
                 vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
                 target_dose: editForm.dose,
                 doctor_ic: editForm.doctor_ic || null,
-                view_start_date: viewStartDate,
+                view_start_date: effectiveStart,
                 view_days: 42
             })
         }).then(r => r.json()).then(data => {
             setAgentContext(data);
             setIsLoadingContext(false);
-            // Auto-select the top recommended doctor only when none is chosen yet
-            if (data.doctors && data.doctors.length > 0 && (!editForm.doctor_ic || editForm.doctor_ic === 'ANY')) {
+            if (isNewBooking && data.doctors && data.doctors.length > 0 && (!editForm.doctor_ic || editForm.doctor_ic === 'ANY')) {
                 setEditForm(prev => ({...prev, doctor_ic: data.doctors[0].ic}));
             }
         }).catch(err => {
@@ -139,24 +160,32 @@ export default function AdminDashboard() {
             setIsLoadingContext(false);
         });
 
-        // Re-fetch AI recommendations only when booking parameters change (not month navigation)
-        fetch(`http://127.0.0.1:8000/recommend-slots`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                clinic_id: activeClinicId, base_date: moment().format("YYYY-MM-DD"),
-                doctor_pref: editForm.doctor_ic || 'ANY', duration: editForm.service === 'Vaccine' ? 15 : 30,
-                service_type: editForm.service,
-                vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
-                dose: editForm.dose, ic: editForm.patient_ic
-            })
-        }).then(r => r.json()).then(data => {
-            if (!data.error) setAiRec(data);
-        }).catch(err => console.error('Failed to load AI recommendations:', err));
+        // Load AI recommendations for new bookings AND system-generated dose edits
+        if (isNewBooking || (isEditingEvent && isSystemGenerated)) {
+            fetch(`http://127.0.0.1:8000/recommend-slots`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    clinic_id: activeClinicId,
+                    base_date: (isEditingEvent && minEditDate > moment().format("YYYY-MM-DD"))
+                        ? minEditDate
+                        : moment().format("YYYY-MM-DD"),
+                    doctor_pref: editForm.doctor_ic || 'ANY',
+                    duration: editForm.service === 'Vaccine' ? 15 : 30,
+                    service_type: editForm.service,
+                    vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
+                    dose: editForm.dose, ic: editForm.patient_ic
+                })
+            }).then(r => r.json()).then(data => {
+                if (!data.error) setAiRec(data);
+            }).catch(err => console.error('Failed to load AI recommendations:', err));
+        } else {
+            setAiRec(null);
+        }
 
     } else {
         setAgentContext(null); setAiRec(null); setIsLoadingContext(false);
     }
-  }, [isNewBooking, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear]);
+  }, [isNewBooking, isEditingEvent, isSystemGenerated, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear, minEditDate]);
 
   const loadDoctors = async (cid: string) => {
       try {
@@ -519,10 +548,107 @@ export default function AdminDashboard() {
                 throw new Error(errorData.detail || 'Update failed');
             }
         }
+        // Rescheduling Agent: log the modification
+        if (!isNewBooking) {
+          const logAction = isSystemGenerated
+            ? 'Rescheduling Agent – System-Generated Appointment Modified (Date/Time/Doctor only)'
+            : 'Rescheduling Agent – Parent Appointment Modified';
+          await fetch(`http://127.0.0.1:8000/admin/agent-log`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              clinic_id: activeClinicId,
+              action: logAction,
+              reasoning: `Patient IC: ${selectedEvent?.patient_ic}. Stage: ${selectedEvent?.stage_name || 'N/A'}. Appt ID: ${selectedEvent?.appt_id}. New scheduled time: ${scheduled_time}. Doctor IC: ${editForm.doctor_ic || 'ANY'}.`
+            })
+          }).catch(() => {});
+        }
         window.location.reload(); 
     } catch (err: any) {
         const errorMsg = err?.message || "Failed to connect to backend";
         alert(`Error: ${errorMsg}`);
+    }
+  };
+
+  const handleCancelClick = () => {
+    if (!selectedEvent) return;
+    const stageName = selectedEvent.stage_name || selectedEvent.dose || '';
+    const dNum = getDoseNum(stageName);
+    const service = selectedEvent.service;
+
+    // Non-vaccine or standalone — use regular single-stage cancel modal
+    if (service !== 'Vaccine' || dNum === 0) {
+      setCancelModalVisible(true);
+      return;
+    }
+
+    const seriesStages = events
+      .filter((e: any) => e.appt_id === selectedEvent.appt_id && e.status !== 'canceled')
+      .sort((a: any, b: any) => getDoseNum(a.stage_name) - getDoseNum(b.stage_name));
+
+    let warningMsg = '';
+    let stagesToCancel: string[] = [];
+
+    if (dNum === 1) {
+      const names = seriesStages.map((s: any) => s.stage_name).join(', ');
+      warningMsg = `Cancelling Dose 1 will also cancel ALL future doses in this vaccine series (${names}). This action cannot be undone.`;
+      stagesToCancel = seriesStages.map((s: any) => s.id);
+    } else if (dNum === 9999) {
+      warningMsg = `Cancelling the Booster appointment will remove only the Booster appointment.`;
+      stagesToCancel = [selectedEvent.id];
+    } else {
+      const futureDoses = seriesStages.filter((s: any) => getDoseNum(s.stage_name) >= dNum);
+      const futureNames = futureDoses.map((s: any) => s.stage_name).join(', ');
+      warningMsg = `Cancelling ${stageName} will also cancel ${futureNames} and leave the vaccine series incomplete.`;
+      stagesToCancel = futureDoses.map((s: any) => s.id);
+    }
+
+    setCascadeCancelReason("Change of schedule");
+    setCascadeCancelCustom("");
+    setRescheduleWarning({ message: warningMsg, stagesToCancel });
+  };
+
+  const executeCascadeCancellation = async () => {
+    if (!rescheduleWarning || !selectedEvent) return;
+    const reason = cascadeCancelReason === 'Other' ? cascadeCancelCustom.trim() : cascadeCancelReason;
+    if (!reason) { alert('Please provide a cancellation reason.'); return; }
+
+    try {
+      for (const stageId of rescheduleWarning.stagesToCancel) {
+        await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${stageId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'canceled', cancel_reason: reason })
+        });
+      }
+      await fetch(`http://127.0.0.1:8000/admin/agent-log`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clinic_id: activeClinicId,
+          action: `Rescheduling Agent – Cascade Cancellation (${selectedEvent.stage_name})`,
+          reasoning: `Patient IC: ${selectedEvent.patient_ic}. Appt: ${selectedEvent.appt_id}. Cancelled ${rescheduleWarning.stagesToCancel.length} stage(s): [${rescheduleWarning.stagesToCancel.join(', ')}]. Reason: ${reason}`
+        })
+      }).catch(() => {});
+
+      // Send cancellation notification to patient (use first stage as reference)
+      if (rescheduleWarning.stagesToCancel.length > 0) {
+        await fetch(`http://127.0.0.1:8000/admin/notify-cancellation`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clinic_id: activeClinicId,
+            stage_id: rescheduleWarning.stagesToCancel[0],
+            cancel_reason: reason,
+            total_cancelled: rescheduleWarning.stagesToCancel.length
+          })
+        }).catch(() => {});
+      }
+
+      setRescheduleWarning(null);
+      setSelectedEvent(null);
+      window.location.reload();
+    } catch (err) {
+      alert('Failed to cancel appointment(s). Please try again.');
     }
   };
 
@@ -541,7 +667,18 @@ export default function AdminDashboard() {
             const errorData = await cancelRes.json();
             throw new Error(errorData.detail || 'Cancellation failed');
         }
-        
+
+        // Send cancellation notification to patient
+        await fetch(`http://127.0.0.1:8000/admin/notify-cancellation`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                clinic_id: activeClinicId,
+                stage_id: selectedEvent.id,
+                cancel_reason: reason,
+                total_cancelled: 1
+            })
+        }).catch(() => {});
+
         window.location.reload();
     } catch (err: any) {
         const errorMsg = err?.message || "Failed to connect to backend";
@@ -568,9 +705,45 @@ export default function AdminDashboard() {
     setInlineCancelReason(event.cancel_reason || "");
     setIsEditingEvent(false);
     setIsNewBooking(false);
+
+    // --- Rescheduling Agent: determine type and minimum date ---
+    const dNum = getDoseNum(event.stage_name || event.dose || '');
+    const sysGen = event.service === 'Vaccine' && dNum >= 2;
+    setIsSystemGenerated(sysGen);
+    setRescheduleWarning(null);
+
+    let calcMin = moment().format("YYYY-MM-DD");
+    if (sysGen) {
+      const seriesStages = events
+        .filter((e: any) => e.appt_id === event.appt_id && e.status !== 'canceled' && e.id !== event.id)
+        .sort((a: any, b: any) => getDoseNum(a.stage_name) - getDoseNum(b.stage_name));
+      const prevNum = dNum === 9999
+        ? Math.max(...seriesStages.filter((s: any) => getDoseNum(s.stage_name) < 9999).map((s: any) => getDoseNum(s.stage_name)), 0)
+        : dNum - 1;
+      const prevStage = seriesStages.find((s: any) => getDoseNum(s.stage_name) === prevNum);
+      if (prevStage) {
+        const vacName = (event.items || [])[0] || '';
+        const vac = vaccinesList.find((v: any) => v.name === vacName);
+        const targetNum = dNum === 9999 ? ((vac?.total_doses || 0) + 1) : dNum;
+        const sched = vac?.schedules?.find((s: any) => s.dose_number === targetNum);
+        if (sched?.interval_days) {
+          calcMin = moment(prevStage.start).add(sched.interval_days, 'days').format("YYYY-MM-DD");
+        }
+      }
+      // Auto-navigate calendar to the earliest valid month
+      if (calcMin > moment().format("YYYY-MM-DD")) {
+        const m = moment(calcMin);
+        setViewMonth(m.month());
+        setViewYear(m.year());
+      }
+    }
+    setMinEditDate(calcMin);
   };
 
   const openNewBookingModal = () => {
+    setIsSystemGenerated(false);   // ← ADD
+    setMinEditDate(moment().format("YYYY-MM-DD")); // ← ADD
+    setRescheduleWarning(null);    // ← ADD
     setViewMonth(new Date().getMonth());   // ← ADD
     setViewYear(new Date().getFullYear()); // ← ADD
     setEditDate(moment().format("YYYY-MM-DD"));
@@ -785,6 +958,71 @@ export default function AdminDashboard() {
         </div>
       )}
 
+      {/* Rescheduling Agent — Cascade Cancellation Warning Modal */}
+        {rescheduleWarning && (
+            <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-[75] backdrop-blur-sm">
+                <div className="bg-white p-6 rounded-2xl shadow-2xl w-[480px]">
+                    <div className="flex items-start gap-3 mb-5">
+                        <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+                            <span className="text-xl">⚠️</span>
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-lg text-slate-800 mb-1">Cancellation Warning</h3>
+                            <p className="text-sm text-slate-600 leading-relaxed">{rescheduleWarning.message}</p>
+                        </div>
+                    </div>
+
+                    <div className="border-t border-slate-100 pt-4 space-y-3">
+                        <div>
+                            <label className="block text-sm font-bold text-slate-700 mb-1">Reason for Cancellation</label>
+                            <select
+                                value={cascadeCancelReason}
+                                onChange={e => setCascadeCancelReason(e.target.value)}
+                                className="w-full p-2 border rounded-lg bg-white outline-none"
+                            >
+                                <option value="Change of schedule">Change of schedule</option>
+                                <option value="Feeling better">Feeling better</option>
+                                <option value="Booked wrong service">Booked wrong service</option>
+                                <option value="Personal reasons">Personal reasons</option>
+                                <option value="Other">Other (Custom)</option>
+                            </select>
+                        </div>
+                        {cascadeCancelReason === 'Other' && (
+                            <input
+                                type="text"
+                                placeholder="Specify reason..."
+                                value={cascadeCancelCustom}
+                                onChange={e => setCascadeCancelCustom(e.target.value)}
+                                className="w-full p-2 border rounded-lg outline-none"
+                            />
+                        )}
+                        <p className="text-xs text-slate-400">
+                            This will cancel <strong className="text-slate-600">{rescheduleWarning.stagesToCancel.length}</strong> appointment stage(s). This action cannot be undone.
+                        </p>
+                    </div>
+
+                    <div className="flex justify-end gap-3 mt-5">
+                        <button
+                            onClick={() => {
+                                setRescheduleWarning(null);
+                                setCascadeCancelReason("Change of schedule");
+                                setCascadeCancelCustom("");
+                            }}
+                            className="px-4 py-2 bg-slate-100 rounded-lg text-slate-700 font-medium hover:bg-slate-200"
+                        >
+                            Back
+                        </button>
+                        <button
+                            onClick={executeCascadeCancellation}
+                            className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700"
+                        >
+                            Confirm Cancellation
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
       {cancelModalVisible && (
           <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-[70] backdrop-blur-sm">
               <div className="bg-white p-6 rounded-2xl shadow-2xl w-[400px]">
@@ -812,7 +1050,15 @@ export default function AdminDashboard() {
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-[500px] overflow-hidden max-h-[90vh] overflow-y-auto">
             <div className="bg-slate-50 px-6 py-4 border-b flex justify-between items-center">
-              <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2"><CalIcon size={18}/> {isNewBooking ? "Add New Booking" : "Booking Details"}</h3>
+              <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                    <CalIcon size={18}/>
+                    {isNewBooking ? "Add New Booking" : "Booking Details"}
+                    {!isNewBooking && isSystemGenerated && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 ml-1 uppercase tracking-wide">
+                            System-Generated
+                        </span>
+                    )}
+                </h3>
               <button onClick={() => { setSelectedEvent(null); setIsNewBooking(false); }} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
             </div>
 
@@ -893,17 +1139,102 @@ export default function AdminDashboard() {
                 const isPatientSelected = isNewBooking && isCreatingNewPatient 
                     ? (newPatientForm.name && newPatientForm.ic_passport_number && newPatientForm.phone) 
                     : !!editForm.patient_ic;
-                const isFieldsDisabled = isNewBooking && !isPatientSelected;
+                const viewOnly = !isNewBooking && !isEditingEvent;
+        const isFieldsDisabled = isNewBooking && !isPatientSelected;
 
-                return (
-                  <div className={`space-y-4 border-t pt-4 transition-opacity ${isFieldsDisabled ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>
+        // ── Static read-only view (no form controls shown) ──
+        if (viewOnly) {
+          const statusColors: Record<string, string> = {
+            scheduled: 'bg-blue-100 text-blue-700',
+            completed: 'bg-emerald-100 text-emerald-700',
+            canceled:  'bg-red-100 text-red-700',
+            'no-show': 'bg-amber-100 text-amber-700',
+          };
+          const statusLabel = editForm.status
+            ? editForm.status.charAt(0).toUpperCase() + editForm.status.slice(1)
+            : '—';
+
+          return (
+            <div className="border-t pt-4">
+              <dl className="space-y-2.5 text-sm">
+                <div className="flex gap-3">
+                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Service</dt>
+                  <dd className="text-slate-800 font-medium">{editForm.service || '—'}</dd>
+                </div>
+
+                {editForm.service === 'Vaccine' && (
+                  <>
+                    <div className="flex gap-3">
+                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Vaccine</dt>
+                      <dd className="text-slate-800">{editForm.items[0] || '—'}</dd>
+                    </div>
+                    <div className="flex gap-3">
+                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Dose</dt>
+                      <dd className="text-slate-800">{editForm.dose || '—'}</dd>
+                    </div>
+                  </>
+                )}
+
+                {editForm.service === 'Blood Test' && (
+                  <div className="flex gap-3">
+                    <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Tests</dt>
+                    <dd className="text-slate-800">{editForm.items.join(', ') || '—'}</dd>
+                  </div>
+                )}
+
+                {editForm.service === 'Others' && (
+                  <div className="flex gap-3">
+                    <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Reason</dt>
+                    <dd className="text-slate-800">{editForm.reason || '—'}</dd>
+                  </div>
+                )}
+
+                <div className="flex gap-3">
+                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Doctor</dt>
+                  <dd className="text-slate-800">{selectedEvent?.doctor || 'Not Assigned'}</dd>
+                </div>
+
+                <div className="flex gap-3">
+                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Date</dt>
+                  <dd className="text-slate-800">{editDate ? moment(editDate).format('D MMMM YYYY (ddd)') : '—'}</dd>
+                </div>
+
+                <div className="flex gap-3">
+                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Time</dt>
+                  <dd className="text-slate-800">
+                    {editTime || (selectedEvent ? moment(selectedEvent.start).format('HH:mm') : '—')}
+                  </dd>
+                </div>
+
+                <div className="flex gap-3 items-start">
+                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Status</dt>
+                  <dd>
+                    <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${statusColors[editForm.status] || 'bg-slate-100 text-slate-600'}`}>
+                      {statusLabel}
+                    </span>
+                  </dd>
+                </div>
+
+                {editForm.status === 'canceled' && selectedEvent?.cancel_reason && (
+                  <div className="flex gap-3">
+                    <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Cancel Reason</dt>
+                    <dd className="text-red-600">{selectedEvent.cancel_reason}</dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+          );
+        }
+
+        return (
+        <div className={`space-y-4 border-t pt-4 transition-opacity ${isFieldsDisabled ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>
                       
                       {/* --- 2. SERVICE TYPE --- */}
                       <div className="col-span-2">
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
                         <select 
                             value={editForm.service} 
-                            disabled={!isNewBooking && editForm.service === "Vaccine"}
+                            disabled={isSystemGenerated}
                             onChange={(e) => {
                                 setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''});
                                 setEditTime("");
@@ -916,6 +1247,14 @@ export default function AdminDashboard() {
                         </select>
                       </div>
 
+                      {/* Rescheduling Agent: inform user of restrictions */}
+                      {!isNewBooking && isSystemGenerated && isEditingEvent && (
+                        <div className="col-span-2 flex items-center gap-2 px-3 py-2 bg-purple-50 border border-purple-200 rounded-xl text-xs text-purple-700 font-medium">
+                            <span>🔒</span>
+                            <span>System-generated appointment: only <strong>Date</strong>, <strong>Time</strong>, and <strong>Doctor</strong> can be modified.</span>
+                        </div>
+                      )}
+
                       {/* --- 3. SERVICE DETAILS --- */}
                       <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 col-span-2">
                           {editForm.service === 'Vaccine' && (
@@ -924,7 +1263,7 @@ export default function AdminDashboard() {
                                 <label className="block text-xs font-bold text-slate-500 mb-1">Vaccine Name</label>
                                 <select 
                                     value={editForm.items[0] || ''} 
-                                    disabled={!isNewBooking && editForm.service === "Vaccine"}
+                                    disabled={isSystemGenerated}
                                     onChange={async e => {
                                         const val = e.target.value;
                                         setVaccineNoHistory(false);
@@ -1092,7 +1431,7 @@ export default function AdminDashboard() {
                       </div>
 
                       {/* --- 4. AI RECOMMENDATION BOX --- */}
-                      {isNewBooking && aiRec && (
+                      {(isNewBooking || (isEditingEvent && isSystemGenerated)) && aiRec && (
                           <div className="col-span-2 mb-4 bg-indigo-50 border border-indigo-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
                               <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
                               <div className="flex items-center gap-2 mb-2">
@@ -1152,6 +1491,14 @@ export default function AdminDashboard() {
                                     <div className="flex items-center gap-1"><div className="w-3.5 h-3.5 bg-red-400 rounded border border-red-600"></div><span>Busy</span></div>
                                     <div className="flex items-center gap-1"><div className="w-3.5 h-3.5 bg-slate-300 rounded border border-slate-400"></div><span>Unavailable</span></div>
                                 </div>
+
+                                {/* Rescheduling Agent: minimum date notice for dose 2+ */}
+                                {!isNewBooking && isSystemGenerated && minEditDate > moment().format("YYYY-MM-DD") && (
+                                    <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-700 font-semibold">
+                                        <span>📅</span>
+                                        <span>Earliest allowed date (interval requirement): <strong>{moment(minEditDate).format("D MMMM YYYY")}</strong></span>
+                                    </div>
+                                )}
 
                                 {/* Month / Year Navigation */}
                                 <div className="flex items-center justify-between mb-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
@@ -1230,6 +1577,7 @@ export default function AdminDashboard() {
                                             const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                                             const cellDate = new Date(viewYear, viewMonth, day);
                                             const isPast = cellDate < todayDate;
+                                            const isBelowMin = cellDate < new Date(minEditDate + 'T00:00:00');
                                             const dateInfo = dateMap.get(dateStr);
                                             const isSelected = editDate === dateStr;
 
@@ -1238,7 +1586,7 @@ export default function AdminDashboard() {
                                             let hoverClass = "cursor-not-allowed";
                                             let isDisabled = true;
 
-                                            if (!isPast) {
+                                            if (!isPast && !isBelowMin) {
                                                 if (dateInfo && !dateInfo.disabled) {
                                                     isDisabled = false;
                                                     if (dateInfo.status === "Green") {
@@ -1386,7 +1734,7 @@ export default function AdminDashboard() {
                           }
                       }} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300">Cancel Modify</button>
                   ) : (
-                      <button onClick={() => setCancelModalVisible(true)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Cancel Booking</button>
+                      <button onClick={handleCancelClick} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Cancel Booking</button>
                   )}
               
               {isEditingEvent ? (

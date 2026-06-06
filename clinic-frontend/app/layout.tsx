@@ -3,7 +3,7 @@
 import './globals.css';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope, ShieldCheck, PlusCircle } from 'lucide-react';
+import { Calendar, Syringe, Droplet, Users, MessageSquare, LogOut, Bell, UserCircle, Settings, Stethoscope, ShieldCheck, PlusCircle, BarChart3 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -137,6 +137,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { name: 'Patients', path: '/patients', icon: <Users size={20} />, module: 'PATIENT_MANAGEMENT' },
     { name: 'Doctors', path: '/doctors', icon: <Stethoscope size={20} />, module: 'DOCTOR_MANAGEMENT' },
     { name: 'Bot Replies', path: '/bot-replies', icon: <MessageSquare size={20} />, module: 'CHAT_SUPPORT' },
+    { name: 'Reports', path: '/reports', icon: <BarChart3 size={20} />, module: 'REPORTS' },
   ];
 
   if (userSession?.role === 'primary_admin' || userSession?.role === 'temporary_admin') {
