@@ -508,19 +508,22 @@ export default function ReportsPage() {
     const now = new Date();
     const thisYear = now.getFullYear();
 
-    const totalAppointments = appointmentGroups.length;
-    const totalVaccineAppointments = appointmentGroups.filter((a) => a.service === "Vaccine").length;
-    const totalBloodTestAppointments = appointmentGroups.filter(
+    // Retrieve counts directly from appointmentsRaw (which maps 1:1 to the appointment_stages table)
+    const totalAppointments = appointmentsRaw.length;
+    const totalVaccineAppointments = appointmentsRaw.filter((a) => a.service === "Vaccine").length;
+    const totalBloodTestAppointments = appointmentsRaw.filter(
       (a) => a.service === "Blood Test"
     ).length;
 
-    const completionCount = appointmentGroups.filter((a) => a.latestStatus === "completed").length;
-    const cancellationCount = appointmentGroups.filter((a) =>
-      ["canceled", "no-show"].includes(a.latestStatus)
+    // Update the completion/cancellation counters to also use the stages (appointmentsRaw) 
+    // so that the percentage math remains accurate against the new totalAppointments base.
+    const completionCount = appointmentsRaw.filter((a) => normalizeStatus(a.status) === "completed").length;
+    const cancellationCount = appointmentsRaw.filter((a) =>
+      ["canceled", "no-show"].includes(normalizeStatus(a.status))
     ).length;
 
-    const todayAppointments = appointmentGroups.filter((a) =>
-      a.stages.some((stage: any) => sameDay(stage.start, now))
+    const todayAppointments = appointmentsRaw.filter((a) =>
+      sameDay(new Date(a.start), now)
     ).length;
 
     const completionRate = totalAppointments ? (completionCount / totalAppointments) * 100 : 0;
