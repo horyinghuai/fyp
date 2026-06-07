@@ -3385,26 +3385,31 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
         
     # 2. Calculate Overall Workload (Scheduled & Upcoming Only)
     doc_ics = [d.ic_passport_number for d in doctors]
-    
+
     start_of_period = datetime.combine(start_date, datetime.min.time())
     end_of_period = start_of_period + timedelta(days=8)
-    
-    period_appts = db.query(models.Appointment.doctor_ic, models.ApptStage.scheduled_time).join(
+
+    # FIX: Use ALL future appointments (same as star rating in scheduling-agent/context)
+    # so recommendation is consistent with displayed stars
+    all_future_appts = db.query(models.Appointment.doctor_ic, models.ApptStage.scheduled_time).join(
         models.ApptStage, models.Appointment.id == models.ApptStage.appointment_id
     ).filter(
         models.Appointment.doctor_ic.in_(doc_ics),
-        models.ApptStage.status == 'scheduled',
-        models.ApptStage.scheduled_time >= datetime.now(),
-        models.ApptStage.scheduled_time <= end_of_period
+        models.Appointment.clinic_id == req.clinic_id,  # FIX: add clinic_id filter
+        models.ApptStage.status.notin_(['canceled', 'no-show']),  # FIX: match context query
+        models.ApptStage.scheduled_time >= datetime.now()
+        # FIX: removed end_of_period cap — count ALL future, same as stars
     ).all()
-    
+
     workloads = {d.ic_passport_number: 0 for d in doctors}
     time_density = {}
-    
-    for dic, stime in period_appts:
+
+    for dic, stime in all_future_appts:
         if stime:
             workloads[dic] += 1
-            time_density[stime] = time_density.get(stime, 0) + 1
+            # Only track time density within the 8-day viewing window
+            if stime <= end_of_period:
+                time_density[stime] = time_density.get(stime, 0) + 1
 
     max_wl = max(workloads.values()) if workloads.values() else 1
     if max_wl == 0: max_wl = 1
