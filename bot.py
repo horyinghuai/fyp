@@ -670,7 +670,7 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
                         # Determine if appointment is in the future
                         from datetime import datetime
                         appt_dt = datetime.strptime(f"{appt['date']} {appt['time']}", "%Y-%m-%d %H:%M:%S")
-                        is_future = appt_dt > datetime.now()
+                        is_future = appt_dt > datetime.now() and appt.get('status', 'scheduled') != 'completed'
                         
                         details = f"📋 *Appointment Details*\n"
                         details += f"Date: {appt['date']}\nTime: {appt['time'][:5]}\nService: {appt['service']}\n"

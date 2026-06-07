@@ -1443,7 +1443,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                               </div>
                               <div className="text-sm text-indigo-900 mb-3">
                                   <div className="font-semibold text-lg flex items-center gap-2">
-                                      Dr {aiRec.recommended_doctor} <span className="text-sm">⭐⭐⭐</span>
+                                      {aiRec.recommended_doctor} <span className="text-sm">⭐⭐⭐</span>
                                   </div>
                                   <div className="opacity-90">{moment(aiRec.raw_date).format("D MMMM YYYY")} at {aiRec.raw_time.substring(0,5)}</div>
                                   <div className="mt-2 text-xs italic opacity-80 border-l-2 border-indigo-300 pl-2">"{aiRec.reasoning}"</div>
@@ -1723,9 +1723,8 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                               setSelectedEvent(null); 
                               setIsNewBooking(false); 
                           } else {
-                              // Restore the original unedited data including patient_ic
                               setEditForm({
-                                  patient_ic: selectedEvent.patient_ic || '', // <--- Added missing property
+                                  patient_ic: selectedEvent.patient_ic || '',
                                   service: selectedEvent.service,
                                   items: selectedEvent.items || [],
                                   dose: selectedEvent.dose || '',
@@ -1737,13 +1736,33 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                           }
                       }} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300">Cancel Modify</button>
                   ) : (
-                      <button onClick={handleCancelClick} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300 transition-colors">Cancel Booking</button>
+                      <button
+                        onClick={handleCancelClick}
+                        disabled={editForm.status === 'completed'}
+                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                          editForm.status === 'completed'
+                            ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                            : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                        }`}
+                      >
+                        Cancel Booking
+                      </button>
                   )}
               
               {isEditingEvent ? (
                 <button onClick={handleUpdateOrAddEvent} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium">{isNewBooking ? "Create Booking" : "Save Changes"}</button>
               ) : (
-                <button onClick={() => setIsEditingEvent(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium">Modify Booking</button>
+                <button
+                  onClick={() => setIsEditingEvent(true)}
+                  disabled={editForm.status === 'completed'}
+                  className={`px-4 py-2 rounded-lg font-medium ${
+                    editForm.status === 'completed'
+                      ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
+                >
+                  Modify Booking
+                </button>
               )}
             </div>
           </div>

@@ -1925,8 +1925,8 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                                         .order_by(models.ApptStage.scheduled_time.asc())
                                         .all()
                                     )
-                                    upcoming_lines = "\n".join(
-                                        f"  • {st.stage_name}: {st.scheduled_time.strftime('%Y-%m-%d %H:%M')}"
+                                    upcoming_lines = "".join(
+                                        f"{st.stage_name}\nDate: {st.scheduled_time.strftime('%Y-%m-%d')}\nTime: {st.scheduled_time.strftime('%H:%M')}\n\n"
                                         for st in updated_stages
                                     )
                                     msg_n = (
@@ -1936,7 +1936,8 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                                         f"Phone: {patient_n.phone}\n"
                                         f"Service: {booking.service_type}\n"
                                         f"Details: {det_n}{doc_str_n}\n\n"
-                                        f"📅 Updated Upcoming Schedule:\n{upcoming_lines}"
+                                        f"📅 Updated Upcoming Schedule:\n\n{upcoming_lines}"
+                                        f"Don't worry, we will send you a reminder before each appointment."
                                     )
 
                                 bot_u = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
@@ -2070,6 +2071,9 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
             try:
                 patient = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
                 if patient:
+                    # ADD THESE TWO LINES:
+                    date_part = booking.scheduled_time.split(" ")[0]
+                    time_part = booking.scheduled_time.split(" ")[1][:5]
                     doc_ic = booking.details.get('assigned_doctor_id')
                     actual_doc_name = "ANY"
                     if doc_ic and str(doc_ic).upper() not in ["ANY", "NONE", "NULL", ""]:
@@ -2103,14 +2107,16 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                             f"Cancellation Reason: {reason_fb}"
                         )
                     else:
+                        date_part = booking.scheduled_time.split(" ")[0]
+                        time_part = booking.scheduled_time.split(" ")[1][:5]
                         fallback_stages = (
                             db.query(models.ApptStage)
                             .filter_by(appointment_id=appt.id, status='scheduled')
                             .order_by(models.ApptStage.scheduled_time.asc())
                             .all()
                         )
-                        upcoming_fb = "\n".join(
-                            f"  • {st.stage_name}: {st.scheduled_time.strftime('%Y-%m-%d %H:%M')}"
+                        upcoming_fb = "".join(
+                            f"{st.stage_name}\nDate: {st.scheduled_time.strftime('%Y-%m-%d')}\nTime: {st.scheduled_time.strftime('%H:%M')}\n\n"
                             for st in fallback_stages
                         )
                         summary = (
@@ -2121,7 +2127,7 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                             f"New Date: {date_part}\nNew Time: {time_part}\n"
                             f"Service: {booking.service_type}\n"
                             f"Details: {details_str}{doctor_str}"
-                            + (f"\n\n📅 Updated Upcoming Schedule:\n{upcoming_fb}" if fallback_stages else "")
+                            + (f"\n\n📅 Updated Upcoming Schedule:\n\n{upcoming_fb}Don't worry, we will send you a reminder before each appointment." if fallback_stages else "")
                         )
 
                     bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
@@ -2986,7 +2992,8 @@ def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_
             "details": details_block,
             "date": stage.scheduled_time.strftime("%Y-%m-%d"),
             "time": stage.scheduled_time.strftime("%H:%M:%S"),
-            "doctor_name": doc.name if doc else "ANY"
+            "doctor_name": doc.name if doc else "ANY",
+            "status": stage.status  # ADD THIS
         })
     return res
 
@@ -3510,27 +3517,41 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
         vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
         if vaccine:
             same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == vaccine.type).all()]
-            past_stages = db.query(models.ApptStage.scheduled_time)\
-                .select_from(models.ApptStage)\
-                .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
-                .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
-                .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
-                .filter(
-                    models.Patient.ic_passport_number == req.ic,
-                    models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
-                    models.ApptStage.status.notin_(['canceled', 'no-show'])
-                ).order_by(models.ApptStage.scheduled_time.desc()).all()
+            try:
+                d_lower = req.target_dose.lower().strip()
+                if d_lower == "booster":
+                    target_num = vaccine.total_doses + 1
+                elif d_lower in ("single dose", "dose 1"):
+                    target_num = 1
+                else:
+                    target_num = int(d_lower.replace("dose ", ""))
+            except:
+                target_num = 1
 
-            if past_stages:
-                last_time = past_stages[0][0]
-                last_date = last_time.date() if isinstance(last_time, datetime) else last_time
-                try:
-                    target_num = int(req.target_dose.lower().replace("dose ", ""))
-                    sched = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=vaccine.id, dose_number=target_num).first()
+            # FIX: Use PREVIOUS dose's date as base, not the latest stage
+            if target_num > 1:
+                prev_num = target_num - 1
+                prev_dose_name = "Single Dose" if (prev_num == 1 and vaccine.total_doses == 1) else f"Dose {prev_num}"
+
+                prev_stage = db.query(models.ApptStage.scheduled_time)\
+                    .select_from(models.ApptStage)\
+                    .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
+                    .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
+                    .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
+                    .filter(
+                        models.Patient.ic_passport_number == req.ic,
+                        models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
+                        models.ApptStage.stage_name == prev_dose_name,
+                        models.ApptStage.status.notin_(['canceled', 'no-show'])
+                    ).order_by(models.ApptStage.scheduled_time.desc()).first()
+
+                if prev_stage:
+                    prev_date = prev_stage[0].date() if isinstance(prev_stage[0], datetime) else prev_stage[0]
+                    sched = db.query(models.VaccineDoseSchedule).filter_by(
+                        vaccine_id=vaccine.id, dose_number=target_num
+                    ).first()
                     if sched and sched.interval_days:
-                        min_allowed_date = last_date + timedelta(days=sched.interval_days)
-                except:
-                    pass
+                        min_allowed_date = prev_date + timedelta(days=sched.interval_days)
 
     # --- SCHEDULING AGENT: DOCTOR RATING (sorted by lowest workload = best) ---
     docs = db.query(models.Doctor)\
@@ -3876,6 +3897,13 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
             try: return int(n.split(" ")[1])
             except: return 0
         return 0
+    
+    def get_dose_name(num):
+        if num == vaccine.total_doses + 1 and vaccine.has_booster:
+            return "Booster"
+        if vaccine.total_doses == 1 and num == 1:
+            return "Single Dose"
+        return f"Dose {num}"
 
     def all_dose_options_for(vac):
         opts = []
