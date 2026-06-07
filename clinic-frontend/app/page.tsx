@@ -37,7 +37,7 @@ export default function AdminDashboard() {
   
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [stats, setStats] = useState({ total: 0, consultations: 0, vaccines: 0, bloodTests: 0 });
+  const [stats, setStats] = useState({ total: 0, others: 0, vaccines: 0, bloodTests: 0 });
   
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
@@ -237,11 +237,23 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
             setEvents([]); return; 
         }
 
-        let vacCount = 0, btCount = 0, consultCount = 0;
+        const now = new Date();
+        const isToday = (d: Date) => 
+          d.getDate() === now.getDate() && 
+          d.getMonth() === now.getMonth() && 
+          d.getFullYear() === now.getFullYear();
+
+        let vacCount = 0, btCount = 0, othersCount = 0;
+        
         const formattedEvents = data.map((appt: any) => {
-          if (appt.service === "Vaccine") vacCount++;
-          if (appt.service === "Blood Test") btCount++;
-          if (appt.service === "Others") consultCount++;
+          const startDate = new Date(appt.start);
+          
+          // Only increment counts if the event is today
+          if (isToday(startDate)) {
+              if (appt.service === "Vaccine") vacCount++;
+              if (appt.service === "Blood Test") btCount++;
+              if (appt.service === "Others") othersCount++;
+          }
           
           let detailsText = appt.reason || "Others";
           if (appt.service === "Vaccine") detailsText = `${appt.items[0]} (${appt.dose})`;
@@ -255,7 +267,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
           return { 
             ...appt, 
             service_details: detailsText,
-            start: new Date(appt.start), 
+            start: startDate, 
             end: new Date(appt.end), 
             title: titleText,
             cancel_reason: appt.cancel_reason
@@ -263,7 +275,8 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
         });
         
         setEvents(formattedEvents);
-        setStats({ total: formattedEvents.length, consultations: consultCount, vaccines: vacCount, bloodTests: btCount });
+        // Only show total count for today
+        setStats({ total: (vacCount + btCount + othersCount), others: othersCount, vaccines: vacCount, bloodTests: btCount });
       })
       .catch(() => { setError(true); });
   };
@@ -429,7 +442,13 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                         break; // Exit loop and allow booking
                                     }
                                 } else {
-                                    return alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
+                                    alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
+                                    if (valData.restart_required) {
+                                        const vac = vaccinesList.find((v: any) => v.name === editForm.items[0]);
+                                        const firstDose = vac && vac.total_doses > 1 ? 'Dose 1' : 'Single Dose';
+                                        setEditForm((prev: any) => ({ ...prev, dose: firstDose }));
+                                    }
+                                    return;
                                 }
                             } else {
                                 editForm.dose = valData.target_dose; // Auto-apply the backend's determined dose
@@ -588,7 +607,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
     }
 
     const seriesStages = events
-      .filter((e: any) => e.appt_id === selectedEvent.appt_id && e.status !== 'canceled')
+      .filter((e: any) => e.appt_id === selectedEvent.appt_id && e.status !== 'canceled' && e.status !== 'no-show')
       .sort((a: any, b: any) => getDoseNum(a.stage_name) - getDoseNum(b.stage_name));
 
     let warningMsg = '';
@@ -913,11 +932,11 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
       <div className="grid grid-cols-4 gap-6 mb-8">
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-blue-100 text-blue-600 rounded-xl"><User size={24}/></div>
-          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Total Bookings</p><h3 className="text-3xl font-black text-slate-800">{stats.total}</h3></div></div>
+          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Today's Bookings</p><h3 className="text-3xl font-black text-slate-800">{stats.total}</h3></div></div>
         </div>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-orange-100 text-orange-600 rounded-xl"><FileText size={24}/></div>
-          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Others</p><h3 className="text-3xl font-black text-slate-800">{stats.consultations}</h3></div></div>
+          <div><p className="text-[11px] font-bold text-slate-400 uppercase">Others</p><h3 className="text-3xl font-black text-slate-800">{stats.others}</h3></div></div>
         </div>
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
           <div className="flex items-center gap-4"><div className="p-3 bg-purple-100 text-purple-600 rounded-xl"><Activity size={24}/></div>

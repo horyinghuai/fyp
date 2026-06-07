@@ -1426,8 +1426,15 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 ).order_by(models.ApptStage.scheduled_time.desc()).first()
             
             if prev_stage:
-                existing_appt_id = prev_stage.appointment_id
-                prev_stage_id = prev_stage.id
+                # Only reuse the appointment if it has NO interrupted (no-show/cancelled) stages.
+                # This prevents new-cycle doses from being mixed into the old appointment.
+                has_interrupted = db.query(models.ApptStage).filter(
+                    models.ApptStage.appointment_id == prev_stage.appointment_id,
+                    models.ApptStage.status.in_(['no-show', 'canceled'])
+                ).first() is not None
+                if not has_interrupted:
+                    existing_appt_id = prev_stage.appointment_id
+                    prev_stage_id = prev_stage.id
                 
         if existing_appt_id:
             # Re-use existing appointment parent
@@ -3841,7 +3848,7 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
         .filter(
             models.Patient.ic_passport_number == req.ic,
             models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
-            models.ApptStage.status.notin_(['canceled', 'no-show'])
+            models.ApptStage.status != 'canceled'
         )
 
     # Exclude the appointment currently being edited so it doesn't trigger duplicate errors against itself
@@ -3878,7 +3885,7 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     all_dates = {}
     
     for s in past_stages:
-        stage_name, scheduled_time, status, v_id = s
+        stage_name, scheduled_time, status, v_id, _stage_id = s
         dt = scheduled_time.date() if isinstance(scheduled_time, datetime) else scheduled_time
         d_num = get_dose_num(stage_name)
         if d_num == 0: continue
@@ -3941,9 +3948,16 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
             default=None
         )
         if first_missed_after_completed is not None and target_num == first_missed_after_completed:
-            # Direct rebook of the first missed/no-show dose — allow it
-            # (It was an internal no-show or cascade-cancel, not an external skip)
-            pass  # proceed to interval validation below
+                # Direct rebook — but first verify the series hasn't expired
+                if vaccine.restart_if_interrupted and vaccine.interruption_restart_days is not None and highest_comp:
+                    max_allowed_date = highest_comp['date'] + timedelta(days=vaccine.interruption_restart_days)
+                    if req_date > max_allowed_date:
+                        return {
+                            "is_valid": False,
+                            "reason": "Your previous vaccine series has expired and must be restarted from Dose 1.",
+                            "restart_required": True
+                        }
+                pass  # series valid — proceed to interval validation below
         else:
             # Patient is trying to skip ahead past a missed dose — ask if done externally
             missed_name = get_dose_name(first_missed_after_completed) if first_missed_after_completed else target_name
@@ -4162,10 +4176,22 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
             if datetime.now().date() > lcd + timedelta(days=vaccine.interruption_restart_days):
                 should_restart = True
 
-        next_num = 1 if should_restart else first_interrupted_num  # FIX: use first, not highest
+        if should_restart:
+            # Series expired — return as no_history so frontend shows dose picker from Dose 1
+            return {
+                "next_dose": "Dose 1" if vaccine.total_doses > 1 else "Single Dose",
+                "is_brand_switch": False,
+                "active_brand": None,
+                "no_history": True,
+                "all_dose_options": all_dose_options_for(vaccine),
+                "type_disabled": False,
+                "disable_reason": None,
+            }
+
+        next_num = first_interrupted_num
         if next_num == vaccine.total_doses + 1 and vaccine.has_booster:
             next_dose = "Booster"
-        elif vaccine.total_doses == 1:
+        elif vaccine.total_doses == 1 and next_num == 1:
             next_dose = "Single Dose"
         else:
             next_dose = f"Dose {next_num}"
@@ -4174,7 +4200,24 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
                 "no_history": False, "all_dose_options": [],
                 "type_disabled": False, "disable_reason": None}
 
-    # --- Normal continuation: next dose after highest valid ---
+    if (vaccine.restart_if_interrupted
+            and vaccine.interruption_restart_days is not None
+            and highest_completed_num > 0):
+        last_comp_info = dose_map.get(highest_completed_num)
+        if last_comp_info and last_comp_info['date']:
+            lcd = last_comp_info['date']
+            lcd_date = lcd.date() if isinstance(lcd, datetime) else lcd
+            if datetime.now().date() > lcd_date + timedelta(days=vaccine.interruption_restart_days):
+                return {
+                    "next_dose": "Dose 1" if vaccine.total_doses > 1 else "Single Dose",
+                    "is_brand_switch": False,
+                    "active_brand": None,
+                    "no_history": True,
+                    "all_dose_options": all_dose_options_for(vaccine),
+                    "type_disabled": False,
+                    "disable_reason": None,
+                }
+
     next_num = highest_valid_num + 1
     max_possible = vaccine.total_doses + (1 if vaccine.has_booster else 0)
     if next_num > max_possible: next_num = 1  # safety fallback
