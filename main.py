@@ -1217,10 +1217,37 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
     
     original_status = stage.status
     
-    if 'status' in data: 
-        stage.status = data['status']
-        if data['status'] == 'canceled' and 'cancel_reason' in data:
+    if 'status' in data:
+        new_status = data['status']
+        stage.status = new_status
+        if new_status in ('canceled', 'no-show') and 'cancel_reason' in data:
             stage.cancel_reason = data['cancel_reason']
+
+        # Auto-cascade cancel all future doses when a dose is marked no-show
+        if new_status == 'no-show':
+            appt_for_cascade = db.query(models.Appointment).filter_by(id=stage.appointment_id).first()
+            if appt_for_cascade and appt_for_cascade.appt_type == 'multi-stage':
+                # Determine numeric position of this stage
+                def _dose_num(n: str) -> int:
+                    if not n: return 0
+                    nl = n.lower().strip()
+                    if 'single' in nl: return 1
+                    if 'booster' in nl: return 9999
+                    import re as _re
+                    m = _re.match(r'dose\s+(\d+)', nl)
+                    return int(m.group(1)) if m else 0
+
+                this_num = _dose_num(stage.stage_name or '')
+                if this_num > 0:
+                    future_stages = db.query(models.ApptStage).filter(
+                        models.ApptStage.appointment_id == stage.appointment_id,
+                        models.ApptStage.id != stage.id,
+                        models.ApptStage.status == 'scheduled'
+                    ).all()
+                    for fs in future_stages:
+                        if _dose_num(fs.stage_name or '') > this_num:
+                            fs.status = 'canceled'
+                            fs.cancel_reason = f'Auto-cancelled: {stage.stage_name} was marked as No-Show'
             
     if 'scheduled_time' in data:
         dt_str = data['scheduled_time'].replace("T", " ")
@@ -1750,119 +1777,207 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
         if appt.appt_type == 'multi-stage' and mapped_appt_type == 'multi-stage' and v_model:
             vac_rec = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).first()
             if vac_rec and vac_rec.vaccine_id == v_model.id:
-                stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id, stage_name=dose_val).first()
+                stage = db.query(models.ApptStage).filter_by(
+                    appointment_id=appt.id, stage_name=dose_val
+                ).first()
                 if not stage:
-                    stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id).order_by(models.ApptStage.id).first()
+                    stage = db.query(models.ApptStage).filter_by(
+                        appointment_id=appt.id
+                    ).order_by(models.ApptStage.id).first()
 
                 if stage:
-                    # Capture ORIGINAL time before modification to compute the shift delta
-                    original_stage_time = stage.scheduled_time
-                    time_delta = start_time - original_stage_time   # e.g. +2 days
+                    # ── Delta = how far the user moved this booking ──
+                    original_time = stage.scheduled_time          # capture BEFORE modification
+                    time_delta    = start_time - original_time    # e.g. +2 days / -1 day
 
                     stage.scheduled_time = start_time
                     stage.status = status_val
-                    if status_val == 'canceled' and hasattr(booking, 'cancel_reason'):
+                    if status_val == 'canceled' and booking.cancel_reason:
                         stage.cancel_reason = booking.cancel_reason
 
-                    all_stages = db.query(models.ApptStage).filter_by(appointment_id=appt.id).order_by(models.ApptStage.id).all()
-                    found_edited = False
+                    all_stages = (
+                        db.query(models.ApptStage)
+                        .filter_by(appointment_id=appt.id)
+                        .order_by(models.ApptStage.scheduled_time.asc())
+                        .all()
+                    )
                     assigned_doc_ic = appt.doctor_ic
+                    found_edited = False
 
                     for s in all_stages:
                         if s.id == stage.id:
                             found_edited = True
                             continue
 
-                        # Shift future uncompleted doses by the same delta (not interval recalc)
-                        if found_edited and s.status != 'completed':
-                            new_calc_time = s.scheduled_time + time_delta
-                            target_dt = new_calc_time.date()
+                        if not found_edited:
+                            continue
+                        if s.status == 'completed':
+                            continue
 
-                            # Scan ±7 days (closest first) to find nearest available doctor slot
-                            for raw_off in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7]:
-                                search_dt = target_dt + timedelta(days=raw_off)
-                                if search_dt < datetime.now().date():
-                                    continue
-                                day_s = search_dt.strftime("%a").lower()
-                                avail_q = db.query(models.DoctorClinicAvailability).filter(
-                                    models.DoctorClinicAvailability.clinic_id == appt.clinic_id,
-                                    models.DoctorClinicAvailability.day_of_week == day_s,
-                                    models.DoctorClinicAvailability.status == 'active'
+                        # Shift by the exact same delta as the edited dose
+                        raw_new_dt = s.scheduled_time + time_delta
+                        target_date = raw_new_dt.date()
+
+                        # ── Find nearest slot: prefer exact date, then ±7 days ──
+                        found_slot = False
+                        for raw_off in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7]:
+                            search_dt = target_date + timedelta(days=raw_off)
+                            if search_dt < datetime.now().date():
+                                continue
+                            day_key = search_dt.strftime("%a").lower()
+
+                            avail_q = db.query(models.DoctorClinicAvailability).filter(
+                                models.DoctorClinicAvailability.clinic_id == appt.clinic_id,
+                                models.DoctorClinicAvailability.day_of_week == day_key,
+                                models.DoctorClinicAvailability.status == 'active'
+                            )
+                            if assigned_doc_ic:
+                                avail_q = avail_q.filter(
+                                    models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic
                                 )
-                                if assigned_doc_ic:
-                                    avail_q = avail_q.filter(models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic)
-                                avail_row = avail_q.first()
-                                if avail_row and avail_row.day_of_week != 'none':
-                                    try:
-                                        # Preserve original time-of-day; fallback to avail start if conflict
-                                        candidate = datetime.combine(search_dt, new_calc_time.time())
+                            avail_row = avail_q.first()
+
+                            if avail_row and avail_row.day_of_week != 'none':
+                                try:
+                                    # Try to keep same time-of-day; fallback to avail start
+                                    for cand_time in [raw_new_dt.time(), avail_row.start_time]:
+                                        cand_dt = datetime.combine(search_dt, cand_time)
                                         check_ic = assigned_doc_ic or avail_row.doctor_ic
-                                        conflict = db.query(models.ApptStage).join(models.Appointment).filter(
-                                            models.Appointment.doctor_ic == check_ic,
-                                            models.ApptStage.scheduled_time == candidate,
-                                            models.ApptStage.status == 'scheduled',
-                                            models.ApptStage.id != s.id
-                                        ).first() if check_ic else None
-                                        if not conflict:
-                                            new_calc_time = candidate
-                                            break
-                                        candidate2 = datetime.combine(search_dt, avail_row.start_time)
-                                        if candidate2 != candidate:
-                                            conflict2 = db.query(models.ApptStage).join(models.Appointment).filter(
+                                        conflict = (
+                                            db.query(models.ApptStage)
+                                            .join(models.Appointment)
+                                            .filter(
                                                 models.Appointment.doctor_ic == check_ic,
-                                                models.ApptStage.scheduled_time == candidate2,
+                                                models.ApptStage.scheduled_time == cand_dt,
                                                 models.ApptStage.status == 'scheduled',
-                                                models.ApptStage.id != s.id
-                                            ).first() if check_ic else None
-                                            if not conflict2:
-                                                new_calc_time = candidate2
-                                                break
-                                    except Exception:
-                                        pass
+                                                models.ApptStage.id != s.id,
+                                            )
+                                            .first()
+                                        ) if check_ic else None
+                                        if not conflict:
+                                            s.scheduled_time = cand_dt
+                                            found_slot = True
+                                            break
+                                    if found_slot:
+                                        break
+                                except Exception:
+                                    pass
 
-                            s.scheduled_time = new_calc_time
+                        if not found_slot:
+                            # No doctor slot nearby — keep mathematically shifted date
+                            s.scheduled_time = raw_new_dt
 
-                    db.commit()
+                    db.flush()
 
-                    # ── Send notification (was skipped due to early return bug) ──
-                    if getattr(booking, 'source', 'web') == 'web' and not booking.skip_notification and booking.status not in ['completed', 'no-show']:
+                    # ── Build notification including ALL upcoming scheduled stages ──
+                    if (
+                        getattr(booking, 'source', 'web') == 'web'
+                        and not booking.skip_notification
+                        and booking.status not in ['completed', 'no-show']
+                    ):
                         try:
-                            patient_n = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
+                            patient_n = db.query(models.Patient).filter_by(id=appt.patient_id).first()
                             if patient_n:
                                 dic_n = booking.details.get('assigned_doctor_id')
                                 doc_name_n = "ANY"
                                 if dic_n and str(dic_n).upper() not in ["ANY", "NONE", "NULL", ""]:
                                     dm = db.query(models.Doctor).filter_by(ic_passport_number=dic_n).first()
-                                    if dm: doc_name_n = dm.name
+                                    if dm:
+                                        doc_name_n = dm.name
+
                                 items_n = booking.details.get('items', [])
                                 dose_n  = booking.details.get('dose')
                                 notes_n = booking.details.get('general_notes')
+
                                 if booking.service_type == 'Vaccine':
-                                    det_n = f"{items_n[0] if items_n else ''} ({dose_n})" if dose_n else ", ".join(items_n)
+                                    det_n = (
+                                        f"{items_n[0] if items_n else ''} ({dose_n})"
+                                        if dose_n else ", ".join(items_n)
+                                    )
                                 elif booking.service_type == 'Blood Test':
                                     det_n = ", ".join(items_n) if items_n else ""
                                 else:
                                     det_n = str(notes_n) if notes_n else "General Consultation"
+
                                 doc_str_n = f"\nDoctor: {doc_name_n}"
+
                                 if booking.status == 'canceled':
                                     reason_n = (booking.cancel_reason or "Not specified").capitalize()
-                                    msg_n = (f"❌ Appointment Cancelled\n\nName: {patient_n.name}\nIC/Passport: {patient_n.ic_passport_number}\nPhone: {patient_n.phone}\nDate: {start_time.strftime('%Y-%m-%d')}\nTime: {start_time.strftime('%H:%M')}\nService: {booking.service_type}\nDetails: {det_n}{doc_str_n}\nCancellation Reason: {reason_n}")
+                                    msg_n = (
+                                        f"❌ Appointment Cancelled\n\n"
+                                        f"Name: {patient_n.name}\n"
+                                        f"IC/Passport: {patient_n.ic_passport_number}\n"
+                                        f"Phone: {patient_n.phone}\n"
+                                        f"Date: {start_time.strftime('%Y-%m-%d')}\n"
+                                        f"Time: {start_time.strftime('%H:%M')}\n"
+                                        f"Service: {booking.service_type}\n"
+                                        f"Details: {det_n}{doc_str_n}\n"
+                                        f"Cancellation Reason: {reason_n}"
+                                    )
                                 else:
-                                    msg_n = (f"✏️ Booking Successfully Modified!\n\nName: {patient_n.name}\nIC/Passport: {patient_n.ic_passport_number}\nPhone: {patient_n.phone}\nNew Date: {start_time.strftime('%Y-%m-%d')}\nNew Time: {start_time.strftime('%H:%M')}\nService: {booking.service_type}\nDetails: {det_n}{doc_str_n}")
+                                    # Fetch all remaining SCHEDULED stages for this series
+                                    updated_stages = (
+                                        db.query(models.ApptStage)
+                                        .filter_by(
+                                            appointment_id=appt.id,
+                                            status='scheduled'
+                                        )
+                                        .order_by(models.ApptStage.scheduled_time.asc())
+                                        .all()
+                                    )
+                                    upcoming_lines = "\n".join(
+                                        f"  • {st.stage_name}: {st.scheduled_time.strftime('%Y-%m-%d %H:%M')}"
+                                        for st in updated_stages
+                                    )
+                                    msg_n = (
+                                        f"✏️ Booking Successfully Modified!\n\n"
+                                        f"Name: {patient_n.name}\n"
+                                        f"IC/Passport: {patient_n.ic_passport_number}\n"
+                                        f"Phone: {patient_n.phone}\n"
+                                        f"Service: {booking.service_type}\n"
+                                        f"Details: {det_n}{doc_str_n}\n\n"
+                                        f"📅 Updated Upcoming Schedule:\n{upcoming_lines}"
+                                    )
+
                                 bot_u = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
                                 if patient_n.telegram_id:
-                                    msg_n += "\n\nTo rebook, type /start." if booking.status == 'canceled' else "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
+                                    msg_n += (
+                                        "\n\nTo rebook, type /start."
+                                        if booking.status == 'canceled'
+                                        else "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
+                                    )
                                     tok = os.getenv("TELEGRAM_BOT_TOKEN")
                                     async with httpx.AsyncClient() as hclient:
-                                        await hclient.post(f"https://api.telegram.org/bot{tok}/sendMessage", json={"chat_id": patient_n.telegram_id, "text": msg_n})
-                                    db.add(models.ChatMessage(clinic_id=patient_n.clinic_id, phone=patient_n.phone, telegram_id=patient_n.telegram_id, channel='telegram', message=None, reply=msg_n, status='replied'))
+                                        await hclient.post(
+                                            f"https://api.telegram.org/bot{tok}/sendMessage",
+                                            json={"chat_id": patient_n.telegram_id, "text": msg_n},
+                                        )
+                                    db.add(models.ChatMessage(
+                                        clinic_id=patient_n.clinic_id,
+                                        phone=patient_n.phone,
+                                        telegram_id=patient_n.telegram_id,
+                                        channel='telegram',
+                                        message=None, reply=msg_n, status='replied',
+                                    ))
                                 else:
-                                    msg_n += f"\n\nTo rebook, visit https://t.me/{bot_u}?start={patient_n.clinic_id}" if booking.status == 'canceled' else f"\n\nContact us via https://t.me/{bot_u}?start={patient_n.clinic_id}"
+                                    msg_n += (
+                                        f"\n\nTo rebook, visit https://t.me/{bot_u}?start={patient_n.clinic_id}"
+                                        if booking.status == 'canceled'
+                                        else f"\n\nContact us via https://t.me/{bot_u}?start={patient_n.clinic_id}"
+                                    )
                                     await send_sms_async(patient_n.phone, msg_n)
-                                    db.add(models.ChatMessage(clinic_id=patient_n.clinic_id, phone=patient_n.phone, telegram_id=None, channel='sms', message=None, reply=msg_n, status='replied'))
+                                    db.add(models.ChatMessage(
+                                        clinic_id=patient_n.clinic_id,
+                                        phone=patient_n.phone,
+                                        telegram_id=None,
+                                        channel='sms',
+                                        message=None, reply=msg_n, status='replied',
+                                    ))
                                 db.commit()
                         except Exception as en:
                             print(f"Failed to send inline update notification: {en}")
+                    else:
+                        db.commit()
 
                     return {"status": "success"}
 
@@ -1976,25 +2091,38 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     doctor_str = f"\nDoctor: {actual_doc_name}"
                     
                     if booking.status == 'canceled':
-                        reason_text = (booking.cancel_reason or "Not specified").capitalize()
-                        summary = (f"❌ Appointment Cancelled\n\n"
-                                f"Name: {patient.name}\n"
-                                f"IC/Passport: {patient.ic_passport_number}\n"
-                                f"Phone: {patient.phone}\n"
-                                f"Date: {start_time.strftime('%Y-%m-%d')}\n"
-                                f"Time: {start_time.strftime('%H:%M')}\n"
-                                f"Service: {booking.service_type}\n"
-                                f"Details: {details_str}{doctor_str}\n"
-                                f"Cancellation Reason: {reason_text}")
+                        reason_fb = (booking.cancel_reason or "Not specified").capitalize()
+                        summary = (
+                            f"❌ Appointment Cancelled\n\n"
+                            f"Name: {patient.name}\n"
+                            f"IC/Passport: {patient.ic_passport_number}\n"
+                            f"Phone: {patient.phone}\n"
+                            f"Date: {date_part}\nTime: {time_part}\n"
+                            f"Service: {booking.service_type}\n"
+                            f"Details: {details_str}{doctor_str}\n"
+                            f"Cancellation Reason: {reason_fb}"
+                        )
                     else:
-                        summary = (f"✏️ Booking Successfully Modified!\n\n"
-                                f"Name: {patient.name}\n"
-                                f"IC/Passport: {patient.ic_passport_number}\n"
-                                f"Phone: {patient.phone}\n"
-                                f"New Date: {start_time.strftime('%Y-%m-%d')}\n"
-                                f"New Time: {start_time.strftime('%H:%M')}\n"
-                                f"Service: {booking.service_type}\n"
-                                f"Details: {details_str}{doctor_str}")
+                        fallback_stages = (
+                            db.query(models.ApptStage)
+                            .filter_by(appointment_id=appt.id, status='scheduled')
+                            .order_by(models.ApptStage.scheduled_time.asc())
+                            .all()
+                        )
+                        upcoming_fb = "\n".join(
+                            f"  • {st.stage_name}: {st.scheduled_time.strftime('%Y-%m-%d %H:%M')}"
+                            for st in fallback_stages
+                        )
+                        summary = (
+                            f"✏️ Booking Successfully Modified!\n\n"
+                            f"Name: {patient.name}\n"
+                            f"IC/Passport: {patient.ic_passport_number}\n"
+                            f"Phone: {patient.phone}\n"
+                            f"New Date: {date_part}\nNew Time: {time_part}\n"
+                            f"Service: {booking.service_type}\n"
+                            f"Details: {details_str}{doctor_str}"
+                            + (f"\n\n📅 Updated Upcoming Schedule:\n{upcoming_fb}" if fallback_stages else "")
+                        )
 
                     bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
 
@@ -3694,9 +3822,12 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
             if req_date < eligible_date:
                 return {"is_valid": False, "reason": f"This vaccine may only be repeated after {eligible_date.strftime('%Y-%m-%d')}."}
 
-    # 4. Existing Scheduled Dose Check
+    # 4. Existing Scheduled Dose Check — skip if we're editing that exact stage
     for sched in scheduled_doses:
         if sched['num'] == target_num:
+            # Allow if the caller is editing this specific existing booking
+            if req.exclude_stage_id:
+                continue
             return {"is_valid": False, "reason": f"You already have a booking for {vaccine.name} {sched['name']} on {sched['date'].strftime('%Y-%m-%d')}."}
 
     # 5. Interrupted Vaccine Validation
@@ -3867,11 +3998,16 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
             break
 
     if highest_interrupted_num > highest_completed_num:
-        # If no dose was ever completed (e.g. entire series cancelled), treat as fresh start
+        # If no dose was ever completed (e.g. entire series cancelled/no-show from dose 1)
         if highest_completed_num == 0:
-            return {"next_dose": ("Dose 1" if vaccine.total_doses > 1 else "Single Dose"),
+            first_missed = min(
+                (n for n in dose_map if dose_map[n]['status'] in ('canceled', 'no-show')), default=1
+            )
+            dose_name = get_dose_name(first_missed)
+            return {"next_dose": dose_name,
                     "is_brand_switch": False, "active_brand": None,
-                    "no_history": True, "all_dose_options": all_dose_options_for(vaccine),
+                    "no_history": first_missed == 1,
+                    "all_dose_options": all_dose_options_for(vaccine) if first_missed == 1 else [],
                     "type_disabled": False, "disable_reason": None}
         # Latest dose was missed — check interruption restart condition
         should_restart = False

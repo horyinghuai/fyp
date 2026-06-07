@@ -5,6 +5,7 @@ import { Calendar, momentLocalizer, View } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 import { X, User, Droplet, Activity, Calendar as CalIcon, AlertTriangle, FileText, Search, Bell } from 'lucide-react';
+import React from 'react';
 
 const toTitleCase = (str: string) => {
     if (!str) return '';
@@ -89,6 +90,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
   const [cascadeCancelReason, setCascadeCancelReason] = useState("Change of schedule");
   const [cascadeCancelCustom, setCascadeCancelCustom] = useState("");
   const [minEditDate, setMinEditDate] = useState<string>(moment().format("YYYY-MM-DD"));
+  const minEditDateRef = React.useRef<string>(moment().format("YYYY-MM-DD"));
 
   useEffect(() => { 
       const userStr = localStorage.getItem('aicas_user');
@@ -133,8 +135,8 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
 
         const viewStartDate = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-01`;
         // For system-generated dose edits, start from the minimum allowed date if later
-        const effectiveStart = (isEditingEvent && isSystemGenerated && minEditDate > viewStartDate)
-            ? minEditDate
+        const effectiveStart = (isEditingEvent && isSystemGenerated && minEditDateRef.current > viewStartDate)
+            ? minEditDateRef.current
             : viewStartDate;
 
         fetch(`http://127.0.0.1:8000/scheduling-agent/context`, {
@@ -166,8 +168,8 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     clinic_id: activeClinicId,
-                    base_date: (isEditingEvent && minEditDate > moment().format("YYYY-MM-DD"))
-                        ? minEditDate
+                    base_date: (isEditingEvent && minEditDateRef.current > moment().format("YYYY-MM-DD"))
+                        ? minEditDateRef.current
                         : moment().format("YYYY-MM-DD"),
                     doctor_pref: editForm.doctor_ic || 'ANY',
                     duration: editForm.service === 'Vaccine' ? 15 : 30,
@@ -738,6 +740,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
       }
     }
     setMinEditDate(calcMin);
+    minEditDateRef.current = calcMin;
   };
 
   const openNewBookingModal = () => {
