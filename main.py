@@ -4189,3 +4189,9 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
     return {"next_dose": next_dose, "is_brand_switch": False, "active_brand": None,
             "no_history": False, "all_dose_options": [],
             "type_disabled": False, "disable_reason": None}
+
+@app.get("/admin/agent-logs/{clinic_id}")
+def get_agent_logs(clinic_id: str, db: Session = Depends(get_db)):
+    # Fetching logs and ordering by timestamp descending
+    logs = db.query(models.AgentLog).filter(models.AgentLog.clinic_id == clinic_id).order_by(models.AgentLog.timestamp.desc()).all()
+    return [{"action": l.action, "reasoning": l.reasoning, "timestamp": l.timestamp.isoformat()} for l in logs]

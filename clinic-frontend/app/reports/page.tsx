@@ -917,18 +917,42 @@ export default function ReportsPage() {
 
           <SectionCard
             title="AI Agent Activity Report"
-            subtitle="From Agent_Logs table."
+            subtitle="Monitoring of AI scheduling decisions."
             icon={<Sparkles className="h-5 w-5" />}
             className="xl:col-span-2"
           >
-            {report.agentActionChart.length > 0 ? (
-              <HorizontalBarChart data={report.agentActionChart} barColor={COLORS.indigo} />
-            ) : (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm text-slate-500">
-                No agent log data returned yet. If you expose an agent logs endpoint, this section will show
-                actions like time rejection, intent extraction, load balancing, and rescheduling.
-              </div>
-            )}
+            <div className="overflow-x-auto max-h-[500px] overflow-y-auto"> 
+              <table className="w-full text-sm text-left">
+                <thead className="text-xs text-slate-500 uppercase border-b">
+                  <tr>
+                    <th className="px-2 py-3">Agent/Action</th>
+                    <th className="px-2 py-3">Decision/Reason</th>
+                    <th className="px-2 py-3">Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {agentLogs.length > 0 ? (
+                    agentLogs.map((log, idx) => ( // Removed .slice(0, 10)
+                      <tr key={idx} className="hover:bg-slate-50">
+                        <td className="px-2 py-3 font-medium text-slate-900">{log.action}</td>
+                        <td className="px-2 py-3 text-slate-600">
+                          <p className="text-xs">{log.reasoning}</p>
+                        </td>
+                        <td className="px-2 py-3 text-slate-400 whitespace-nowrap">
+                          {log.timestamp ? new Date(log.timestamp).toLocaleString() : "N/A"}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={3} className="px-2 py-4 text-center text-slate-500">
+                        No agent activity logged yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </SectionCard>
         </div>
       </div>
