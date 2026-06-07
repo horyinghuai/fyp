@@ -3627,7 +3627,31 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
                     ).order_by(models.ApptStage.scheduled_time.desc()).first()
 
                 if prev_stage:
-                    prev_date = prev_stage[0].date() if isinstance(prev_stage[0], datetime) else prev_stage[0]
+                    d = prev_stage[0]
+                    prev_date = d.date() if isinstance(d, datetime) else d
+
+                # Priority 2: manual_dates provided in the request payload
+                # (checked before DB external records — booking not yet saved at this point)
+                if not prev_date and req.manual_dates:
+                    d_str = req.manual_dates.get(prev_dose_name)
+                    if d_str:
+                        try:
+                            prev_date = datetime.strptime(d_str, '%Y-%m-%d').date()
+                        except:
+                            pass
+
+                # Priority 3: external_vaccine_records (saved from a previous booking cycle)
+                if not prev_date:
+                    ext = db.query(models.ExternalVaccineRecord).filter(
+                        models.ExternalVaccineRecord.patient_ic == req.ic,
+                        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids),
+                        models.ExternalVaccineRecord.dose_name == prev_dose_name
+                    ).order_by(models.ExternalVaccineRecord.date_taken.desc()).first()
+                    if ext:
+                        d = ext.date_taken
+                        prev_date = d.date() if isinstance(d, datetime) else d
+
+                if prev_date:
                     sched = db.query(models.VaccineDoseSchedule).filter_by(
                         vaccine_id=vaccine.id, dose_number=target_num
                     ).first()
