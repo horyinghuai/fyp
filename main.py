@@ -3398,7 +3398,21 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                     d = prev_stage[0]
                     prev_date = d.date() if isinstance(d, datetime) else d
 
-                # Priority 2: external_vaccine_records (done at other clinics)
+                # Priority 2: manual_dates from request payload
+                # MUST be checked before DB external records because at the time
+                # of recommendation the booking hasn't been saved yet — so
+                # external_vaccine_records table doesn't have these dates yet
+                if not prev_date and req.manual_dates:
+                    d_str = req.manual_dates.get(prev_dose_name)
+                    if d_str:
+                        try:
+                            prev_date = datetime.strptime(d_str, '%Y-%m-%d').date()
+                        except:
+                            pass
+
+                # Priority 3: external_vaccine_records (previously saved from a
+                # past booking cycle — covers rebooking scenarios where the
+                # patient has booked before and external records are already in DB)
                 if not prev_date:
                     ext = db.query(models.ExternalVaccineRecord).filter(
                         models.ExternalVaccineRecord.patient_ic == req.ic,
@@ -3408,15 +3422,6 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                     if ext:
                         d = ext.date_taken
                         prev_date = d.date() if isinstance(d, datetime) else d
-
-                # Priority 3: manual_dates entered by user
-                if not prev_date and req.manual_dates:
-                    d_str = req.manual_dates.get(prev_dose_name)
-                    if d_str:
-                        try:
-                            prev_date = datetime.strptime(d_str, '%Y-%m-%d').date()
-                        except:
-                            pass
 
                 if prev_date:
                     sched = db.query(models.VaccineDoseSchedule).filter_by(
@@ -3578,8 +3583,9 @@ class SchedContextReq(BaseModel):
     target_dose: Optional[str] = None
     ic: Optional[str] = None
     doctor_ic: Optional[str] = None
-    view_start_date: Optional[str] = None   # first day of the calendar month being viewed
-    view_days: Optional[int] = 42           # 6-week grid covers any month
+    view_start_date: Optional[str] = None
+    view_days: Optional[int] = 42
+    manual_dates: Optional[Dict[str, str]] = {}  # FIX: external clinic dates
 
 @app.post("/scheduling-agent/context")
 def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):

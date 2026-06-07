@@ -149,7 +149,8 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                 target_dose: editForm.dose,
                 doctor_ic: editForm.doctor_ic || null,
                 view_start_date: effectiveStart,
-                view_days: 42
+                view_days: 42,
+                manual_dates: manualDates  // FIX: pass external clinic dates to date picker
             })
         }).then(r => r.json()).then(data => {
             setAgentContext(data);
@@ -175,7 +176,9 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                     duration: editForm.service === 'Vaccine' ? 15 : 30,
                     service_type: editForm.service,
                     vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
-                    dose: editForm.dose, ic: editForm.patient_ic
+                    dose: editForm.dose,
+                    ic: editForm.patient_ic,
+                    manual_dates: manualDates  // FIX: pass external clinic dates
                 })
             }).then(r => r.json()).then(data => {
                 if (!data.error) setAiRec(data);
