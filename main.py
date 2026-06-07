@@ -3613,6 +3613,7 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
             if target_num > 1:
                 prev_num = target_num - 1
                 prev_dose_name = "Single Dose" if (prev_num == 1 and vaccine.total_doses == 1) else f"Dose {prev_num}"
+                prev_date = None  # Initialize before conditional checks
 
                 prev_stage = db.query(models.ApptStage.scheduled_time)\
                     .select_from(models.ApptStage)\
