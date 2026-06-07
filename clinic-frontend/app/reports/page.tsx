@@ -536,13 +536,13 @@ export default function ReportsPage() {
     const serviceCounts = {
       Vaccine: appointmentGroups.filter((a) => a.service === "Vaccine").length,
       "Blood Test": appointmentGroups.filter((a) => a.service === "Blood Test").length,
-      Consultation: appointmentGroups.filter((a) => a.service !== "Vaccine" && a.service !== "Blood Test").length,
+      Others: appointmentGroups.filter((a) => a.service !== "Vaccine" && a.service !== "Blood Test").length,
     };
 
     const typeDistribution: ChartItem[] = [
       { label: "Vaccine", value: serviceCounts.Vaccine, color: COLORS.purple },
       { label: "Blood Test", value: serviceCounts["Blood Test"], color: COLORS.red },
-      { label: "Consultation", value: serviceCounts.Consultation, color: COLORS.blue },
+      { label: "Others", value: serviceCounts.Others, color: COLORS.blue },
     ];
 
     const statusDistribution: ChartItem[] = [
@@ -822,7 +822,7 @@ export default function ReportsPage() {
 
           <SectionCard
             title="Appointment Type Distribution"
-            subtitle="Vaccine vs Blood Test vs Consultation."
+            subtitle="Vaccine vs Blood Test vs Others."
             icon={<PieChart className="h-5 w-5" />}
           >
             <DonutChart data={report.typeDistribution} centerLabel="appointment types" />

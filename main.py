@@ -1795,6 +1795,29 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     if status_val == 'canceled' and booking.cancel_reason:
                         stage.cancel_reason = booking.cancel_reason
 
+                    # FIX: Cascade cancel all future doses when marked no-show
+                    # Does NOT touch completed doses (dose 1 stays completed)
+                    if status_val == 'no-show':
+                        def _noshow_dose_num(name: str) -> int:
+                            if not name: return 0
+                            n = name.lower().strip()
+                            if 'single' in n: return 1
+                            if 'booster' in n: return 9999
+                            m = re.match(r'dose\s+(\d+)', n)
+                            return int(m.group(1)) if m else 0
+
+                        this_num = _noshow_dose_num(stage.stage_name or '')
+                        if this_num > 0:
+                            stages_to_cascade = db.query(models.ApptStage).filter(
+                                models.ApptStage.appointment_id == appt.id,
+                                models.ApptStage.id != stage.id,
+                                models.ApptStage.status.notin_(['completed', 'canceled', 'no-show'])
+                            ).all()
+                            for fs in stages_to_cascade:
+                                if _noshow_dose_num(fs.stage_name or '') > this_num:
+                                    fs.status = 'canceled'
+                                    fs.cancel_reason = f'Auto-cancelled: {stage.stage_name} was marked as No-Show'
+
                     all_stages = (
                         db.query(models.ApptStage)
                         .filter_by(appointment_id=appt.id)
@@ -1999,22 +2022,33 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     sched = next((s for s in schedules if s.dose_number == i), None)
                     interval_days = sched.interval_days if sched and sched.interval_days is not None else 30
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
-                    
+
                 if current_calc_time:
-                    final_status = status_val if i == start_dose_num else "scheduled"
+                    # FIX: Future doses become 'canceled' (not 'scheduled') when current is no-show
+                    if i == start_dose_num:
+                        final_status = status_val
+                    elif status_val == 'no-show':
+                        final_status = 'canceled'
+                    else:
+                        final_status = 'scheduled'
+
                     new_stage = models.ApptStage(
-                        appointment_id=appt.id, 
-                        stage_name=stage_name, 
-                        scheduled_time=current_calc_time, 
-                        depends_on_stage_id=prev_stage_id, 
+                        appointment_id=appt.id,
+                        stage_name=stage_name,
+                        scheduled_time=current_calc_time,
+                        depends_on_stage_id=prev_stage_id,
                         status=final_status
                     )
                     if final_status == 'canceled':
-                        new_stage.cancel_reason = booking.cancel_reason
+                        new_stage.cancel_reason = (
+                            f'Auto-cancelled: Dose {start_dose_num} was marked as No-Show'
+                            if status_val == 'no-show'
+                            else booking.cancel_reason
+                        )
                     db.add(new_stage)
                     db.flush()
-                    prev_stage_id = new_stage.id 
-                
+                    prev_stage_id = new_stage.id
+
             if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
                 if start_dose_num == v_model.total_doses + 1:
                     current_calc_time = start_time
@@ -2022,18 +2056,29 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
                     interval_days = sched.interval_days if sched and sched.interval_days is not None else 180
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
-                    
+
                 if current_calc_time:
-                    final_status = status_val if start_dose_num == v_model.total_doses + 1 else "scheduled"
+                    # FIX: Booster also becomes 'canceled' when a prior dose is no-show
+                    if start_dose_num == v_model.total_doses + 1:
+                        final_status = status_val
+                    elif status_val == 'no-show':
+                        final_status = 'canceled'
+                    else:
+                        final_status = 'scheduled'
+
                     new_stage = models.ApptStage(
-                        appointment_id=appt.id, 
-                        stage_name="Booster", 
-                        scheduled_time=current_calc_time, 
-                        depends_on_stage_id=prev_stage_id, 
+                        appointment_id=appt.id,
+                        stage_name="Booster",
+                        scheduled_time=current_calc_time,
+                        depends_on_stage_id=prev_stage_id,
                         status=final_status
                     )
                     if final_status == 'canceled':
-                        new_stage.cancel_reason = booking.cancel_reason
+                        new_stage.cancel_reason = (
+                            f'Auto-cancelled: Dose {start_dose_num} was marked as No-Show'
+                            if status_val == 'no-show'
+                            else booking.cancel_reason
+                        )
                     db.add(new_stage)
                     db.flush()
         else:
@@ -3834,8 +3879,20 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
     # 2. Cancelled/No-Show Handling (External Request)
     if target_num in missed_doses and target_name not in all_dates:
-        reason = f"We found an incomplete vaccine series. Have you already received {vaccine.name} {target_name} at another clinic?"
-        return {"is_valid": False, "ask_external_yes_no": target_name, "reason": reason}
+        # FIX: Find the FIRST missed dose after last completed
+        first_missed_after_completed = min(
+            (n for n in missed_doses if n > (highest_comp['num'] if highest_comp else 0)),
+            default=None
+        )
+        if first_missed_after_completed is not None and target_num == first_missed_after_completed:
+            # Direct rebook of the first missed/no-show dose — allow it
+            # (It was an internal no-show or cascade-cancel, not an external skip)
+            pass  # proceed to interval validation below
+        else:
+            # Patient is trying to skip ahead past a missed dose — ask if done externally
+            missed_name = get_dose_name(first_missed_after_completed) if first_missed_after_completed else target_name
+            reason = f"We found an incomplete vaccine series. Have you already received {vaccine.name} {missed_name} at another clinic?"
+            return {"is_valid": False, "ask_external_yes_no": missed_name, "reason": reason}
 
     is_completed_series = True if highest_comp and highest_comp['num'] >= vaccine.total_doses else False
 
@@ -4024,14 +4081,14 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
             last_completed_date = info['date']
             break
 
-    highest_interrupted_num = 0
-    for num in sorted(dose_map.keys(), reverse=True):
-        if dose_map[num]['status'] in ['no-show', 'canceled']:
-            highest_interrupted_num = num
+    first_interrupted_num = 0
+    for num in sorted(dose_map.keys()):  # ascending — lowest first
+        if num > highest_completed_num and dose_map[num]['status'] in ['no-show', 'canceled']:
+            first_interrupted_num = num
             break
 
-    if highest_interrupted_num > highest_completed_num:
-        # If no dose was ever completed (e.g. entire series cancelled/no-show from dose 1)
+    if first_interrupted_num > highest_completed_num:
+        # If no dose was ever completed (entire series cancelled/no-show from dose 1)
         if highest_completed_num == 0:
             first_missed = min(
                 (n for n in dose_map if dose_map[n]['status'] in ('canceled', 'no-show')), default=1
@@ -4042,14 +4099,14 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
                     "no_history": first_missed == 1,
                     "all_dose_options": all_dose_options_for(vaccine) if first_missed == 1 else [],
                     "type_disabled": False, "disable_reason": None}
-        # Latest dose was missed — check interruption restart condition
+        # First missed dose found — check interruption restart condition
         should_restart = False
         if vaccine.restart_if_interrupted and vaccine.interruption_restart_days and last_completed_date:
             lcd = last_completed_date.date() if isinstance(last_completed_date, datetime) else last_completed_date
             if datetime.now().date() > lcd + timedelta(days=vaccine.interruption_restart_days):
                 should_restart = True
 
-        next_num = 1 if should_restart else highest_interrupted_num
+        next_num = 1 if should_restart else first_interrupted_num  # FIX: use first, not highest
         if next_num == vaccine.total_doses + 1 and vaccine.has_booster:
             next_dose = "Booster"
         elif vaccine.total_doses == 1:
