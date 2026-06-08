@@ -1373,288 +1373,318 @@ def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
             reason = f"The specific date and time selected ({req_dt.strftime('%Y-%m-%d %H:%M')}) is unavailable."
         return {"is_valid": False, "reason": reason, "suggestions": find_nearest_3_slots(date_obj)}
     
+# ─── Scheduling Agent Helper ──────────────────────────────────────────────────
+def _find_next_slot(db, clinic_id, doctor_ic, search_start, preferred_time, max_days=60):
+    """
+    Scans forward day-by-day from search_start (the earliest ALLOWED datetime).
+    Returns (slot_datetime, shifted: bool, slot_date) or (None, False, None).
+
+    - Skips days where no doctor is available (weekends, etc.)
+    - Picks the 15-min slot closest to preferred_time that has no conflict
+    - 'shifted' is True when the agent had to move past search_start.date()
+    """
+    for offset in range(max_days):
+        search_dt = search_start.date() + timedelta(days=offset)
+        day_str   = search_dt.strftime("%a").lower()
+
+        avail_query = db.query(models.DoctorClinicAvailability).filter(
+            models.DoctorClinicAvailability.clinic_id   == clinic_id,
+            models.DoctorClinicAvailability.day_of_week == day_str,
+            models.DoctorClinicAvailability.status      == 'active',
+            models.DoctorClinicAvailability.day_of_week != 'none',
+        )
+        if doctor_ic:
+            avail_query = avail_query.filter(
+                models.DoctorClinicAvailability.doctor_ic == doctor_ic
+            )
+
+        avails = avail_query.all()
+        if not avails:      # no doctor working this day (e.g. weekend) → skip
+            continue
+
+        preferred_dt = datetime.combine(search_dt, preferred_time)
+
+        for oh in avails:
+            shift_start_dt = datetime.combine(search_dt, oh.start_time)
+            shift_end_dt   = datetime.combine(search_dt, oh.end_time)
+
+            # All 15-min slots in this shift that are >= the hard minimum datetime
+            candidate_slots = []
+            curr = shift_start_dt
+            while curr < shift_end_dt:
+                if curr >= search_start:        # respect the interval minimum
+                    candidate_slots.append(curr)
+                curr += timedelta(minutes=15)
+
+            if not candidate_slots:
+                continue
+
+            # Sort by proximity to preferred wall-clock time
+            # e.g. preferred 15:30 → tries 15:30, 15:45, 15:15, 16:00, 15:00 …
+            candidate_slots.sort(key=lambda s: abs((s - preferred_dt).total_seconds()))
+
+            check_ic = doctor_ic or oh.doctor_ic
+            for cand_time in candidate_slots:
+                conflict = (
+                    db.query(models.ApptStage)
+                      .join(models.Appointment)
+                      .filter(
+                          models.Appointment.doctor_ic    == check_ic,
+                          models.ApptStage.scheduled_time == cand_time,
+                          models.ApptStage.status         == 'scheduled',
+                      ).first()
+                ) if check_ic else None
+
+                if not conflict:
+                    shifted = (search_dt > search_start.date())
+                    return cand_time, shifted, search_dt
+
+    return None, False, None    # nothing found within max_days
+
+
+# ─── Book Appointment Endpoint ────────────────────────────────────────────────
 @app.post("/book-appointment")
 async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
     try:
-        patient = db.query(models.Patient).filter(models.Patient.ic_passport_number == booking.ic_passport_number, models.Patient.clinic_id == booking.clinic_id).first()
-        if not patient: raise HTTPException(status_code=404, detail="Patient missing")
-        
+        patient = db.query(models.Patient).filter(
+            models.Patient.ic_passport_number == booking.ic_passport_number,
+            models.Patient.clinic_id == booking.clinic_id
+        ).first()
+        if not patient:
+            raise HTTPException(status_code=404, detail="Patient missing")
+
         mapped_appt_type = 'single-visit'
-        total_stages = 1
-        v_model = None
-        dose_val = str(booking.details.get('dose', 'Single Dose'))
-        items_list = booking.details.get('items', [])
-        start_dose_num = 1
-        
+        total_stages     = 1
+        v_model          = None
+        dose_val         = str(booking.details.get('dose', 'Single Dose'))
+        items_list       = booking.details.get('items', [])
+        start_dose_num   = 1
+
         if booking.service_type == 'Vaccine':
             if items_list:
                 v_model = db.query(models.Vaccine).filter_by(name=items_list[0]).first()
                 if v_model:
                     total_stages = v_model.total_doses + (1 if v_model.has_booster else 0)
                     if dose_val.startswith("Dose "):
-                        try: start_dose_num = int(dose_val.split(" ")[1])
-                        except: pass
+                        try:
+                            start_dose_num = int(dose_val.split(" ")[1])
+                        except:
+                            pass
                     elif dose_val == "Booster":
                         start_dose_num = v_model.total_doses + 1
-                    
+
                     if (total_stages - start_dose_num + 1) > 1:
                         mapped_appt_type = 'multi-stage'
-        
-        doc_ic = booking.details.get('assigned_doctor_id')
-        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
 
-        # Check if this is a subsequent dose and we need to append to an existing appointment
-        existing_appt_id = None
-        prev_stage_id = None
         doc_ic = booking.details.get('assigned_doctor_id')
-        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]: doc_ic = None
-        
+        if not doc_ic or str(doc_ic).upper() in ["ANY", "NONE", "NULL"]:
+            doc_ic = None
+
+        # ── Check if this is a subsequent dose to append to an existing appointment ──
+        existing_appt_id = None
+        prev_stage_id    = None
+
         if booking.service_type == 'Vaccine' and v_model and start_dose_num > 1:
-            same_type_ids = [v.id for v in db.query(models.Vaccine.id).filter(models.Vaccine.type == v_model.type).all()]
-            prev_dose_name = f"Dose {start_dose_num - 1}" if start_dose_num <= v_model.total_doses else (f"Dose {v_model.total_doses}" if v_model.total_doses > 1 else "Single Dose")
-            
-            # UPGRADED: Explicit select_from to prevent SQLAlchemy Join crashes
-            prev_stage = db.query(models.ApptStage)\
-                .select_from(models.ApptStage)\
-                .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
-                .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
-                .filter(
-                    models.Appointment.patient_id == patient.id,
-                    models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
-                    models.ApptStage.stage_name == prev_dose_name,
-                    models.ApptStage.status.notin_(['canceled', 'no-show'])
-                ).order_by(models.ApptStage.scheduled_time.desc()).first()
-            
+            same_type_ids = [
+                v.id for v in db.query(models.Vaccine.id)
+                                .filter(models.Vaccine.type == v_model.type).all()
+            ]
+            prev_dose_name = (
+                f"Dose {start_dose_num - 1}"
+                if start_dose_num <= v_model.total_doses
+                else (f"Dose {v_model.total_doses}" if v_model.total_doses > 1 else "Single Dose")
+            )
+
+            prev_stage = (
+                db.query(models.ApptStage)
+                  .select_from(models.ApptStage)
+                  .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)
+                  .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)
+                  .filter(
+                      models.Appointment.patient_id == patient.id,
+                      models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
+                      models.ApptStage.stage_name == prev_dose_name,
+                      models.ApptStage.status.notin_(['canceled', 'no-show'])
+                  )
+                  .order_by(models.ApptStage.scheduled_time.desc())
+                  .first()
+            )
+
             if prev_stage:
-                # Only reuse the appointment if it has NO interrupted (no-show/cancelled) stages.
-                # This prevents new-cycle doses from being mixed into the old appointment.
                 has_interrupted = db.query(models.ApptStage).filter(
                     models.ApptStage.appointment_id == prev_stage.appointment_id,
                     models.ApptStage.status.in_(['no-show', 'canceled'])
                 ).first() is not None
+
                 if not has_interrupted:
                     existing_appt_id = prev_stage.appointment_id
-                    prev_stage_id = prev_stage.id
-                
+                    prev_stage_id    = prev_stage.id
+
+        # ── Create or reuse parent appointment ──
         if existing_appt_id:
-            # Re-use existing appointment parent
             new_appt = db.query(models.Appointment).filter_by(id=existing_appt_id).first()
-            new_appt.appt_type = 'multi-stage'
+            new_appt.appt_type    = 'multi-stage'
             new_appt.total_stages = max(new_appt.total_stages, start_dose_num)
             db.flush()
         else:
-            # Create brand new parent
             new_appt = models.Appointment(
-                patient_id=patient.id, 
-                clinic_id=booking.clinic_id, # <--- NEW: Synchronized with DB
-                doctor_ic=doc_ic, 
-                appt_type=mapped_appt_type, 
-                total_stages=total_stages, 
-                general_notes=booking.details.get('general_notes')  
+                patient_id    = patient.id,
+                clinic_id     = booking.clinic_id,
+                doctor_ic     = doc_ic,
+                appt_type     = mapped_appt_type,
+                total_stages  = total_stages,
+                general_notes = booking.details.get('general_notes')
             )
             db.add(new_appt)
             db.flush()
-                
-            # Only create junction row if it's a completely new appointment parent
-            # NOTE: Blood Test junction rows are handled further below with a
-            # duplicate-existence check, preventing UniqueViolation errors
-            # when autoflush=False is in effect on the session.
+
             if booking.service_type == 'Vaccine' and items_list and v_model:
-                db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
-                db.flush() # Force write to transaction to prevent downstream duplicates
-        
+                db.add(models.AppointmentVaccine(
+                    appointment_id=new_appt.id,
+                    vaccine_id=v_model.id,
+                    dose_number=dose_val
+                ))
+                db.flush()
+
         start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
-        
+
+        # ── Multi-stage (vaccine with multiple doses) scheduling ──
         if mapped_appt_type == 'multi-stage' and v_model:
-            schedules = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
-            current_calc_time = start_time
-            
+            schedules         = db.query(models.VaccineDoseSchedule).filter_by(vaccine_id=v_model.id).all()
+            current_calc_time = start_time  # Dose 1 anchor; updated after each scheduled dose
+
+            # ── Regular doses ──
             for i in range(start_dose_num, v_model.total_doses + 1):
                 stage_name = f"Dose {i}"
-                
-                # ONLY run the scheduling agent for future auto-generated doses
+
                 if i > start_dose_num:
+                    # interval_days = days that must PASS since the previous dose
                     sched = next((s for s in schedules if s.dose_number == i), None)
-                    interval_days = sched.interval_days if sched and sched.interval_days is not None else 30
-                    
-                    # --- SCHEDULING AGENT: Find nearest valid slot >= interval days ---
-                    assigned_doc_ic = new_appt.doctor_ic 
-                    min_allowed_date = current_calc_time + timedelta(days=interval_days)
-                    search_start = max(min_allowed_date, datetime.now())
-                    found_slot = False
-                    
-                    for offset in range(60):
-                        search_dt = search_start.date() + timedelta(days=offset)
-                        day_str = search_dt.strftime("%a").lower()
-                        
-                        avail_query = db.query(models.DoctorClinicAvailability).filter(
-                            models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
-                            models.DoctorClinicAvailability.day_of_week == day_str,
-                            models.DoctorClinicAvailability.status == 'active',
-                            models.DoctorClinicAvailability.day_of_week != 'none'
-                        )
-                        if assigned_doc_ic:
-                            avail_query = avail_query.filter(models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic)
-                        
-                        avails = avail_query.all()
-                        
-                        for oh in avails:
-                            # Try to match the user's preferred time of day first, otherwise fallback to shift start
-                            cand_time = datetime.combine(search_dt, start_time.time())
-                            if cand_time.time() < oh.start_time or cand_time.time() >= oh.end_time:
-                                cand_time = datetime.combine(search_dt, oh.start_time)
-                                
-                            end_dt = datetime.combine(search_dt, oh.end_time)
-                            
-                            if cand_time < min_allowed_date:
-                                cand_time = min_allowed_date
-                                if cand_time.minute % 15 != 0:
-                                    cand_time += timedelta(minutes=(15 - cand_time.minute % 15))
-                            
-                            while cand_time < end_dt:
-                                check_ic = assigned_doc_ic or oh.doctor_ic
-                                conflict = db.query(models.ApptStage).join(models.Appointment).filter(
-                                    models.Appointment.doctor_ic == check_ic,
-                                    models.ApptStage.scheduled_time == cand_time,
-                                    models.ApptStage.status == 'scheduled'
-                                ).first() if check_ic else None
-                                
-                                if not conflict:
-                                    current_calc_time = cand_time
-                                    found_slot = True
-                                    break
-                                cand_time += timedelta(minutes=15)
-                            if found_slot: break
-                        if found_slot: break
+                    interval_days = (
+                        sched.interval_days
+                        if sched and sched.interval_days is not None
+                        else 30
+                    )
 
-                # Insert the stage. Dose 1 uses the EXACT user start_time, future doses use Agent's time.
+                    # Earliest datetime the patient is allowed to receive this dose
+                    min_allowed_dt = current_calc_time + timedelta(days=interval_days)
+                    search_start   = max(min_allowed_dt, datetime.now())
+
+                    slot, shifted, slot_date = _find_next_slot(
+                        db             = db,
+                        clinic_id      = new_appt.clinic_id,
+                        doctor_ic      = new_appt.doctor_ic,
+                        search_start   = search_start,
+                        preferred_time = start_time.time(),
+                    )
+
+                    if slot is None:
+                        # Fallback: no slot found — use min_allowed_dt so we never
+                        # silently duplicate the previous dose's datetime
+                        slot = min_allowed_dt
+                        db.add(models.AgentLog(
+                            clinic_id = new_appt.clinic_id,
+                            action    = "Scheduling Warning",
+                            reasoning = (
+                                f"{stage_name}: No available slot found within 60 days "
+                                f"(searched from {search_start.strftime('%Y-%m-%d')}). "
+                                f"Fallback set to {slot.strftime('%Y-%m-%d %H:%M')}."
+                            ),
+                        ))
+                    else:
+                        if shifted:
+                            db.add(models.AgentLog(
+                                clinic_id = new_appt.clinic_id,
+                                action    = "Scheduling Validation",
+                                reasoning = (
+                                    f"{stage_name}: Shifted to {slot_date.strftime('%Y-%m-%d')} "
+                                    f"at {slot.strftime('%H:%M')}. "
+                                    f"Earliest allowed date ({search_start.strftime('%Y-%m-%d')}) "
+                                    f"had no availability."
+                                ),
+                            ))
+
+                    current_calc_time = slot    # next dose calculates interval FROM this date
+                else:
+                    # Dose 1 (or first in a resumed series) uses the exact user-requested time
+                    slot = current_calc_time
+
                 stage = models.ApptStage(
-                    appointment_id=new_appt.id, stage_name=stage_name, 
-                    scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status="scheduled"
+                    appointment_id      = new_appt.id,
+                    stage_name          = stage_name,
+                    scheduled_time      = slot,
+                    depends_on_stage_id = prev_stage_id,
+                    status              = "scheduled",
+                )
+                db.add(stage)
+                db.flush()
+                prev_stage_id     = stage.id
+                current_calc_time = slot    # keep in sync for next iteration
+
+            # ── Booster ──
+            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
+                if start_dose_num == v_model.total_doses + 1:
+                    # Patient is booking the booster directly → use requested time as-is
+                    slot = start_time
+                else:
+                    sched = next(
+                        (s for s in schedules if s.dose_number == v_model.total_doses + 1),
+                        None
+                    )
+                    interval_days = (
+                        sched.interval_days
+                        if sched and sched.interval_days is not None
+                        else 180
+                    )
+
+                    min_allowed_dt = current_calc_time + timedelta(days=interval_days)
+                    search_start   = max(min_allowed_dt, datetime.now())
+
+                    slot, shifted, slot_date = _find_next_slot(
+                        db             = db,
+                        clinic_id      = new_appt.clinic_id,
+                        doctor_ic      = new_appt.doctor_ic,
+                        search_start   = search_start,
+                        preferred_time = start_time.time(),
+                    )
+
+                    if slot is None:
+                        slot = min_allowed_dt
+                        db.add(models.AgentLog(
+                            clinic_id = new_appt.clinic_id,
+                            action    = "Scheduling Warning",
+                            reasoning = (
+                                f"Booster: No available slot found within 60 days "
+                                f"(searched from {search_start.strftime('%Y-%m-%d')}). "
+                                f"Fallback set to {slot.strftime('%Y-%m-%d %H:%M')}."
+                            ),
+                        ))
+                    else:
+                        if shifted:
+                            db.add(models.AgentLog(
+                                clinic_id = new_appt.clinic_id,
+                                action    = "Scheduling Validation",
+                                reasoning = (
+                                    f"Booster: Shifted to {slot_date.strftime('%Y-%m-%d')} "
+                                    f"at {slot.strftime('%H:%M')}. "
+                                    f"Earliest allowed date ({search_start.strftime('%Y-%m-%d')}) "
+                                    f"had no availability."
+                                ),
+                            ))
+
+                stage = models.ApptStage(
+                    appointment_id      = new_appt.id,
+                    stage_name          = "Booster",
+                    scheduled_time      = slot,
+                    depends_on_stage_id = prev_stage_id,
+                    status              = "scheduled",
                 )
                 db.add(stage)
                 db.flush()
                 prev_stage_id = stage.id
-            
-            # --- BOOSTER LOGIC ---
-            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
-                if start_dose_num == v_model.total_doses + 1:
-                    # User is directly booking the Booster today
-                    current_calc_time = start_time
-                else:
-                    # Booster is auto-generated in the future
-                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
-                    interval_days = sched.interval_days if sched and sched.interval_days is not None else 180
-                    
-                    # --- SCHEDULING AGENT FOR BOOSTER ---
-                    assigned_doc_ic = new_appt.doctor_ic 
-                    min_allowed_date = current_calc_time + timedelta(days=interval_days)
-                    search_start = max(min_allowed_date, datetime.now())
-                    found_slot = False
-                    
-                    for offset in range(60):
-                        search_dt = search_start.date() + timedelta(days=offset)
-                        day_str = search_dt.strftime("%a").lower()
-                        
-                        avail_query = db.query(models.DoctorClinicAvailability).filter(
-                            models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
-                            models.DoctorClinicAvailability.day_of_week == day_str,
-                            models.DoctorClinicAvailability.status == 'active',
-                            models.DoctorClinicAvailability.day_of_week != 'none'
-                        )
-                        if assigned_doc_ic:
-                            avail_query = avail_query.filter(models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic)
-                        
-                        avails = avail_query.all()
-                        
-                        for oh in avails:
-                            cand_time = datetime.combine(search_dt, start_time.time())
-                            if cand_time.time() < oh.start_time or cand_time.time() >= oh.end_time:
-                                cand_time = datetime.combine(search_dt, oh.start_time)
-                                
-                            end_dt = datetime.combine(search_dt, oh.end_time)
-                            
-                            if cand_time < min_allowed_date:
-                                cand_time = min_allowed_date
-                                if cand_time.minute % 15 != 0:
-                                    cand_time += timedelta(minutes=(15 - cand_time.minute % 15))
-                            
-                            while cand_time < end_dt:
-                                check_ic = assigned_doc_ic or oh.doctor_ic
-                                conflict = db.query(models.ApptStage).join(models.Appointment).filter(
-                                    models.Appointment.doctor_ic == check_ic,
-                                    models.ApptStage.scheduled_time == cand_time,
-                                    models.ApptStage.status == 'scheduled'
-                                ).first() if check_ic else None
-                                
-                                if not conflict:
-                                    current_calc_time = cand_time
-                                    found_slot = True
-                                    break
-                                cand_time += timedelta(minutes=15)
-                            if found_slot: break
-                        if found_slot: break
 
-                # Insert the stage. Dose 1 uses the EXACT user start_time, future doses use Agent's time.
-                stage = models.ApptStage(
-                    appointment_id=new_appt.id, stage_name=stage_name, 
-                    scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status="scheduled"
-                )
-                db.add(stage)
-                db.flush()
-                prev_stage_id = stage.id
-                
-            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
-                if start_dose_num == v_model.total_doses + 1:
-                    current_calc_time = start_time
-                else:
-                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
-                    interval_days = sched.interval_days if sched and sched.interval_days is not None else 180
-                    current_calc_time = current_calc_time + timedelta(days=interval_days)
-                    
-                if current_calc_time:
-                    # --- SCHEDULING AGENT: Find nearest valid slot for assigned doctor ---
-                    assigned_doc_ic = new_appt.doctor_ic
-                    target_dt = current_calc_time.date()
-                    found_slot = False
-                    for offset in range(60):  # scan up to 60 days
-                        search_dt = target_dt + timedelta(days=offset)
-                        day_str = search_dt.strftime("%a").lower()
-
-                        # Check the SPECIFIC doctor's schedule first, fall back to any doctor
-                        if assigned_doc_ic:
-                            oh = db.query(models.DoctorClinicAvailability).filter(
-                                models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
-                                models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic,
-                                models.DoctorClinicAvailability.day_of_week == day_str,
-                                models.DoctorClinicAvailability.status == 'active'
-                            ).first()
-                        else:
-                            oh = db.query(models.DoctorClinicAvailability).filter(
-                                models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
-                                models.DoctorClinicAvailability.day_of_week == day_str,
-                                models.DoctorClinicAvailability.status == 'active'
-                            ).first()
-
-                        if oh and oh.day_of_week != 'none':
-                            try:
-                                candidate_time = datetime.combine(search_dt, oh.start_time)
-                                # Verify no scheduling conflict for this doctor at this time
-                                check_ic = assigned_doc_ic or oh.doctor_ic
-                                conflict = db.query(models.ApptStage).join(models.Appointment).filter(
-                                    models.Appointment.doctor_ic == check_ic,
-                                    models.ApptStage.scheduled_time == candidate_time,
-                                    models.ApptStage.status == 'scheduled'
-                                ).first() if check_ic else None
-                                if not conflict:
-                                    current_calc_time = candidate_time
-                                    found_slot = True
-                                    break
-                            except Exception:
-                                pass
-                    # If no open slot found in 60 days, keep the calculated time as fallback
+        # ── Single-visit scheduling ──
         else:
-            # Strictly determine the stage name based on the service type
             final_stage_name = booking.service_type
             if booking.service_type in ['Others', 'Consultation', 'General Appointment', 'General']:
                 final_stage_name = 'Others'
@@ -1664,14 +1694,16 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 final_stage_name = booking.details.get("dose", "Single Dose")
 
             if booking.service_type == 'Vaccine' and items_list and v_model:
-                # Check if AppointmentVaccine already exists to avoid duplicate key violation
                 existing_av = db.query(models.AppointmentVaccine).filter_by(
                     appointment_id=new_appt.id, vaccine_id=v_model.id
                 ).first()
                 if not existing_av:
-                    db.add(models.AppointmentVaccine(appointment_id=new_appt.id, vaccine_id=v_model.id, dose_number=dose_val))
+                    db.add(models.AppointmentVaccine(
+                        appointment_id=new_appt.id,
+                        vaccine_id=v_model.id,
+                        dose_number=dose_val
+                    ))
             elif booking.service_type == 'Blood Test' and items_list:
-                # Check and add only missing BloodTest records
                 for t_name in items_list:
                     bt = db.query(models.BloodTest).filter_by(name=t_name).first()
                     if bt:
@@ -1679,16 +1711,20 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                             appointment_id=new_appt.id, blood_test_id=bt.id
                         ).first()
                         if not existing_abt:
-                            db.add(models.AppointmentBloodTest(appointment_id=new_appt.id, blood_test_id=bt.id))
-            
+                            db.add(models.AppointmentBloodTest(
+                                appointment_id=new_appt.id,
+                                blood_test_id=bt.id
+                            ))
+
             stage = models.ApptStage(
-                appointment_id=new_appt.id, 
-                stage_name=final_stage_name, 
-                scheduled_time=start_time, 
-                status="scheduled"
+                appointment_id = new_appt.id,
+                stage_name     = final_stage_name,
+                scheduled_time = start_time,
+                status         = "scheduled",
             )
             db.add(stage)
-        # --- NEW: Save any manually provided external dates ---
+
+        # ── Save any manually provided external vaccine dates ──
         manual_dates = booking.details.get('manual_dates', {})
         if manual_dates and booking.service_type == 'Vaccine' and v_model:
             for d_name, d_date in manual_dates.items():
@@ -1699,117 +1735,141 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 ).first()
                 if not exists:
                     try:
-                        ext_rec = models.ExternalVaccineRecord(
-                            patient_ic=patient.ic_passport_number,
-                            vaccine_id=v_model.id,
-                            dose_name=d_name,
-                            date_taken=datetime.strptime(d_date, "%Y-%m-%d")
-                        )
-                        db.add(ext_rec)
-                    except: pass
+                        db.add(models.ExternalVaccineRecord(
+                            patient_ic  = patient.ic_passport_number,
+                            vaccine_id  = v_model.id,
+                            dose_name   = d_name,
+                            date_taken  = datetime.strptime(d_date, "%Y-%m-%d")
+                        ))
+                    except:
+                        pass
+
         db.commit()
 
-        # Extract the dynamically generated stages and ensure Booster is strictly at the bottom
-        stages_query = db.query(models.ApptStage).filter_by(appointment_id=new_appt.id).order_by(models.ApptStage.scheduled_time.asc()).all()
-        
-        stages_data = []
+        # ── Build ordered stages list (Booster always last) ──
+        stages_query = (
+            db.query(models.ApptStage)
+              .filter_by(appointment_id=new_appt.id)
+              .order_by(models.ApptStage.scheduled_time.asc())
+              .all()
+        )
+
+        stages_data  = []
         booster_data = None
-        
+
         for s in stages_query:
             stage_info = {
-                "stage_name": s.stage_name, 
-                "date": s.scheduled_time.strftime('%Y-%m-%d'), 
-                "time": s.scheduled_time.strftime('%H:%M')
+                "stage_name": s.stage_name,
+                "date":       s.scheduled_time.strftime('%Y-%m-%d'),
+                "time":       s.scheduled_time.strftime('%H:%M'),
             }
-            # Identify the booster and hold it back
             if s.stage_name.lower() == "booster":
                 booster_data = stage_info
             else:
                 stages_data.append(stage_info)
-                
-        # Append the Booster appointment as the final item
+
         if booster_data:
             stages_data.append(booster_data)
 
-        # Send Booking Summary ONLY if requested from the React Website
-        # Checking 'not booking.skip_notification' completely stops Telegram Bot triggers
+        # ── Send booking confirmation notification ──
         if getattr(booking, 'source', 'web') == 'web' and not booking.skip_notification:
             try:
-                details_dict = booking.details
-                
-                # Fetch actual doctor name from DB to prevent "ANY", "MALE", "FEMALE"
-                doc_ic = details_dict.get('assigned_doctor_id')
+                details_dict   = booking.details
+                doc_ic_notify  = details_dict.get('assigned_doctor_id')
                 actual_doc_name = "ANY"
-                if doc_ic and str(doc_ic).upper() not in ["ANY", "NONE", "NULL", ""]:
-                    doc_model = db.query(models.Doctor).filter_by(ic_passport_number=doc_ic).first()
+
+                if doc_ic_notify and str(doc_ic_notify).upper() not in ["ANY", "NONE", "NULL", ""]:
+                    doc_model = db.query(models.Doctor).filter_by(ic_passport_number=doc_ic_notify).first()
                     if doc_model:
                         actual_doc_name = doc_model.name
-                
-                items = details_dict.get('items', [])
-                dose = details_dict.get('dose')
-                notes = details_dict.get('general_notes')
+
+                items      = details_dict.get('items', [])
+                dose       = details_dict.get('dose')
+                notes      = details_dict.get('general_notes')
                 doctor_str = f"\nDoctor: {actual_doc_name}"
-                
+
                 if booking.service_type == 'Vaccine':
-                    details_str = f"{items[0] if items else ''} ({dose})" if dose else ", ".join(items)
-                    
-                    # Dynamically build the generated schedule block
+                    details_str = (
+                        f"{items[0] if items else ''} ({dose})"
+                        if dose else ", ".join(items)
+                    )
                     sched_str = "Your vaccination schedule has been created successfully.\n\nUpcoming Appointments:\n"
                     for s in stages_data:
                         sched_str += f"{s['stage_name']}\nDate: {s['date']}\nTime: {s['time']}\n\n"
                     sched_str += "Don't worry, we will send you a reminder before each appointment."
-                    
-                    summary = (f"✅ Booking Successfully Confirmed!\n\n"
-                               f"Name: {patient.name}\n"
-                               f"IC/Passport: {patient.ic_passport_number}\n"
-                               f"Phone: {patient.phone}\n"
-                               f"Service: {booking.service_type}\n"
-                               f"Details: {details_str}{doctor_str}\n\n"
-                               f"{sched_str}")
+
+                    summary = (
+                        f"✅ Booking Successfully Confirmed!\n\n"
+                        f"Name: {patient.name}\n"
+                        f"IC/Passport: {patient.ic_passport_number}\n"
+                        f"Phone: {patient.phone}\n"
+                        f"Service: {booking.service_type}\n"
+                        f"Details: {details_str}{doctor_str}\n\n"
+                        f"{sched_str}"
+                    )
                 else:
-                    if booking.service_type == 'Blood Test':
-                        details_str = ", ".join(items) if items else ""
-                    else:
-                        details_str = str(notes) if notes else "General Consultation"
-                        
-                    summary = (f"✅ Booking Successfully Confirmed!\n\n"
-                               f"Name: {patient.name}\n"
-                               f"IC/Passport: {patient.ic_passport_number}\n"
-                               f"Phone: {patient.phone}\n"
-                               f"Date: {start_time.strftime('%Y-%m-%d')}\n"
-                               f"Time: {start_time.strftime('%H:%M')}\n"
-                               f"Service: {booking.service_type}\n"
-                               f"Details: {details_str}{doctor_str}")
-                               
+                    details_str = (
+                        ", ".join(items) if booking.service_type == 'Blood Test' and items
+                        else str(notes) if notes
+                        else "General Consultation"
+                    )
+                    summary = (
+                        f"✅ Booking Successfully Confirmed!\n\n"
+                        f"Name: {patient.name}\n"
+                        f"IC/Passport: {patient.ic_passport_number}\n"
+                        f"Phone: {patient.phone}\n"
+                        f"Date: {start_time.strftime('%Y-%m-%d')}\n"
+                        f"Time: {start_time.strftime('%H:%M')}\n"
+                        f"Service: {booking.service_type}\n"
+                        f"Details: {details_str}{doctor_str}"
+                    )
+
                 if booking.service_type == "Blood Test":
-                    summary += "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period."
-                
+                    summary += (
+                        "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours "
+                        "before your blood test. You are advised not to consume any food or "
+                        "drinks except plain water during the fasting period."
+                    )
+
                 bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
-                
+
                 if patient.telegram_id:
                     summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
                     token = os.getenv("TELEGRAM_BOT_TOKEN")
                     async with httpx.AsyncClient() as client:
-                        await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                            "chat_id": patient.telegram_id, 
-                            "text": summary
-                        })
-                        
-                    # Save notification to Chat_Messages table
-                    db.add(models.ChatMessage(clinic_id=booking.clinic_id, phone=patient.phone, telegram_id=patient.telegram_id, channel='telegram', message=None, reply=summary, status='replied'))
+                        await client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": patient.telegram_id, "text": summary}
+                        )
+                    db.add(models.ChatMessage(
+                        clinic_id   = booking.clinic_id,
+                        phone       = patient.phone,
+                        telegram_id = patient.telegram_id,
+                        channel     = 'telegram',
+                        message     = None,
+                        reply       = summary,
+                        status      = 'replied'
+                    ))
                     db.commit()
                 else:
                     summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={booking.clinic_id}"
                     await send_sms_async(patient.phone, summary)
-                    
-                    # Save notification to Chat_Messages table
-                    db.add(models.ChatMessage(clinic_id=booking.clinic_id, phone=patient.phone, telegram_id=None, channel='sms', message=None, reply=summary, status='replied'))
+                    db.add(models.ChatMessage(
+                        clinic_id   = booking.clinic_id,
+                        phone       = patient.phone,
+                        telegram_id = None,
+                        channel     = 'sms',
+                        message     = None,
+                        reply       = summary,
+                        status      = 'replied'
+                    ))
                     db.commit()
+
             except Exception as e:
                 print(f"Failed to send booking summary: {e}")
 
-        # Send the generated schedule stages to the bot as a payload
         return {"status": "success", "stages": stages_data}
+
     except HTTPException:
         db.rollback()
         raise
