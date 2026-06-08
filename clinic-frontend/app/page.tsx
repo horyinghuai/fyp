@@ -137,6 +137,11 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
     if ((isNewBooking || isEditingEvent) && editForm.patient_ic && editForm.service) {
         if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
 
+        // Clear stale recommendation while dose is being determined (prevents old suggestion showing)
+        if (editForm.service === 'Vaccine' && editForm.dose === 'Calculating...') {
+            return;
+        }
+
         setIsLoadingContext(true);
 
         const viewStartDate = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-01`;
