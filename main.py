@@ -1471,60 +1471,138 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
             
             for i in range(start_dose_num, v_model.total_doses + 1):
                 stage_name = f"Dose {i}"
+                
+                # ONLY run the scheduling agent for future auto-generated doses
                 if i > start_dose_num:
                     sched = next((s for s in schedules if s.dose_number == i), None)
                     interval_days = sched.interval_days if sched and sched.interval_days is not None else 30
-                    current_calc_time = current_calc_time + timedelta(days=interval_days)
                     
-                if current_calc_time:
-                    # --- SCHEDULING AGENT: Find nearest valid slot for assigned doctor ---
-                    assigned_doc_ic = new_appt.doctor_ic
-                    target_dt = current_calc_time.date()
+                    # --- SCHEDULING AGENT: Find nearest valid slot >= interval days ---
+                    assigned_doc_ic = new_appt.doctor_ic 
+                    min_allowed_date = current_calc_time + timedelta(days=interval_days)
+                    search_start = max(min_allowed_date, datetime.now())
                     found_slot = False
-                    for offset in range(60):  # scan up to 60 days
-                        search_dt = target_dt + timedelta(days=offset)
+                    
+                    for offset in range(60):
+                        search_dt = search_start.date() + timedelta(days=offset)
                         day_str = search_dt.strftime("%a").lower()
-
-                        # Check the SPECIFIC doctor's schedule first, fall back to any doctor
+                        
+                        avail_query = db.query(models.DoctorClinicAvailability).filter(
+                            models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
+                            models.DoctorClinicAvailability.day_of_week == day_str,
+                            models.DoctorClinicAvailability.status == 'active',
+                            models.DoctorClinicAvailability.day_of_week != 'none'
+                        )
                         if assigned_doc_ic:
-                            oh = db.query(models.DoctorClinicAvailability).filter(
-                                models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
-                                models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic,
-                                models.DoctorClinicAvailability.day_of_week == day_str,
-                                models.DoctorClinicAvailability.status == 'active'
-                            ).first()
-                        else:
-                            oh = db.query(models.DoctorClinicAvailability).filter(
-                                models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
-                                models.DoctorClinicAvailability.day_of_week == day_str,
-                                models.DoctorClinicAvailability.status == 'active'
-                            ).first()
-
-                        if oh and oh.day_of_week != 'none':
-                            try:
-                                candidate_time = datetime.combine(search_dt, oh.start_time)
-                                # Verify no scheduling conflict for this doctor at this time
+                            avail_query = avail_query.filter(models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic)
+                        
+                        avails = avail_query.all()
+                        
+                        for oh in avails:
+                            # Try to match the user's preferred time of day first, otherwise fallback to shift start
+                            cand_time = datetime.combine(search_dt, start_time.time())
+                            if cand_time.time() < oh.start_time or cand_time.time() >= oh.end_time:
+                                cand_time = datetime.combine(search_dt, oh.start_time)
+                                
+                            end_dt = datetime.combine(search_dt, oh.end_time)
+                            
+                            if cand_time < min_allowed_date:
+                                cand_time = min_allowed_date
+                                if cand_time.minute % 15 != 0:
+                                    cand_time += timedelta(minutes=(15 - cand_time.minute % 15))
+                            
+                            while cand_time < end_dt:
                                 check_ic = assigned_doc_ic or oh.doctor_ic
                                 conflict = db.query(models.ApptStage).join(models.Appointment).filter(
                                     models.Appointment.doctor_ic == check_ic,
-                                    models.ApptStage.scheduled_time == candidate_time,
+                                    models.ApptStage.scheduled_time == cand_time,
                                     models.ApptStage.status == 'scheduled'
                                 ).first() if check_ic else None
+                                
                                 if not conflict:
-                                    current_calc_time = candidate_time
+                                    current_calc_time = cand_time
                                     found_slot = True
                                     break
-                            except Exception:
-                                pass
-                    # If no open slot found in 60 days, keep the calculated time as fallback
+                                cand_time += timedelta(minutes=15)
+                            if found_slot: break
+                        if found_slot: break
+
+                # Insert the stage. Dose 1 uses the EXACT user start_time, future doses use Agent's time.
+                stage = models.ApptStage(
+                    appointment_id=new_appt.id, stage_name=stage_name, 
+                    scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status="scheduled"
+                )
+                db.add(stage)
+                db.flush()
+                prev_stage_id = stage.id
+            
+            # --- BOOSTER LOGIC ---
+            if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
+                if start_dose_num == v_model.total_doses + 1:
+                    # User is directly booking the Booster today
+                    current_calc_time = start_time
+                else:
+                    # Booster is auto-generated in the future
+                    sched = next((s for s in schedules if s.dose_number == v_model.total_doses + 1), None)
+                    interval_days = sched.interval_days if sched and sched.interval_days is not None else 180
+                    
+                    # --- SCHEDULING AGENT FOR BOOSTER ---
+                    assigned_doc_ic = new_appt.doctor_ic 
+                    min_allowed_date = current_calc_time + timedelta(days=interval_days)
+                    search_start = max(min_allowed_date, datetime.now())
+                    found_slot = False
+                    
+                    for offset in range(60):
+                        search_dt = search_start.date() + timedelta(days=offset)
+                        day_str = search_dt.strftime("%a").lower()
+                        
+                        avail_query = db.query(models.DoctorClinicAvailability).filter(
+                            models.DoctorClinicAvailability.clinic_id == new_appt.clinic_id,
+                            models.DoctorClinicAvailability.day_of_week == day_str,
+                            models.DoctorClinicAvailability.status == 'active',
+                            models.DoctorClinicAvailability.day_of_week != 'none'
+                        )
+                        if assigned_doc_ic:
+                            avail_query = avail_query.filter(models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic)
+                        
+                        avails = avail_query.all()
+                        
+                        for oh in avails:
+                            cand_time = datetime.combine(search_dt, start_time.time())
+                            if cand_time.time() < oh.start_time or cand_time.time() >= oh.end_time:
+                                cand_time = datetime.combine(search_dt, oh.start_time)
+                                
+                            end_dt = datetime.combine(search_dt, oh.end_time)
                             
-                    stage = models.ApptStage(
-                        appointment_id=new_appt.id, stage_name=stage_name, 
-                        scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status="scheduled"
-                    )
-                    db.add(stage)
-                    db.flush()
-                    prev_stage_id = stage.id
+                            if cand_time < min_allowed_date:
+                                cand_time = min_allowed_date
+                                if cand_time.minute % 15 != 0:
+                                    cand_time += timedelta(minutes=(15 - cand_time.minute % 15))
+                            
+                            while cand_time < end_dt:
+                                check_ic = assigned_doc_ic or oh.doctor_ic
+                                conflict = db.query(models.ApptStage).join(models.Appointment).filter(
+                                    models.Appointment.doctor_ic == check_ic,
+                                    models.ApptStage.scheduled_time == cand_time,
+                                    models.ApptStage.status == 'scheduled'
+                                ).first() if check_ic else None
+                                
+                                if not conflict:
+                                    current_calc_time = cand_time
+                                    found_slot = True
+                                    break
+                                cand_time += timedelta(minutes=15)
+                            if found_slot: break
+                        if found_slot: break
+
+                # Insert the stage. Dose 1 uses the EXACT user start_time, future doses use Agent's time.
+                stage = models.ApptStage(
+                    appointment_id=new_appt.id, stage_name=stage_name, 
+                    scheduled_time=current_calc_time, depends_on_stage_id=prev_stage_id, status="scheduled"
+                )
+                db.add(stage)
+                db.flush()
+                prev_stage_id = stage.id
                 
             if v_model.has_booster and start_dose_num <= v_model.total_doses + 1:
                 if start_dose_num == v_model.total_doses + 1:
