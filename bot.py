@@ -1540,6 +1540,13 @@ async def proceed_with_dose(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     # force_new=announce → when we just announced, the next step is a NEW message below it
     if context.user_data.get('is_editing'):
+        # Vaccine edits (create-flow draft edit OR existing-appointment modify):
+        # a new vaccine/dose changes the valid date window, so re-run the
+        # scheduling agent (1 recommendation + 3 alternatives, interval-aware)
+        # instead of going straight to the summary.
+        if context.user_data.get('service') == 'Vaccine':
+            await trigger_datetime_prompt(update, context)
+            return BOOK_DATE_TIME
         return await show_booking_summary(update, context, force_new=announce)
     return await show_doctor_preference(update, context, force_new=announce)
 
@@ -1572,6 +1579,9 @@ async def handle_manual_prev_dose(update: Update, context: ContextTypes.DEFAULT_
         return MANUAL_PREV_DOSE
         
     if context.user_data.get('is_editing'):
+        if context.user_data.get('service') == 'Vaccine':
+            await trigger_datetime_prompt(update, context)
+            return BOOK_DATE_TIME
         return await show_booking_summary(update, context)
     return await show_doctor_preference(update, context)
 
