@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { Camera, FileUp } from 'lucide-react';
+import { Eye, Calendar, X, AlertTriangle } from 'lucide-react';
 
 const COUNTRIES = [
   "Malaysia", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola", "Argentina", "Armenia", "Australia", 
@@ -26,6 +27,27 @@ export default function PatientsPage() {
   const [ocrProcessing, setOcrProcessing] = useState(false);
   const pcVideoRef = useRef<HTMLVideoElement>(null);
   const pcCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const [isViewApptOpen, setIsViewApptOpen] = useState(false);
+  const [selectedPatientAppts, setSelectedPatientAppts] = useState<any[]>([]);
+  const [selectedApptDetail, setSelectedApptDetail] = useState<any>(null); // For the booking details modal
+
+  const handleViewAppointments = async (patient: any) => {
+    try {
+        const res = await fetch(`http://127.0.0.1:8000/patient/${patient.clinic_id}/appointments/${patient.ic_passport_number}`);
+        if (res.ok) {
+            const data = await res.json();
+            // Sort by latest date first
+            const sorted = data.sort((a: any, b: any) => 
+                new Date(b.date).getTime() - new Date(a.date).getTime()
+            );
+            setSelectedPatientAppts(sorted);
+            setIsViewApptOpen(true);
+        }
+    } catch (err) {
+        alert("Failed to fetch appointments");
+    }
+  };
 
   // 3-Segment IC State
   const [icParts, setIcParts] = useState(['', '', '']);
@@ -295,6 +317,7 @@ export default function PatientsPage() {
                 <td className="p-4 font-mono text-slate-600">{p.ic_passport_number}</td>
                 <td className="p-4 text-slate-600">{p.phone}</td>
                 <td className="p-4 text-center space-x-2">
+                  <button onClick={() => handleViewAppointments(p)} className="px-3 py-1 bg-blue-100 text-blue-600 rounded text-sm font-medium hover:bg-blue-200" title="View Appointments">View Appointments</button>
                   <button onClick={() => openModal(p)} className="px-3 py-1 bg-slate-100 rounded text-sm font-medium text-slate-600 hover:bg-slate-200">Edit</button>
                   <button onClick={() => handleDelete(p.id)} className="px-3 py-1 bg-red-100 text-red-600 rounded text-sm font-medium hover:bg-red-200">Delete</button>
                 </td>
