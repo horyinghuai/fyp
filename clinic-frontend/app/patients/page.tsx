@@ -30,15 +30,26 @@ export default function PatientsPage() {
 
   const [isViewApptOpen, setIsViewApptOpen] = useState(false);
   const [selectedPatientAppts, setSelectedPatientAppts] = useState<any[]>([]);
-  const [selectedApptDetail, setSelectedApptDetail] = useState<any>(null); // For the booking details modal
+  const [selectedApptDetail, setSelectedApptDetail] = useState<any>(null); 
+
+  // --- NEW CANCEL APPOINTMENT STATES ---
+  const [cancelApptModalVisible, setCancelApptModalVisible] = useState(false);
+  const [cancelReason, setCancelReason] = useState("Change of schedule");
+  const [customCancelReason, setCustomCancelReason] = useState("");
 
   const handleViewAppointments = async (patient: any) => {
     try {
         const res = await fetch(`http://127.0.0.1:8000/patient/${patient.clinic_id}/appointments/${patient.ic_passport_number}`);
         if (res.ok) {
             const data = await res.json();
+            // Enrich with patient details for the modal
+            const enrichedData = data.map((d: any) => ({
+                ...d,
+                patient_name: patient.name,
+                patient_ic: patient.ic_passport_number
+            }));
             // Sort by latest date first
-            const sorted = data.sort((a: any, b: any) => 
+            const sorted = enrichedData.sort((a: any, b: any) => 
                 new Date(b.date).getTime() - new Date(a.date).getTime()
             );
             setSelectedPatientAppts(sorted);
@@ -283,6 +294,36 @@ export default function PatientsPage() {
 
   if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
 
+  const executeCancellation = async () => {
+    const reason = cancelReason === "Other" ? customCancelReason : cancelReason;
+    if (!reason.trim()) return alert("Please provide a cancellation reason.");
+    if (!selectedApptDetail) return alert("Error: No appointment selected.");
+
+    try {
+        const cancelRes = await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedApptDetail.id}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'canceled', cancel_reason: reason })
+        });
+
+        if (!cancelRes.ok) throw new Error('Cancellation failed');
+
+        // Refresh patient appointments silently to show updated status
+        const res = await fetch(`http://127.0.0.1:8000/patient/${clinicId}/appointments/${selectedApptDetail.patient_ic}`);
+        if (res.ok) {
+            const data = await res.json();
+            const enrichedData = data.map((d: any) => ({ ...d, patient_name: selectedApptDetail.patient_name, patient_ic: selectedApptDetail.patient_ic }));
+            const sorted = enrichedData.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            setSelectedPatientAppts(sorted);
+
+            const updated = sorted.find((a:any) => a.id === selectedApptDetail.id);
+            if (updated) setSelectedApptDetail(updated);
+        }
+        setCancelApptModalVisible(false);
+    } catch (err: any) {
+        alert(`Error: ${err.message}`);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="flex justify-between items-center mb-8">
@@ -305,10 +346,10 @@ export default function PatientsPage() {
           </thead>
           <tbody>
             {patients.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.ic_passport_number.includes(search)).length === 0 && !isLoading && (
-                <tr><td colSpan={4} className="p-8 text-center text-slate-500 font-medium">[No patient found]</td></tr>
+                <tr key="empty-patients"><td colSpan={4} className="p-8 text-center text-slate-500 font-medium">[No patient found]</td></tr>
             )}
             {patients.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.ic_passport_number.includes(search)).map((p, i) => (
-              <tr key={p.id} className={`border-b border-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+              <tr key={p.id || `patient-${i}`} className={`border-b border-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                 <td className="p-4">
                   <div className="font-bold text-slate-800">{p.name}</div>
                   <span className="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded-full">{p.gender}</span>
@@ -425,6 +466,184 @@ export default function PatientsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 1. APPOINTMENTS LIST MODAL */}
+      {isViewApptOpen && !selectedApptDetail && (
+          <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 backdrop-blur-sm">
+              <div className="bg-white p-6 rounded-2xl w-[900px] shadow-2xl max-h-[90vh] flex flex-col">
+                  <div className="flex justify-between items-center mb-4 border-b pb-4">
+                      <h3 className="text-xl font-bold text-slate-800">Patient Appointments</h3>
+                      <button onClick={() => setIsViewApptOpen(false)} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
+                  </div>
+                  <div className="overflow-y-auto flex-1">
+                      <table className="w-full text-left border-collapse">
+                          <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                              <tr>
+                                  <th className="p-3 font-semibold text-slate-600 text-sm">Date & Time</th>
+                                  <th className="p-3 font-semibold text-slate-600 text-sm">Service Type</th>
+                                  <th className="p-3 font-semibold text-slate-600 text-sm">Service Details</th>
+                                  <th className="p-3 font-semibold text-slate-600 text-sm">Doctor</th>
+                                  <th className="p-3 font-semibold text-slate-600 text-sm">Status</th>
+                                  <th className="p-3 font-semibold text-slate-600 text-sm text-center">Action</th>
+                              </tr>
+                          </thead>
+                          <tbody>
+                              {selectedPatientAppts.length === 0 && (
+                                  <tr key="empty-appts"><td colSpan={6} className="p-8 text-center text-slate-500 italic">No appointments found.</td></tr>
+                              )}
+                              {selectedPatientAppts.map((appt, i) => (
+                                  <tr key={appt.id || `appt-${i}`} className={`border-b border-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-slate-100`}>
+                                      <td className="p-3 text-sm">
+                                          <div className="font-bold text-slate-800">{new Date(appt.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                                          <div className="text-slate-500 font-mono">{appt.time.substring(0, 5)}</div>
+                                      </td>
+                                      <td className="p-3 text-sm font-medium">{appt.service}</td>
+                                      <td className="p-3 text-sm text-slate-600 max-w-[200px] truncate" title={appt.service === 'Vaccine' ? `${appt.details?.items?.[0] || ''} (${appt.details?.dose || ''})` : appt.service === 'Blood Test' ? appt.details?.items?.join(', ') : appt.details?.reason}>
+                                          {appt.service === 'Vaccine' ? `${appt.details?.items?.[0] || ''} (${appt.details?.dose || ''})` : appt.service === 'Blood Test' ? appt.details?.items?.join(', ') : appt.details?.reason}
+                                      </td>
+                                      <td className="p-3 text-sm text-slate-600">{appt.doctor_name}</td>
+                                      <td className="p-3 text-sm">
+                                          <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${appt.status === 'scheduled' ? 'bg-blue-100 text-blue-700' : appt.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : appt.status === 'canceled' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700'}`}>
+                                              {appt.status}
+                                          </span>
+                                      </td>
+                                      <td className="p-3 text-center">
+                                          <button onClick={() => setSelectedApptDetail(appt)} className="px-3 py-1.5 bg-blue-50 border border-blue-100 text-blue-600 rounded-lg text-xs font-bold hover:bg-blue-100 transition">View Details</button>
+                                      </td>
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* 2. TIMETABLE STYLE BOOKING DETAILS MODAL */}
+      {selectedApptDetail && !cancelApptModalVisible && (
+          <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-[60] backdrop-blur-sm">
+              <div className="bg-white rounded-2xl shadow-2xl w-[500px] overflow-hidden max-h-[90vh] overflow-y-auto">
+                  <div className="bg-slate-50 px-6 py-4 border-b flex justify-between items-center">
+                      <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                          <Calendar size={18}/> Booking Details
+                      </h3>
+                      <button onClick={() => setSelectedApptDetail(null)} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
+                  </div>
+
+                  <div className="p-6">
+                      <dl className="space-y-2.5 text-sm">
+                          <div className="flex gap-3">
+                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Patient</dt>
+                              <dd className="text-slate-800 font-bold">{selectedApptDetail.patient_name}</dd>
+                          </div>
+                          <div className="flex gap-3">
+                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Service</dt>
+                              <dd className="text-slate-800 font-medium">{selectedApptDetail.service}</dd>
+                          </div>
+
+                          {selectedApptDetail.service === 'Vaccine' && (
+                              <>
+                                  <div className="flex gap-3">
+                                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Vaccine</dt>
+                                      <dd className="text-slate-800">{selectedApptDetail.details?.items?.[0] || '—'}</dd>
+                                  </div>
+                                  <div className="flex gap-3">
+                                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Dose</dt>
+                                      <dd className="text-slate-800">{selectedApptDetail.details?.dose || '—'}</dd>
+                                  </div>
+                              </>
+                          )}
+
+                          {selectedApptDetail.service === 'Blood Test' && (
+                              <div className="flex gap-3">
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Tests</dt>
+                                  <dd className="text-slate-800">{selectedApptDetail.details?.items?.join(', ') || '—'}</dd>
+                              </div>
+                          )}
+
+                          {selectedApptDetail.service === 'Others' && (
+                              <div className="flex gap-3">
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Reason</dt>
+                                  <dd className="text-slate-800">{selectedApptDetail.details?.reason || '—'}</dd>
+                              </div>
+                          )}
+
+                          <div className="flex gap-3">
+                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Doctor</dt>
+                              <dd className="text-slate-800">{selectedApptDetail.doctor_name || 'ANY'}</dd>
+                          </div>
+                          <div className="flex gap-3">
+                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Date</dt>
+                              <dd className="text-slate-800">{new Date(selectedApptDetail.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })} ({new Date(selectedApptDetail.date).toLocaleDateString('en-GB', { weekday: 'short' })})</dd>
+                          </div>
+                          <div className="flex gap-3">
+                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Time</dt>
+                              <dd className="text-slate-800 font-mono">{selectedApptDetail.time.substring(0, 5)}</dd>
+                          </div>
+                          <div className="flex gap-3 items-start">
+                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Status</dt>
+                              <dd>
+                                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${selectedApptDetail.status === 'scheduled' ? 'bg-blue-100 text-blue-700' : selectedApptDetail.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : selectedApptDetail.status === 'canceled' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700'}`}>
+                                      {selectedApptDetail.status.charAt(0).toUpperCase() + selectedApptDetail.status.slice(1)}
+                                  </span>
+                              </dd>
+                          </div>
+
+                          {selectedApptDetail.status === 'canceled' && selectedApptDetail.cancel_reason && (
+                              <div className="flex gap-3 pt-2">
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Cancel Reason</dt>
+                                  <dd className="text-red-600 font-medium">{selectedApptDetail.cancel_reason}</dd>
+                              </div>
+                          )}
+                      </dl>
+                  </div>
+                  
+                  <div className="px-6 py-4 bg-slate-50 flex justify-between gap-3 border-t border-slate-100">
+                      <button
+                          onClick={() => setCancelApptModalVisible(true)}
+                          disabled={selectedApptDetail.status === 'completed' || selectedApptDetail.status === 'canceled'}
+                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${selectedApptDetail.status === 'completed' || selectedApptDetail.status === 'canceled' ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+                      >
+                          Cancel Booking
+                      </button>
+                      <button
+                          onClick={() => {
+                              alert("Please navigate to the Timetable (Dashboard) page to securely modify scheduling attributes for this booking.");
+                              // Alternatively, you can automatically redirect the user here using window.location.href = '/';
+                          }}
+                          disabled={selectedApptDetail.status === 'completed' || selectedApptDetail.status === 'canceled'}
+                          className={`px-4 py-2 rounded-lg font-medium ${selectedApptDetail.status === 'completed' || selectedApptDetail.status === 'canceled' ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                      >
+                          Modify Booking
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* 3. CANCEL REASON MODAL (Exact match to Timetable) */}
+      {cancelApptModalVisible && (
+          <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-[70] backdrop-blur-sm">
+              <div className="bg-white p-6 rounded-2xl shadow-2xl w-[400px]">
+                  <h3 className="font-bold text-lg text-slate-800 mb-4">Cancel Booking</h3>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Reason for Cancellation</label>
+                  <select value={cancelReason} onChange={e => setCancelReason(e.target.value)} className="w-full p-2 border rounded-lg bg-white mb-4 outline-none">
+                      <option value="Change of schedule">Change of schedule</option>
+                      <option value="Feeling better">Feeling better</option>
+                      <option value="Booked wrong service">Booked wrong service</option>
+                      <option value="Personal reasons">Personal reasons</option>
+                      <option value="Other">Other (Custom)</option>
+                  </select>
+                  {cancelReason === "Other" && (
+                      <input type="text" placeholder="Specify reason..." value={customCancelReason} onChange={e => setCustomCancelReason(e.target.value)} className="w-full p-2 border rounded-lg mb-4 outline-none" />
+                  )}
+                  <div className="flex justify-end gap-3">
+                      <button onClick={() => setCancelApptModalVisible(false)} className="px-4 py-2 bg-slate-100 rounded-lg text-slate-700 font-medium">Back</button>
+                      <button onClick={executeCancellation} className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium">Confirm Cancel</button>
+                  </div>
+              </div>
+          </div>
       )}
     </div>
   );
