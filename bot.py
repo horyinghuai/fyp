@@ -1501,8 +1501,9 @@ async def proceed_with_dose(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if announce:
         vac_name = context.user_data.get('selected_items', [''])[0]
         note = f"✅ Based on your vaccination record, your next dose is *{dose}* for {vac_name}."
+        # Edit the vaccine-selection message INTO the announcement so it stays on top.
         if update.callback_query:
-            await update.callback_query.message.reply_text(note, parse_mode="Markdown")
+            await update.callback_query.edit_message_text(note, parse_mode="Markdown")
         elif update.message:
             await update.message.reply_text(note, parse_mode="Markdown")
 
@@ -1528,6 +1529,7 @@ async def proceed_with_dose(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                         context.user_data['manual_doses'] = {}
                         prompt = (f"Our system doesn't have a record of your {missing[0]} for {selected_vac}.\n\n"
                                   "Please reply with the date you received it (Format: YYYY-MM-DD):")
+                        # reply (not edit) so this lands BELOW the announcement
                         if update.callback_query:
                             await update.callback_query.message.reply_text(prompt)
                         else:
@@ -1536,9 +1538,10 @@ async def proceed_with_dose(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             except Exception as e:
                 logger.error(f"Vaccine Agent History Check Error: {e}")
 
+    # force_new=announce → when we just announced, the next step is a NEW message below it
     if context.user_data.get('is_editing'):
-        return await show_booking_summary(update, context)
-    return await show_doctor_preference(update, context)
+        return await show_booking_summary(update, context, force_new=announce)
+    return await show_doctor_preference(update, context, force_new=announce)
 
 async def handle_manual_prev_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = clean_bot_username(update.message.text)
@@ -1715,15 +1718,15 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await show_booking_summary(update, context)
         return await show_doctor_preference(update, context)
 
-async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_TYPE, force_new: bool = False):
     btns = [
         [InlineKeyboardButton("Any Doctor", callback_data="doc_ANY")],
         [InlineKeyboardButton("Female Doctor", callback_data="doc_FEMALE"), InlineKeyboardButton("Male Doctor", callback_data="doc_MALE")],
         [InlineKeyboardButton("Specific Doctor", callback_data="doc_SPECIFIC")]
     ]
-    
+
     is_editing = context.user_data.get('is_editing')
-    
+
     if is_editing:
         btns.append([InlineKeyboardButton("🔙 Back to Edit Menu", callback_data="back_edit_menu")])
     else:
@@ -1733,9 +1736,11 @@ async def show_doctor_preference(update: Update, context: ContextTypes.DEFAULT_T
         elif service == 'Others': btns.append([InlineKeyboardButton("🔙 Back to Services", callback_data="back_start")])
 
     msg = "Do you have a doctor preference?"
-    if update.callback_query: 
+    if update.callback_query and not force_new:
         await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(btns))
-    else: 
+    elif update.callback_query and force_new:
+        await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
+    else:
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return DOC_PREF
 
@@ -2108,30 +2113,32 @@ async def process_availability(update, context, full_time_str):
 
     return await show_booking_summary(update, context)
 
-async def show_booking_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_booking_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, force_new: bool = False):
     service = context.user_data['service']
     name = context.user_data['name']
     ic = context.user_data['ic']
     phone = context.user_data['phone']
-    
+
     if service == 'Vaccine': details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
     elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
     else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
-        
+
     doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))}"
     full_time_str = context.user_data['book_time']
-    
+
     id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
 
     summary = (f"📋 *Booking Summary*\nName: {name}\n{id_label}: {ic}\nPhone: {phone}\n"
                f"Date: {context.user_data['book_date']}\nTime: {full_time_str.split(' ')[1]}\n"
                f"Service: {service}\nDetails: {details}{doc_text}\n\nAre you sure this details are correct?")
-    
+
     btns = [[InlineKeyboardButton("Yes, Confirm", callback_data="conf_yes")],
             [InlineKeyboardButton("No, Rebook / Edit", callback_data="conf_edit")]]
-    
-    if update.callback_query:
+
+    if update.callback_query and not force_new:
         await update.callback_query.edit_message_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
+    elif update.callback_query and force_new:
+        await update.callback_query.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
     else:
         await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
     return CONFIRM_BOOK

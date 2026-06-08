@@ -157,20 +157,16 @@ export default function BotRepliesPage() {
   const handleStartNewChat = async () => {
     let phone = newChatPhone.trim().replace(/ /g, '');
     
-    // Auto-format Malaysian numbers and validate
-    if (phone.startsWith('0') || phone.startsWith('60') || phone.startsWith('+60')) {
-        let cleanDigits = phone.replace(/\D/g, '');
-        if (cleanDigits.startsWith('60')) cleanDigits = cleanDigits.substring(2);
-        else if (cleanDigits.startsWith('0')) cleanDigits = cleanDigits.substring(1);
-        
-        if (!cleanDigits.startsWith('1') || (cleanDigits.length !== 9 && cleanDigits.length !== 10)) {
-            return alert("Invalid Malaysian phone format. Valid formats: 01X-XXXXXXX, +601XXXXXXXX.");
-        }
-        phone = `+60${cleanDigits}`;
-    } else {
-        if (!phone.startsWith('+')) {
-            return alert("Phone number must start with a '+' symbol for Non-Malaysian numbers.");
-        }
+    // 1. Strict Validation: Must match the exact Malaysian formats requested
+    const phoneRegex = /^(?:\+60|0)\d{2}-?\d{7,8}$/;
+    if (!phoneRegex.test(phone)) {
+        return alert("Please re-enter your phone number. You must follow the format (e.g., +60XX-XXXXXXX, +60XXXXXXXXX, 0XX-XXXXXXXX) and only Malaysia phone numbers are accepted.");
+    }
+
+    // 2. Format for Database: Convert to strictly +60XXXXXXXXX or +60XXXXXXXXXX
+    phone = phone.replace(/-/g, ""); // Remove hyphens if any
+    if (phone.startsWith("0")) {
+        phone = "+6" + phone; // Converts 012... to +6012...
     }
 
     if (!newChatMessage.trim()) return alert("Message is required.");
