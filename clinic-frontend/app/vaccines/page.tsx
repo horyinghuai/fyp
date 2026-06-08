@@ -117,15 +117,15 @@ export default function VaccinesPage() {
   };
 
   const handleScheduleChange = (doseNum: number, interval: string) => {
-      const parsedInterval = parseInt(interval) || 0;
-      const newSchedules = [...formData.schedules];
-      const idx = newSchedules.findIndex(s => s.dose_number === doseNum);
-      if (idx >= 0) {
-          newSchedules[idx].interval_days = parsedInterval;
-      } else {
-          newSchedules.push({ dose_number: doseNum, interval_days: parsedInterval });
-      }
-      setFormData({...formData, schedules: newSchedules});
+    const parsedInterval = interval === '' ? '' : (parseInt(interval) || 0);
+    const newSchedules = formData.schedules.map(s => ({ ...s }));
+    const idx = newSchedules.findIndex(s => Number(s.dose_number) === doseNum);
+    if (idx >= 0) {
+        newSchedules[idx].interval_days = parsedInterval;
+    } else {
+        newSchedules.push({ dose_number: doseNum, interval_days: parsedInterval });
+    }
+    setFormData({ ...formData, schedules: newSchedules });
   };
 
   const handleSave = async () => {
@@ -162,10 +162,35 @@ export default function VaccinesPage() {
         return;
     }
 
+    // Build a complete, correctly-typed schedules array so EVERY dose (and the
+    // booster) is always sent with a valid dose_number + interval_days. This stops
+    // sparse/malformed entries from silently producing no rows in the database.
+    const totalDoses = formData.total_doses || 1;
+    const builtSchedules = [];
+    for (let d = 1; d <= totalDoses; d++) {
+        const existing = formData.schedules.find(s => Number(s.dose_number) === d);
+        let interval = 0; // Dose 1 is always the initial dose (0)
+        if (d > 1 && existing && existing.interval_days !== '' && existing.interval_days != null) {
+            interval = parseInt(existing.interval_days) || 0;
+        }
+        builtSchedules.push({ dose_number: d, interval_days: interval });
+    }
+    if (formData.has_booster) {
+        const boosterNum = totalDoses + 1;
+        const existingB = formData.schedules.find(s => Number(s.dose_number) === boosterNum);
+        builtSchedules.push({
+            dose_number: boosterNum,
+            interval_days: (existingB && existingB.interval_days !== '' && existingB.interval_days != null)
+                ? (parseInt(existingB.interval_days) || 0)
+                : 0
+        });
+    }
+
     const payload = {
         ...formData,
         name: capitalizeFirstLetter(formData.name),
         type: capitalizeFirstLetter(formData.type),
+        schedules: builtSchedules,
         stock_quantity: finalStock,
         low_stock_threshold: finalThreshold,
         target_gender: formData.target_gender || 'ANY',

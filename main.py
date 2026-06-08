@@ -2679,10 +2679,12 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
             for sched in data.schedules:
                 d_num = sched.get('dose_number')
                 interval_days = sched.get('interval_days')
-                
+
+                if d_num is None:        # <-- add this guard
+                    continue
                 if d_num == 1:
                     continue
-                    
+
                 stage_name = f"dose {d_num}" if d_num <= data.total_doses else "booster"
                 stage = stage_dict.get(stage_name)
                 
