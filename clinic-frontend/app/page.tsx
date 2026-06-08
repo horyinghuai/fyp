@@ -551,6 +551,26 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
             if (!selectedEvent) {
                 return alert("Error: No appointment selected for update.");
             }
+
+            // FIX: For no-show, bypass update-appointment entirely and route to the
+            // stage-level endpoint which preserves all data and cascades future doses
+            // to 'canceled' without ever touching the delete/recreate fallback path.
+            if (editForm.status === 'no-show') {
+                const stageRes = await fetch(
+                    `http://127.0.0.1:8000/admin/appointment-stages/${selectedEvent.id}`,
+                    {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ status: 'no-show' })
+                    }
+                );
+                if (!stageRes.ok) {
+                    const err = await stageRes.json();
+                    throw new Error(err.detail || 'Failed to mark appointment as no-show');
+                }
+                window.location.reload();
+                return;
+            }
             
             const payload: any = {
                 appt_id: selectedEvent.appt_id, service_type: editForm.service,

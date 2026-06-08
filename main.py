@@ -1936,6 +1936,49 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
         start_time = datetime.strptime(booking.scheduled_time, "%Y-%m-%d %H:%M:%S")
         status_val = booking.status
 
+        if status_val == 'no-show':
+            target_stage = db.query(models.ApptStage).filter_by(
+                appointment_id=appt.id, stage_name=dose_val
+            ).first()
+            if not target_stage:
+                # Fallback lookup: match by scheduled time proximity
+                for s in db.query(models.ApptStage).filter_by(appointment_id=appt.id).all():
+                    if s.scheduled_time and abs((s.scheduled_time - start_time).total_seconds()) < 60:
+                        target_stage = s
+                        break
+
+            if not target_stage:
+                raise HTTPException(status_code=404, detail="Stage not found for no-show update.")
+
+            # Mark the specific stage as no-show
+            target_stage.status = 'no-show'
+            if doc_ic:
+                appt.doctor_ic = doc_ic
+
+            # Cascade: cancel all future scheduled doses in the same series
+            if appt.appt_type == 'multi-stage':
+                def _nosh_num(n: str) -> int:
+                    if not n: return 0
+                    nl = n.lower().strip()
+                    if 'single' in nl: return 1
+                    if 'booster' in nl: return 9999
+                    m = re.match(r'dose\s+(\d+)', nl)
+                    return int(m.group(1)) if m else 0
+
+                this_num = _nosh_num(target_stage.stage_name or '')
+                if this_num > 0:
+                    for fs in db.query(models.ApptStage).filter(
+                        models.ApptStage.appointment_id == appt.id,
+                        models.ApptStage.id != target_stage.id,
+                        models.ApptStage.status == 'scheduled'
+                    ).all():
+                        if _nosh_num(fs.stage_name or '') > this_num:
+                            fs.status = 'canceled'
+                            fs.cancel_reason = f'Auto-cancelled: {target_stage.stage_name} was marked as No-Show'
+
+            db.commit()
+            return {"status": "success"}
+
         # -- Rescheduling Agent: UPDATE in place if same vaccine brand, cascade by delta --
         if appt.appt_type == 'multi-stage' and mapped_appt_type == 'multi-stage' and v_model:
             vac_rec = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).first()
