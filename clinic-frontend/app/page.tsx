@@ -246,15 +246,17 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
         let vacCount = 0, btCount = 0, othersCount = 0;
         
         const formattedEvents = data.map((appt: any) => {
+          const isValidStatus = appt.status === 'scheduled' || appt.status === 'completed';
           const startDate = new Date(appt.start);
           
-          // Only increment counts if the event is today
-          if (isToday(startDate)) {
-              if (appt.service === "Vaccine") vacCount++;
-              if (appt.service === "Blood Test") btCount++;
-              if (appt.service === "Others") othersCount++;
+          if (isValidStatus) {
+              if (isToday(startDate)) {
+                if (appt.service === "Vaccine") vacCount++;
+                if (appt.service === "Blood Test") btCount++;
+                if (appt.service === "Others") othersCount++;
+              }
           }
-          
+        
           let detailsText = appt.reason || "Others";
           if (appt.service === "Vaccine") detailsText = `${appt.items[0]} (${appt.dose})`;
           if (appt.service === "Blood Test") detailsText = appt.items.join(", ");
