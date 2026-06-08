@@ -524,6 +524,7 @@ export default function ReportsPage() {
 
     const todayAppointments = appointmentsRaw.filter((a) =>
       sameDay(new Date(a.start), now)
+      && (a.status === 'scheduled' || a.status === 'completed')
     ).length;
 
     const completionRate = totalAppointments ? (completionCount / totalAppointments) * 100 : 0;
