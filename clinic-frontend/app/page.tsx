@@ -139,6 +139,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
 
         // Clear stale recommendation while dose is being determined (prevents old suggestion showing)
         if (editForm.service === 'Vaccine' && editForm.dose === 'Calculating...') {
+            setAiRec(null);
             return;
         }
 
@@ -1381,7 +1382,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                               </div>
                               <div>
                                 <label className="block text-xs font-bold text-slate-500 mb-1">
-                                  {vaccineNoHistory && isNewBooking ? 'Dose Sequence (Select)' : 'Dose Sequence (Auto-Determined)'}
+                                  {vaccineNoHistory && isNewBooking ? 'Dose Sequence (Select)' : 'Dose Sequence'}
                                 </label>
                                 {vaccineNoHistory && isNewBooking ? (
                                   <select
