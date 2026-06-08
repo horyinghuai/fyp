@@ -4000,7 +4000,6 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
     if not vaccine: return {"missing_doses": []}
 
-    # Dynamically determine required previous doses
     required_doses = []
     if req.target_dose.startswith("Dose "):
         try:
@@ -4015,7 +4014,7 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
 
     if not required_doses: return {"missing_doses": []}
 
-    # UPGRADED: Explicit select_from to prevent SQLAlchemy Join crashes
+    # Check appointment_stages (doses done at this clinic)
     past_stages = db.query(models.ApptStage.stage_name)\
         .select_from(models.ApptStage)\
         .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
@@ -4028,8 +4027,20 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
         ).all()
 
     found_doses = {s[0] for s in past_stages}
-    
-    # Identify what is missing from the database
+
+    # Also check external_vaccine_records (doses done at other clinics, saved from prior bookings).
+    # If Dose 1 is already recorded there, don't ask the patient to re-enter it.
+    same_type_ids = [
+        v.id for v in db.query(models.Vaccine.id)
+                        .filter(models.Vaccine.type == vaccine.type).all()
+    ]
+    ext_records = db.query(models.ExternalVaccineRecord).filter(
+        models.ExternalVaccineRecord.patient_ic == req.ic,
+        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
+    ).all()
+    for ext in ext_records:
+        found_doses.add(ext.dose_name)
+
     missing = [d for d in required_doses if d not in found_doses]
     return {"missing_doses": missing}
 

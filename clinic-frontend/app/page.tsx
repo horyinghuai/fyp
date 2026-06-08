@@ -127,6 +127,12 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
     return () => clearInterval(interval);
   }, [events, pendingReviewEvent]);
 
+  // Stable string key so the scheduling context re-fetches whenever
+  // the user enters an external clinic date for dose 2+ bookings.
+  const manualDatesKey = Object.entries(manualDates)
+    .map(([k, v]) => `${k}:${v}`)
+    .join('|');
+
   useEffect(() => {
     if ((isNewBooking || isEditingEvent) && editForm.patient_ic && editForm.service) {
         if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
@@ -190,7 +196,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
     } else {
         setAgentContext(null); setAiRec(null); setIsLoadingContext(false);
     }
-  }, [isNewBooking, isEditingEvent, isSystemGenerated, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear, minEditDate]);
+  }, [isNewBooking, isEditingEvent, isSystemGenerated, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear, minEditDate, manualDatesKey]);
 
   const loadDoctors = async (cid: string) => {
       try {
