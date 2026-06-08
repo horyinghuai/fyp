@@ -1433,29 +1433,85 @@ async def route_back_v_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     vaccine_name = query.data.replace("v_", "")
-    
+
     vac = next((v for v in context.user_data.get('vaccines_list', []) if v['name'] == vaccine_name), None)
     user_gender = context.user_data.get('gender', 'ANY').upper()
     if vac and vac.get('target_gender') and vac.get('target_gender').upper() not in ['ANY', user_gender]:
         await query.answer(f"⚠️ Alert: This vaccine is exclusively designed for {vac.get('target_gender').upper()} patients.", show_alert=True)
         return V_SELECT
-    
+
     await query.answer()
     context.user_data['selected_items'] = [vaccine_name]
+
+    # Back target depends on whether we're inside any edit flow (draft edit OR existing-appointment modify)
+    if context.user_data.get('is_editing'):
+        back_label, back_cb = "🔙 Back to Edit Menu", "back_edit_menu"
+    else:
+        back_label, back_cb = "🔙 Back to Vaccine Categories", "back_v_type"
+
+    # --- VACCINE AGENT: auto-determine the correct next dose (skip manual picking) ---
+    # Fires for: new bookings, create-flow draft edits, AND existing-appointment modify
+    # (Change Service / Change Vaccine Details). Follow-up-dose edits never reach here
+    # because handle_edit_menu_routing hides Change Service/Details for Dose 2+.
+    ic = context.user_data.get('ic')
+    if ic:
+        agent = None
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(f"{API_BASE}/patients/{ic}/next-vaccine-dose/{vaccine_name}", timeout=5.0)
+                if res.status_code == 200:
+                    agent = res.json()
+            except Exception as e:
+                logger.error(f"Vaccine Agent next-dose error: {e}")
+
+        if agent:
+            if agent.get('type_disabled'):
+                btns = [[InlineKeyboardButton(back_label, callback_data=back_cb)]]
+                await query.edit_message_text(
+                    f"⚠️ {agent.get('disable_reason', 'This vaccine is currently unavailable for booking.')}",
+                    reply_markup=InlineKeyboardMarkup(btns)
+                )
+                return V_SELECT
+
+            if agent.get('is_brand_switch'):
+                btns = [[InlineKeyboardButton(back_label, callback_data=back_cb)]]
+                await query.edit_message_text(
+                    f"⚠️ You have an incomplete {agent.get('active_brand')} series of the same type.\n"
+                    f"Please complete your {agent.get('active_brand')} doses before switching brands.",
+                    reply_markup=InlineKeyboardMarkup(btns)
+                )
+                return V_SELECT
+
+            next_dose = agent.get('next_dose')
+            if next_dose:
+                return await proceed_with_dose(update, context, next_dose, announce=True)
+
+    # Fallback (no IC / agent unavailable): keep the manual menu
     return await render_v_dose_menu(update, context, vaccine_name)
 
 async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     dose = query.data.replace("dose_", "")
+    return await proceed_with_dose(update, context, dose)
+
+async def proceed_with_dose(update: Update, context: ContextTypes.DEFAULT_TYPE, dose: str, announce: bool = False):
     context.user_data['dose'] = dose
-    
-    # --- VACCINE DEPENDENCY AGENT: Missing Dose Check ---
+
+    if announce:
+        vac_name = context.user_data.get('selected_items', [''])[0]
+        note = f"✅ Based on your vaccination record, your next dose is *{dose}* for {vac_name}."
+        if update.callback_query:
+            await update.callback_query.message.reply_text(note, parse_mode="Markdown")
+        elif update.message:
+            await update.message.reply_text(note, parse_mode="Markdown")
+
+    # --- Missing Dose Check: only request info when a required prior record is absent ---
     if dose not in ['Single Dose', 'Dose 1']:
         active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
         ic = context.user_data.get('ic')
         selected_vac = context.user_data.get('selected_items', [None])[0]
-        
+
         async with httpx.AsyncClient() as client:
             try:
                 res = await client.post(f"{API_BASE}/check-vaccine-history", json={
@@ -1470,12 +1526,16 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         context.user_data['missing_doses'] = missing
                         context.user_data['current_missing_idx'] = 0
                         context.user_data['manual_doses'] = {}
-                        await query.edit_message_text(f"Our system doesn't have a record of your {missing[0]} for {selected_vac}.\n\nPlease reply with the date you received it (Format: YYYY-MM-DD):")
+                        prompt = (f"Our system doesn't have a record of your {missing[0]} for {selected_vac}.\n\n"
+                                  "Please reply with the date you received it (Format: YYYY-MM-DD):")
+                        if update.callback_query:
+                            await update.callback_query.message.reply_text(prompt)
+                        else:
+                            await update.message.reply_text(prompt)
                         return MANUAL_PREV_DOSE
             except Exception as e:
                 logger.error(f"Vaccine Agent History Check Error: {e}")
-    # ----------------------------------------------------
-    
+
     if context.user_data.get('is_editing'):
         return await show_booking_summary(update, context)
     return await show_doctor_preference(update, context)
