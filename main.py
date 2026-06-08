@@ -350,6 +350,7 @@ class DateRequest(BaseModel):
     clinic_id: str
     duration: int
     doctor_pref: Optional[str] = None
+    base_date: Optional[str] = None  # Minimum date for vaccine interval enforcement (Dose 2+)
 
 class TimeRequest(BaseModel):
     clinic_id: str
@@ -1280,10 +1281,26 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
 def get_available_dates(req: DateRequest, db: Session = Depends(get_db)):
     valid_dates = []
     today = datetime.now().date()
-    for i in range(14):
-        d = today + timedelta(days=i)
+
+    # Use base_date as start when provided (e.g. vaccine dose 2+ interval enforcement)
+    if req.base_date:
+        try:
+            start_date = datetime.strptime(req.base_date, "%Y-%m-%d").date()
+            start_date = max(start_date, today)  # never go before today
+        except Exception:
+            start_date = today
+    else:
+        start_date = today
+
+    # Search up to 60 days from start_date so long vaccine intervals are covered;
+    # stop once we have 14 usable dates (same UX as before for normal bookings).
+    for i in range(60):
+        d = start_date + timedelta(days=i)
         doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
-        if doc_slots: valid_dates.append(d.strftime("%Y-%m-%d"))
+        if doc_slots:
+            valid_dates.append(d.strftime("%Y-%m-%d"))
+        if len(valid_dates) >= 14:
+            break
     return valid_dates
 
 @app.post("/available-times")
@@ -3716,6 +3733,7 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
         "raw_time": best["time_str"],
         "formatted_time": best["formatted_time"],
         "reasoning": "Recommended for fastest availability with least workload.",
+        "min_allowed_date": earliest_allowed_dt.strftime("%Y-%m-%d"),  # FIX: expose for date picker enforcement
         "alternative_slots": [{
             "doctor": a["doctor"],
             "display": a["display"],
