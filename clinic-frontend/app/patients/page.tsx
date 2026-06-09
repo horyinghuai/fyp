@@ -602,8 +602,8 @@ export default function PatientsPage() {
                   <div className="px-6 py-4 bg-slate-50 flex justify-between gap-3 border-t border-slate-100">
                       <button
                           onClick={() => setCancelApptModalVisible(true)}
-                          disabled={selectedApptDetail.status === 'completed' || selectedApptDetail.status === 'canceled'}
-                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${selectedApptDetail.status === 'completed' || selectedApptDetail.status === 'canceled' ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+                          disabled={['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status)}
+                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status) ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
                       >
                           Cancel Booking
                       </button>
@@ -612,8 +612,8 @@ export default function PatientsPage() {
                               alert("Please navigate to the Timetable (Dashboard) page to securely modify scheduling attributes for this booking.");
                               // Alternatively, you can automatically redirect the user here using window.location.href = '/';
                           }}
-                          disabled={selectedApptDetail.status === 'completed' || selectedApptDetail.status === 'canceled'}
-                          className={`px-4 py-2 rounded-lg font-medium ${selectedApptDetail.status === 'completed' || selectedApptDetail.status === 'canceled' ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                          disabled={['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status)}
+                          className={`px-4 py-2 rounded-lg font-medium ${['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status) ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
                       >
                           Modify Booking
                       </button>
