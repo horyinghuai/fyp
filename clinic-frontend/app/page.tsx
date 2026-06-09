@@ -1853,9 +1853,9 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                   ) : (
                       <button
                         onClick={handleCancelClick}
-                        disabled={editForm.status === 'completed'}
+                        disabled={['completed', 'canceled', 'no-show'].includes(editForm.status)}
                         className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                          editForm.status === 'completed'
+                          ['completed', 'canceled', 'no-show'].includes(editForm.status)
                             ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
                             : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
                         }`}
@@ -1869,9 +1869,9 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
               ) : (
                 <button
                   onClick={() => setIsEditingEvent(true)}
-                  disabled={editForm.status === 'completed'}
+                  disabled={['completed', 'canceled', 'no-show'].includes(editForm.status)}
                   className={`px-4 py-2 rounded-lg font-medium ${
-                    editForm.status === 'completed'
+                    ['completed', 'canceled', 'no-show'].includes(editForm.status)
                       ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
                       : 'bg-blue-600 text-white hover:bg-blue-700'
                   }`}
