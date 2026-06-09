@@ -63,6 +63,7 @@ export default function AdminDashboard() {
   const [manualDates, setManualDates] = useState<Record<string, string>>({});
   const [vaccineNoHistory, setVaccineNoHistory] = useState(false);
   const [allDoseOptions, setAllDoseOptions] = useState<string[]>([]);
+  const [restartSeries, setRestartSeries] = useState(false);
 
   const [editForm, setEditForm] = useState({
     status: 'scheduled', doctor_ic: '', patient_ic: '',
@@ -403,7 +404,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
               editTime === moment(selectedEvent.start).format("HH:mm");
 
         // We skip validation if it's an existing booking and they didn't change the Date or Time
-        if (editForm.service === "Vaccine" && editForm.items.length > 0 && !isDateTimeUnchanged) {
+        if (editForm.service === "Vaccine" && editForm.items.length > 0 && !isDateTimeUnchanged && !restartSeries) {
             let tempIc = editForm.patient_ic;
             if (isNewBooking && isCreatingNewPatient) {
                 let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
@@ -426,7 +427,8 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                 clinic_id: activeClinicId, ic: tempIc,
                                 vaccine_name: editForm.items[0], target_dose: editForm.dose,
                                 requested_time: scheduled_time, manual_dates: currentManualDates,
-                                exclude_stage_id: (isEditingEvent && selectedEvent) ? selectedEvent.extendedProps.stage_id : null // Pass ID to exclude
+                                exclude_stage_id: (isEditingEvent && selectedEvent) ? selectedEvent.extendedProps.stage_id : null,
+                                restart_series: restartSeries   
                             })
                         });
                         if (valRes.ok) {
@@ -457,10 +459,32 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                     }
                                 } else {
                                     alert(`⚠️ Vaccine Agent Validation Failed:\n${valData.reason}`);
-                                    if (valData.restart_required) {
+                                    // Section 5 (interruption) returns this WITHOUT restart_required,
+                                    // so we also detect it by reason text. The previous series has
+                                    // expired beyond interruption_restart_days → reset the
+                                    // auto-determined dose to Dose 1, expose the picker so staff can
+                                    // confirm, clear carried dates, and arm restartSeries so the
+                                    // re-submission books a fresh cycle from Dose 1.
+                                    const needsRestart = valData.restart_required ||
+                                        (valData.reason && valData.reason.toLowerCase().includes('must be restarted'));
+                                    if (needsRestart) {
                                         const vac = vaccinesList.find((v: any) => v.name === editForm.items[0]);
                                         const firstDose = vac && vac.total_doses > 1 ? 'Dose 1' : 'Single Dose';
+
+                                        const freshOptions: string[] = [];
+                                        if (vac) {
+                                            if (vac.total_doses === 1) freshOptions.push('Single Dose');
+                                            else for (let i = 1; i <= vac.total_doses; i++) freshOptions.push(`Dose ${i}`);
+                                            if (vac.has_booster) freshOptions.push('Booster');
+                                        }
+
+                                        setManualDates({});
+                                        setVaccineNoHistory(true);
+                                        setAllDoseOptions(freshOptions);
+                                        setRestartSeries(true);
                                         setEditForm((prev: any) => ({ ...prev, dose: firstDose }));
+                                        setEditDate("");
+                                        setEditTime("");
                                     }
                                     return;
                                 }
@@ -748,7 +772,8 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
     setSelectedEvent(event);
     setEditDate(moment(event.start).format("YYYY-MM-DD"));
     setMinDate(moment().format("YYYY-MM-DD")); 
-    setManualDates({});                        
+    setManualDates({});   
+    setRestartSeries(false);                     
     setEditTime(moment(event.start).format("HH:mm"));
     setEditForm({
       status: event.status || 'scheduled',
@@ -810,6 +835,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
     setManualDates({});
     setVaccineNoHistory(false);
     setAllDoseOptions([]);
+    setRestartSeries(false);
     setEditTime(""); 
     setEditForm({
       status: 'scheduled',
@@ -1328,6 +1354,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                         setVaccineNoHistory(false);
                                         setAllDoseOptions([]);
                                         setManualDates({});
+                                        setRestartSeries(false);   // ← ADD
                                         setEditForm(prev => ({...prev, items: [val], dose: 'Calculating...'}));
 
                                         if (!val) {
@@ -1352,9 +1379,19 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                                         alert(`⚠️ Brand Switch Detected:\nYou started a cycle with ${data.active_brand}. You must complete that cycle before switching to ${val}.`);
                                                         setEditForm(prev => ({...prev, items: [], dose: ''}));
                                                     } else if (data.type_disabled) {
-                                                        // Full series done and repeat not allowed / interval not passed
                                                         alert(`🚫 ${val} is not available for this patient.\n${data.disable_reason}`);
                                                         setEditForm(prev => ({...prev, items: [], dose: ''}));
+                                                    } else if (data.series_expired) {
+                                                        // Previous (completed) series exceeded interruption_restart_days.
+                                                        // Notify, then LOCK the dose to Dose 1 (no dropdown) and arm the
+                                                        // restart flag so Create Booking books a fresh cycle from Dose 1.
+                                                        alert("Your previous vaccine series has expired and must be restarted. Please select Dose 1 instead.");
+                                                        const firstDose = data.next_dose || 'Dose 1';
+                                                        setVaccineNoHistory(false);   // false → renders the locked input, not the picker
+                                                        setAllDoseOptions([]);
+                                                        setManualDates({});
+                                                        setRestartSeries(true);
+                                                        setEditForm(prev => ({...prev, items: [val], dose: firstDose}));
                                                     } else if (data.no_history) {
                                                         // No prior doses — let staff pick any dose
                                                         setVaccineNoHistory(true);
@@ -1362,7 +1399,6 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                                         const firstDose = (data.all_dose_options || [])[0] || data.next_dose || 'Dose 1';
                                                         setEditForm(prev => ({...prev, items: [val], dose: firstDose}));
                                                     } else if (data.next_dose) {
-                                                        // History exists — auto-determine dose
                                                         setVaccineNoHistory(false);
                                                         setEditForm(prev => ({...prev, items: [val], dose: data.next_dose}));
                                                     }

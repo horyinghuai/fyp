@@ -413,7 +413,8 @@ class ValidateVaccineDateReq(BaseModel):
     target_dose: str
     requested_time: str
     manual_dates: Dict[str, str] = {}
-    exclude_stage_id: Optional[str] = None 
+    exclude_stage_id: Optional[str] = None
+    restart_series: Optional[bool] = False 
 
 # --- Helper Functions ---
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
@@ -4049,6 +4050,10 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == req.vaccine_name).first()
     if not vaccine: return {"is_valid": True}
 
+    if req.restart_series:
+        target_name = req.target_dose or ("Dose 1" if vaccine.total_doses > 1 else "Single Dose")
+        return {"is_valid": True, "target_dose": target_name, "min_allowed_date": None}
+
     same_type_vaccines = db.query(models.Vaccine).filter(models.Vaccine.type == vaccine.type).all()
     same_type_ids = [v.id for v in same_type_vaccines]
 
@@ -4399,6 +4404,7 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
                 "all_dose_options": all_dose_options_for(vaccine),
                 "type_disabled": False,
                 "disable_reason": None,
+                "series_expired": True,   # ← ADD
             }
 
         next_num = first_interrupted_num
@@ -4429,6 +4435,7 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
                     "all_dose_options": all_dose_options_for(vaccine),
                     "type_disabled": False,
                     "disable_reason": None,
+                    "series_expired": True,   # ← ADD
                 }
 
     next_num = highest_valid_num + 1
