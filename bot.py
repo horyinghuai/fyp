@@ -603,7 +603,9 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
                 detail = ', '.join(items) if items else 'Blood Test'
             else:
                 detail = service
-            label = f"{a['date']} {a['time'][:5]} - {detail}"
+            
+            status = a.get('status', 'Scheduled').title()
+            label = f"{a['date']} {a['time'][:5]} - {detail} ({status})"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['stage_id']}")])
     if past_appts_sorted:
         keyboard.append([InlineKeyboardButton("📅 Past Appointments (view only)", callback_data="noop")])
@@ -620,7 +622,9 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
                 detail = ', '.join(items) if items else 'Blood Test'
             else:
                 detail = service
-            label = f"{a['date']} {a['time'][:5]} - {detail}"
+            
+            status = a.get('status', 'Completed').title()
+            label = f"{a['date']} {a['time'][:5]} - {detail} ({status})"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['stage_id']}")])
 
     keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main")])
