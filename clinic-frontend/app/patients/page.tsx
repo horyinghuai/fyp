@@ -300,7 +300,8 @@ export default function PatientsPage() {
     if (!selectedApptDetail) return alert("Error: No appointment selected.");
 
     try {
-        const cancelRes = await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedApptDetail.id}`, {
+        // CHANGED: Use selectedApptDetail.stage_id instead of selectedApptDetail.id
+        const cancelRes = await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedApptDetail.stage_id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: 'canceled', cancel_reason: reason })
         });
@@ -315,7 +316,8 @@ export default function PatientsPage() {
             const sorted = enrichedData.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
             setSelectedPatientAppts(sorted);
 
-            const updated = sorted.find((a:any) => a.id === selectedApptDetail.id);
+            // CHANGED: Match using .stage_id
+            const updated = sorted.find((a:any) => a.stage_id === selectedApptDetail.stage_id);
             if (updated) setSelectedApptDetail(updated);
         }
         setCancelApptModalVisible(false);
