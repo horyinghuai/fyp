@@ -1459,6 +1459,29 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                           }
                                         }
                                         setManualDates(prev => ({...prev, ...newManualDates}));
+
+                                        // External-clinic expiry check: if the IMMEDIATELY PRIOR dose's
+                                        // external date already exceeds interruption_restart_days, the
+                                        // series has lapsed → alert now and lock the booking to Dose 1.
+                                        const vac = vaccinesList.find((v: any) => v.name === editForm.items[0]);
+                                        if (vac && vac.restart_if_interrupted && vac.interruption_restart_days != null) {
+                                          const prevName = allDoseOptions[selectedNum - 2] || `Dose ${selectedNum - 1}`;
+                                          const prevDateStr = newManualDates[prevName];
+                                          if (prevDateStr) {
+                                            const expiry = moment(prevDateStr).add(vac.interruption_restart_days, 'days');
+                                            if (moment().isAfter(expiry, 'day')) {
+                                              alert("Your previous vaccine series has expired and must be restarted. Please select Dose 1 instead.");
+                                              const firstDose = vac.total_doses > 1 ? 'Dose 1' : 'Single Dose';
+                                              setVaccineNoHistory(false);   // false → locked input, no dropdown
+                                              setAllDoseOptions([]);
+                                              setManualDates({});           // discard external dates from the dead cycle
+                                              setRestartSeries(true);
+                                              setEditForm(prev => ({...prev, dose: firstDose}));
+                                              setEditDate("");
+                                              setEditTime("");
+                                            }
+                                          }
+                                        }
                                       } else {
                                         // First dose selected — clear any previously entered manual dates
                                         setManualDates({});
