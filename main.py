@@ -3658,7 +3658,7 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
 
     doctors = doctors_query.distinct().all()
     if not doctors:
-        return {"error": "No doctors found matching criteria."}
+        return {"error": "No doctors found matching criteria.", "min_allowed_date": earliest_allowed_dt.strftime("%Y-%m-%d")}
 
     doc_ics = [d.ic_passport_number for d in doctors]
 
@@ -3761,7 +3761,7 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
             break
 
     if not best:
-        return {"error": "No available slots within the valid timeframe."}
+        return {"error": "No available slots within the valid timeframe.", "min_allowed_date": earliest_allowed_dt.strftime("%Y-%m-%d")}
 
     log_reasoning = (
         f"Recommended {best['doctor']} on {best['date_str']} at {best['formatted_time']}. "

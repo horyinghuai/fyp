@@ -165,11 +165,18 @@ def get_ocr_reader():
 
 START_CLINIC_SELECT, NAT_CHOICE, MY_METHOD_CHOICE, UPLOAD_IC, MAN_ID_CHECK, MAN_NAME, MAN_GENDER, MAN_NAT, MAN_NAT_CONFIRM, MAN_ADDRESS, MAN_PHONE, CONFIRM_PROFILE, EDIT_PROFILE_MENU, EDIT_SPECIFIC_FIELD, SERVICE, V_TYPE, V_SELECT, V_DOSE, BT_FLOW, DOC_PREF, DOC_SELECT, BOOK_DATE_TIME, CONFIRM_BOOK, EDIT_BOOKING_MENU, FINAL_HELP, CANCEL_SELECT, CANCEL_REASON, BASIC_CONFIRM, MAN_GENDER_CONFIRM, OTHERS_REASON = range(30)
 
-async def generate_date_picker(active_cid, service, doctor_pref, is_editing=False):
+async def generate_date_picker(active_cid, service, doctor_pref, is_editing=False, base_date=None):
     duration = 15 if service == 'Vaccine' else 30
+    payload = {"clinic_id": active_cid, "duration": duration, "doctor_pref": doctor_pref}
+    # base_date = earliest interval-valid date (vaccine Dose 2+/Booster). /available-dates
+    # starts from max(base_date, today) and only returns dates that actually have a free
+    # slot — so the first button is the earliest valid date WITH availability, and if that
+    # date is full it auto-rolls to the next available one.
+    if base_date:
+        payload["base_date"] = base_date
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.post(f"{API_BASE}/available-dates", json={"clinic_id": active_cid, "duration": duration, "doctor_pref": doctor_pref}, timeout=10.0)
+            res = await client.post(f"{API_BASE}/available-dates", json=payload, timeout=10.0)
             valid_dates = res.json() if res.status_code == 200 else []
         except Exception as e:
             logger.error(f"Error fetching available dates: {e}")
@@ -1824,6 +1831,10 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
     import datetime as dt
     today_str = dt.datetime.now().strftime("%Y-%m-%d")
 
+    # Reset per-prompt so Create-New-Booking and Check-Booking-Details flows never
+    # share a stale interval floor. Refilled below from the scheduling agent response.
+    context.user_data.pop('min_allowed_date', None)
+
     rec_msg = ""
     rec_keyboard = []
 
@@ -1847,6 +1858,11 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
             
             if res.status_code == 200:
                 data = res.json()
+                # Capture the earliest interval-valid date (Booster → Dose 3 date + interval,
+                # Dose N → Dose N-1 date + interval). Stored even when no recommendation could
+                # be built, so the "Choose Other Available Slots" picker still honours it.
+                if data.get('min_allowed_date'):
+                    context.user_data['min_allowed_date'] = data['min_allowed_date']
                 if "error" not in data:
                     patient_friendly_reason = data.get('reasoning', "Recommended for faster availability.")
                     
@@ -1878,7 +1894,7 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
             pass
     # ----------------------------------------------------------------------
 
-    markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
+    markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing, base_date=context.user_data.get('min_allowed_date'))
     
     if rec_msg and rec_keyboard:
         rec_keyboard.append([InlineKeyboardButton("Choose Other Available Slots", callback_data="show_standard_dates")])
@@ -1914,7 +1930,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
 
         elif data == "back_date":
             is_editing = context.user_data.get('is_editing', False)
-            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
+            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing, base_date=context.user_data.get('min_allowed_date'))
             if service in ['Vaccine', 'Blood Test']: msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
             else: msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
             await query.edit_message_text(msg, reply_markup=markup)
@@ -1951,7 +1967,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         
         elif data == "show_standard_dates":
             is_editing = context.user_data.get('is_editing', False)
-            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
+            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing, base_date=context.user_data.get('min_allowed_date'))
             if service in ['Vaccine', 'Blood Test']: msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
             else: msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
             await query.edit_message_text(msg, reply_markup=markup)
@@ -1975,7 +1991,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         
         if "error" in ext:
             is_editing = context.user_data.get('is_editing', False)
-            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing)
+            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing, base_date=context.user_data.get('min_allowed_date'))
             msg = f"⚠️ AI Process Error: {ext['error']}\n\nPlease select a Date below."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
@@ -2007,7 +2023,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
         elif time_pref:
-            markup = await generate_date_picker(active_cid, service, context.user_data.get('doctor_pref'), context.user_data.get('is_editing', False))
+            markup = await generate_date_picker(active_cid, service, context.user_data.get('doctor_pref'), context.user_data.get('is_editing', False), base_date=context.user_data.get('min_allowed_date'))
             msg = f"I successfully understood your preferred time: {time_pref}.\nHowever, the date is missing.\nPlease select a valid date below or type it."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
@@ -2017,7 +2033,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
                 await update.message.reply_text(f"✅ Notes noted: {ext.get('general_notes')}")
                 return await show_booking_summary(update, context)
             
-            markup = await generate_date_picker(active_cid, service, context.user_data.get('doctor_pref'), is_editing)
+            markup = await generate_date_picker(active_cid, service, context.user_data.get('doctor_pref'), is_editing, base_date=context.user_data.get('min_allowed_date'))
             msg = "I understood you want to book an appointment, but the date and time format was invalid or missing.\nPlease select a Date below or provide the exact date and time."
             await update.message.reply_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
@@ -2105,7 +2121,7 @@ async def process_availability(update, context, full_time_str):
                             return ASK_MANUAL_DATE
                             
                         msg = f"❌ *Vaccine Agent Validation Failed:*\n{val_data.get('reason')}\n\nPlease select a different Date/Time."
-                        markup = await generate_date_picker(active_cid, service, doctor_pref, context.user_data.get('is_editing', False))
+                        markup = await generate_date_picker(active_cid, service, doctor_pref, context.user_data.get('is_editing', False), base_date=context.user_data.get('min_allowed_date'))
                         if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=markup, parse_mode="Markdown")
                         else: await update.message.reply_text(msg, reply_markup=markup, parse_mode="Markdown")
                         return BOOK_DATE_TIME
