@@ -37,9 +37,20 @@ export default function PatientsPage() {
   const [cancelReason, setCancelReason] = useState("Change of schedule");
   const [customCancelReason, setCustomCancelReason] = useState("");
 
+  // --- NEW EDIT MODAL STATES (REPLICATED FROM TIMETABLE) ---
+  const [doctors, setDoctors] = useState<any[]>([]);
+  const [vaccinesList, setVaccinesList] = useState<any[]>([]);
+  const [bloodTestsList, setBloodTestsList] = useState<any[]>([]);
+  const [isEditingAppt, setIsEditingAppt] = useState(false);
+  const [editDate, setEditDate] = useState("");
+  const [editTime, setEditTime] = useState("");
+  const [editForm, setEditForm] = useState<any>({});
+  const [inlineCancelReason, setInlineCancelReason] = useState("");
+
   const handleViewAppointments = async (patient: any) => {
     try {
-        const res = await fetch(`http://127.0.0.1:8000/patient/${patient.clinic_id}/appointments/${patient.ic_passport_number}`);
+        // Added ?include_canceled=true to the URL
+        const res = await fetch(`http://127.0.0.1:8000/patient/${patient.clinic_id}/appointments/${patient.ic_passport_number}?include_canceled=true`);
         if (res.ok) {
             const data = await res.json();
             // Enrich with patient details for the modal
@@ -78,8 +89,104 @@ export default function PatientsPage() {
         const res = await fetch(`http://127.0.0.1:8000/admin/patients/${cid}`, { headers: { 'Authorization': `Bearer ${token}` } });
         if (res.status === 401) { window.location.href = '/login'; return; }
         if (res.ok) setPatients(await res.json());
+
+        // Load extra data for edit modal
+        const docsRes = await fetch(`http://127.0.0.1:8000/admin/doctors-all/${cid}`);
+        if (docsRes.ok) {
+            const docs = await docsRes.json();
+            const docsWithSched = await Promise.all(docs.map(async (d: any) => {
+                const schedRes = await fetch(`http://127.0.0.1:8000/admin/doctors/${d.ic_passport_number}/availability/${cid}`);
+                const schedules = schedRes.ok ? await schedRes.json() : [];
+                return { ...d, schedules };
+            }));
+            setDoctors(docsWithSched);
+        }
+        const vacRes = await fetch(`http://127.0.0.1:8000/vaccines/${cid}`);
+        if (vacRes.ok) setVaccinesList(await vacRes.json());
+        
+        const pkgsRes = await fetch(`http://127.0.0.1:8000/blood-tests/${cid}/package`);
+        const pkgs = pkgsRes.ok ? await pkgsRes.json() : [];
+        
+        const sglsRes = await fetch(`http://127.0.0.1:8000/blood-tests/${cid}/single`);
+        const sgls = sglsRes.ok ? await sglsRes.json() : [];
+        
+        setBloodTestsList([...pkgs, ...sgls]);
     } catch (err) {}
     setIsLoading(false);
+  };
+
+  const getAvailableSlots = () => {
+      if (!editDate) return { times: [], docsForTime: {} };
+      const dObj = new Date(editDate);
+      const dayOfWeek = dObj.toLocaleDateString('en-US', { weekday: 'short' }).toLowerCase();
+      const duration = editForm.service === 'Vaccine' ? 15 : 30;
+      const now = new Date();
+      const isToday = dObj.toDateString() === now.toDateString();
+
+      const timesSet = new Set<string>();
+      const docsForTime: Record<string, any[]> = {};
+
+      doctors.forEach(doc => {
+          if (editForm.doctor_ic && doc.ic_passport_number !== editForm.doctor_ic) return;
+          if (!doc.schedules) return;
+          const todayScheds = doc.schedules.filter((s: any) => s.day_of_week && s.day_of_week.toLowerCase() === dayOfWeek);
+          
+          todayScheds.forEach((sched: any) => {
+              let curr = new Date(`${editDate}T${sched.start_time}`);
+              const end = new Date(`${editDate}T${sched.end_time}`);
+              
+              while (new Date(curr.getTime() + duration*60000) <= end) {
+                  const timeStr = curr.toTimeString().substring(0, 5);
+                  const slotStart = new Date(curr);
+                  const isCurrentEventTime = selectedApptDetail && selectedApptDetail.time.substring(0,5) === timeStr && selectedApptDetail.date === editDate;
+
+                  if (isToday && slotStart <= now && !isCurrentEventTime) {
+                      curr = new Date(curr.getTime() + duration*60000);
+                      continue;
+                  }
+
+                  timesSet.add(timeStr);
+                  if (!docsForTime[timeStr]) docsForTime[timeStr] = [];
+                  if (!docsForTime[timeStr].some(d => d.ic_passport_number === doc.ic_passport_number)) {
+                      docsForTime[timeStr].push(doc);
+                  }
+                  curr = new Date(curr.getTime() + duration*60000);
+              }
+          });
+      });
+      return { times: Array.from(timesSet).sort(), docsForTime };
+  };
+
+  const handleUpdateEvent = async () => {
+      try {
+          if (!editDate || !editTime || !editForm.doctor_ic) return alert("Please select Date, Time, and Doctor.");
+          if (!window.confirm("Are you sure you want to save these changes?")) return;
+
+          const scheduled_time = `${editDate} ${editTime}:00`;
+          const payload: any = {
+              appt_id: selectedApptDetail.appt_id, 
+              service_type: editForm.service,
+              details: {
+                  items: editForm.items, dose: editForm.dose, total_doses: 1, assigned_doctor_id: editForm.doctor_ic, general_notes: editForm.reason
+              },
+              scheduled_time: scheduled_time, 
+              status: editForm.status
+          };
+          
+          if (editForm.status === 'canceled') {
+              if (!inlineCancelReason.trim()) return alert("Please enter a cancel reason.");
+              payload.cancel_reason = inlineCancelReason;
+          }
+
+          const updateRes = await fetch(`http://127.0.0.1:8000/update-appointment`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+          });
+          
+          if (!updateRes.ok) throw new Error('Update failed');
+          window.location.reload(); 
+      } catch (err: any) {
+          alert(`Error: ${err.message}`);
+      }
   };
 
   const handleICPartChange = (index: number, val: string) => {
@@ -299,28 +406,17 @@ export default function PatientsPage() {
     if (!reason.trim()) return alert("Please provide a cancellation reason.");
     if (!selectedApptDetail) return alert("Error: No appointment selected.");
 
+    if (!window.confirm("Are you sure you want to cancel this booking?")) return;
+
     try {
-        // CHANGED: Use selectedApptDetail.stage_id instead of selectedApptDetail.id
-        const cancelRes = await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedApptDetail.stage_id}`, {
+        const cancelRes = await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${selectedApptDetail.stage_id || selectedApptDetail.id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: 'canceled', cancel_reason: reason })
         });
 
         if (!cancelRes.ok) throw new Error('Cancellation failed');
 
-        // Refresh patient appointments silently to show updated status
-        const res = await fetch(`http://127.0.0.1:8000/patient/${clinicId}/appointments/${selectedApptDetail.patient_ic}`);
-        if (res.ok) {
-            const data = await res.json();
-            const enrichedData = data.map((d: any) => ({ ...d, patient_name: selectedApptDetail.patient_name, patient_ic: selectedApptDetail.patient_ic }));
-            const sorted = enrichedData.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-            setSelectedPatientAppts(sorted);
-
-            // CHANGED: Match using .stage_id
-            const updated = sorted.find((a:any) => a.stage_id === selectedApptDetail.stage_id);
-            if (updated) setSelectedApptDetail(updated);
-        }
-        setCancelApptModalVisible(false);
+        window.location.reload();
     } catch (err: any) {
         alert(`Error: ${err.message}`);
     }
@@ -503,6 +599,9 @@ export default function PatientsPage() {
                                       <td className="p-3 text-sm font-medium">{appt.service}</td>
                                       <td className="p-3 text-sm text-slate-600 max-w-[200px] truncate" title={appt.service === 'Vaccine' ? `${appt.details?.items?.[0] || ''} (${appt.details?.dose || ''})` : appt.service === 'Blood Test' ? appt.details?.items?.join(', ') : appt.details?.reason}>
                                           {appt.service === 'Vaccine' ? `${appt.details?.items?.[0] || ''} (${appt.details?.dose || ''})` : appt.service === 'Blood Test' ? appt.details?.items?.join(', ') : appt.details?.reason}
+                                          {appt.status === 'canceled' && appt.cancel_reason && (
+                                              <span className="text-red-500 font-medium ml-1">(Canceled)</span>
+                                          )}
                                       </td>
                                       <td className="p-3 text-sm text-slate-600">{appt.doctor_name}</td>
                                       <td className="p-3 text-sm">
@@ -530,95 +629,182 @@ export default function PatientsPage() {
                       <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
                           <Calendar size={18}/> Booking Details
                       </h3>
-                      <button onClick={() => setSelectedApptDetail(null)} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
+                      <button onClick={() => { setSelectedApptDetail(null); setIsEditingAppt(false); }} className="text-slate-400 hover:text-red-500"><X size={20}/></button>
                   </div>
 
                   <div className="p-6">
-                      <dl className="space-y-2.5 text-sm">
-                          <div className="flex gap-3">
-                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Patient</dt>
-                              <dd className="text-slate-800 font-bold">{selectedApptDetail.patient_name}</dd>
-                          </div>
-                          <div className="flex gap-3">
-                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Service</dt>
-                              <dd className="text-slate-800 font-medium">{selectedApptDetail.service}</dd>
-                          </div>
+                      {isEditingAppt ? (
+                          <div className="space-y-4">
+                              {/* Service Type */}
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Service Type</label>
+                                  <select value={editForm.service} onChange={(e) => setEditForm({...editForm, service: e.target.value, items: [], doctor_ic: ''})} className="w-full p-2 border rounded-lg bg-white outline-none">
+                                      <option value="Others">Others</option>
+                                      <option value="Vaccine">Vaccine</option>
+                                      <option value="Blood Test">Blood Test</option>
+                                  </select>
+                              </div>
 
-                          {selectedApptDetail.service === 'Vaccine' && (
-                              <>
-                                  <div className="flex gap-3">
-                                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Vaccine</dt>
-                                      <dd className="text-slate-800">{selectedApptDetail.details?.items?.[0] || '—'}</dd>
+                              {/* Status */}
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Booking Status</label>
+                                  <select value={editForm.status} onChange={(e) => setEditForm({...editForm, status: e.target.value})} className="w-full p-2 border rounded-lg bg-white outline-none mb-2">
+                                      <option value="scheduled">Scheduled</option>
+                                      <option value="completed">Completed</option>
+                                      <option value="no-show">No-Show</option>
+                                      <option value="canceled">Canceled</option>
+                                  </select>
+                                  {editForm.status === 'canceled' && (
+                                      <div className="mt-2">
+                                          <label className="block text-xs font-bold text-red-500 uppercase mb-1">Cancellation Reason *</label>
+                                          <input 
+                                              type="text" 
+                                              value={inlineCancelReason} 
+                                              onChange={e => setInlineCancelReason(e.target.value)} 
+                                              className="w-full p-2 border rounded-lg bg-white outline-none border-red-300" 
+                                              placeholder="Specify reason..." 
+                                          />
+                                      </div>
+                                  )}
+                              </div>
+
+                              {/* Doctor */}
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assigned Doctor *</label>
+                                  <select value={editForm.doctor_ic} onChange={(e) => { setEditForm({...editForm, doctor_ic: e.target.value}); setEditDate(""); setEditTime(""); }} className="w-full p-2 border rounded-lg bg-white outline-none">
+                                      <option value="">-- Select a Doctor --</option>
+                                      {doctors.map((doc: any) => <option key={doc.ic_passport_number} value={doc.ic_passport_number}>{doc.name}</option>)}
+                                  </select>
+                              </div>
+
+                              {/* Date */}
+                              <div>
+                                  <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Date</label>
+                                  <input type="date" value={editDate} onChange={e => { setEditDate(e.target.value); setEditTime(""); }} className="w-full p-2 border rounded-lg bg-white outline-none" />
+                              </div>
+
+                              {/* Time */}
+                              {editDate && editForm.doctor_ic && (
+                                  <div>
+                                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Time</label>
+                                      <div className="grid grid-cols-4 gap-2">
+                                          {getAvailableSlots().times.map((t: string) => (
+                                              <button key={t} type="button" onClick={() => setEditTime(t)}
+                                                  className={`p-2 border rounded-lg text-sm transition-all flex flex-col items-center justify-center ${editTime === t ? "bg-indigo-600 text-white border-indigo-600 shadow-md font-bold" : "bg-slate-50 text-slate-700 hover:bg-indigo-50 border-slate-200"}`}>
+                                                  <span>{t}</span>
+                                              </button>
+                                          ))}
+                                          {getAvailableSlots().times.length === 0 && <div className="col-span-4 text-sm text-slate-500 text-center py-2">No available slots.</div>}
+                                      </div>
                                   </div>
+                              )}
+                          </div>
+                      ) : (
+                          <dl className="space-y-2.5 text-sm">
+                              <div className="flex gap-3">
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Patient</dt>
+                                  <dd className="text-slate-800 font-bold">{selectedApptDetail.patient_name}</dd>
+                              </div>
+                              <div className="flex gap-3">
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Service</dt>
+                                  <dd className="text-slate-800 font-medium">{selectedApptDetail.service}</dd>
+                              </div>
+
+                              {selectedApptDetail.service === 'Vaccine' && (
+                                  <>
+                                      <div className="flex gap-3">
+                                          <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Vaccine</dt>
+                                          <dd className="text-slate-800">{selectedApptDetail.details?.items?.[0] || '—'}</dd>
+                                      </div>
+                                      <div className="flex gap-3">
+                                          <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Dose</dt>
+                                          <dd className="text-slate-800">{selectedApptDetail.details?.dose || '—'}</dd>
+                                      </div>
+                                  </>
+                              )}
+
+                              {selectedApptDetail.service === 'Blood Test' && (
                                   <div className="flex gap-3">
-                                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Dose</dt>
-                                      <dd className="text-slate-800">{selectedApptDetail.details?.dose || '—'}</dd>
+                                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Tests</dt>
+                                      <dd className="text-slate-800">{selectedApptDetail.details?.items?.join(', ') || '—'}</dd>
                                   </div>
-                              </>
-                          )}
+                              )}
 
-                          {selectedApptDetail.service === 'Blood Test' && (
+                              {selectedApptDetail.service === 'Others' && (
+                                  <div className="flex gap-3">
+                                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Reason</dt>
+                                      <dd className="text-slate-800">{selectedApptDetail.details?.reason || '—'}</dd>
+                                  </div>
+                              )}
+
                               <div className="flex gap-3">
-                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Tests</dt>
-                                  <dd className="text-slate-800">{selectedApptDetail.details?.items?.join(', ') || '—'}</dd>
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Doctor</dt>
+                                  <dd className="text-slate-800">{selectedApptDetail.doctor_name || 'ANY'}</dd>
                               </div>
-                          )}
-
-                          {selectedApptDetail.service === 'Others' && (
                               <div className="flex gap-3">
-                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Reason</dt>
-                                  <dd className="text-slate-800">{selectedApptDetail.details?.reason || '—'}</dd>
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Date</dt>
+                                  <dd className="text-slate-800">{new Date(selectedApptDetail.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })} ({new Date(selectedApptDetail.date).toLocaleDateString('en-GB', { weekday: 'short' })})</dd>
                               </div>
-                          )}
-
-                          <div className="flex gap-3">
-                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Doctor</dt>
-                              <dd className="text-slate-800">{selectedApptDetail.doctor_name || 'ANY'}</dd>
-                          </div>
-                          <div className="flex gap-3">
-                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Date</dt>
-                              <dd className="text-slate-800">{new Date(selectedApptDetail.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })} ({new Date(selectedApptDetail.date).toLocaleDateString('en-GB', { weekday: 'short' })})</dd>
-                          </div>
-                          <div className="flex gap-3">
-                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Time</dt>
-                              <dd className="text-slate-800 font-mono">{selectedApptDetail.time.substring(0, 5)}</dd>
-                          </div>
-                          <div className="flex gap-3 items-start">
-                              <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Status</dt>
-                              <dd>
-                                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${selectedApptDetail.status === 'scheduled' ? 'bg-blue-100 text-blue-700' : selectedApptDetail.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : selectedApptDetail.status === 'canceled' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700'}`}>
-                                      {selectedApptDetail.status.charAt(0).toUpperCase() + selectedApptDetail.status.slice(1)}
-                                  </span>
-                              </dd>
-                          </div>
-
-                          {selectedApptDetail.status === 'canceled' && selectedApptDetail.cancel_reason && (
-                              <div className="flex gap-3 pt-2">
-                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Cancel Reason</dt>
-                                  <dd className="text-red-600 font-medium">{selectedApptDetail.cancel_reason}</dd>
+                              <div className="flex gap-3">
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Time</dt>
+                                  <dd className="text-slate-800 font-mono">{selectedApptDetail.time.substring(0, 5)}</dd>
                               </div>
-                          )}
-                      </dl>
+                              <div className="flex gap-3 items-start">
+                                  <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Status</dt>
+                                  <dd>
+                                      <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${selectedApptDetail.status === 'scheduled' ? 'bg-blue-100 text-blue-700' : selectedApptDetail.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : selectedApptDetail.status === 'canceled' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700'}`}>
+                                          {selectedApptDetail.status.charAt(0).toUpperCase() + selectedApptDetail.status.slice(1)}
+                                      </span>
+                                  </dd>
+                              </div>
+
+                              {selectedApptDetail.status === 'canceled' && selectedApptDetail.cancel_reason && (
+                                  <div className="flex gap-3 pt-2">
+                                      <dt className="w-28 shrink-0 font-semibold text-slate-400 uppercase text-[11px] tracking-wide pt-0.5">Cancel Reason</dt>
+                                      <dd className="text-red-600 font-medium">{selectedApptDetail.cancel_reason}</dd>
+                                  </div>
+                              )}
+                          </dl>
+                      )}
                   </div>
                   
                   <div className="px-6 py-4 bg-slate-50 flex justify-between gap-3 border-t border-slate-100">
-                      <button
-                          onClick={() => setCancelApptModalVisible(true)}
-                          disabled={['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status)}
-                          className={`px-4 py-2 rounded-lg font-medium transition-colors ${['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status) ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
-                      >
-                          Cancel Booking
-                      </button>
-                      <button
-                          onClick={() => {
-                              alert("Please navigate to the Timetable (Dashboard) page to securely modify scheduling attributes for this booking.");
-                              // Alternatively, you can automatically redirect the user here using window.location.href = '/';
-                          }}
-                          disabled={['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status)}
-                          className={`px-4 py-2 rounded-lg font-medium ${['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status) ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-                      >
-                          Modify Booking
-                      </button>
+                      {isEditingAppt ? (
+                          <button onClick={() => setIsEditingAppt(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300">Cancel Modify</button>
+                      ) : (
+                          <button
+                              onClick={() => setCancelApptModalVisible(true)}
+                              disabled={['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status)}
+                              className={`px-4 py-2 rounded-lg font-medium transition-colors ${['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status) ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+                          >
+                              Cancel Booking
+                          </button>
+                      )}
+                      
+                      {isEditingAppt ? (
+                          <button onClick={handleUpdateEvent} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium">Save Changes</button>
+                      ) : (
+                          <button
+                              onClick={() => {
+                                  setEditDate(selectedApptDetail.date);
+                                  setEditTime(selectedApptDetail.time.substring(0,5));
+                                  setEditForm({
+                                      status: selectedApptDetail.status,
+                                      doctor_ic: selectedApptDetail.doctor_ic || (doctors.length > 0 ? doctors[0].ic_passport_number : ''),
+                                      service: selectedApptDetail.service,
+                                      items: selectedApptDetail.details?.items || [],
+                                      dose: selectedApptDetail.details?.dose || '',
+                                      reason: selectedApptDetail.details?.reason || ''
+                                  });
+                                  setInlineCancelReason(selectedApptDetail.cancel_reason || "");
+                                  setIsEditingAppt(true);
+                              }}
+                              disabled={['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status)}
+                              className={`px-4 py-2 rounded-lg font-medium ${['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status) ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                          >
+                              Modify Booking
+                          </button>
+                      )}
                   </div>
               </div>
           </div>
