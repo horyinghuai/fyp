@@ -1354,7 +1354,7 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 res = await client.get(f"{API_BASE}/vaccines/{active_cid}", timeout=5.0)
                 vaccines = res.json()
                 
-                user_gender = context.user_data.get('gender', 'ANY').upper()
+                user_gender = (context.user_data.get('gender') or 'ANY').upper()
                 # Replace this line inside service_choice:
                 filtered_vacs = [v for v in vaccines if (not v.get('target_gender') or v.get('target_gender').upper() in ['ANY', user_gender]) and not v.get('is_low_stock')]
                 context.user_data['vaccines_list'] = filtered_vacs
@@ -1448,7 +1448,7 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vaccine_name = query.data.replace("v_", "")
 
     vac = next((v for v in context.user_data.get('vaccines_list', []) if v['name'] == vaccine_name), None)
-    user_gender = context.user_data.get('gender', 'ANY').upper()
+    user_gender = (context.user_data.get('gender') or 'ANY').upper()
     if vac and vac.get('target_gender') and vac.get('target_gender').upper() not in ['ANY', user_gender]:
         await query.answer(f"⚠️ Alert: This vaccine is exclusively designed for {vac.get('target_gender').upper()} patients.", show_alert=True)
         return V_SELECT
@@ -1615,7 +1615,7 @@ async def show_blood_tests(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             except Exception as e:
                 logger.error(f"Error fetching blood tests: {e}")
                 
-    user_gender = context.user_data.get('gender', 'ANY').upper()
+    user_gender = (context.user_data.get('gender') or 'ANY').upper()
     tests = [t for t in tests if not t.get('target_gender') or t.get('target_gender').upper() in ['ANY', user_gender]]
     context.user_data[f'bt_cache_{t_type}'] = tests
     
@@ -1697,7 +1697,7 @@ async def bt_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     bt_target_gender = t.get('target_gender', 'ANY')
                     break
                     
-        user_gender = context.user_data.get('gender', 'ANY').upper()
+        user_gender = (context.user_data.get('gender') or 'ANY').upper()
         if bt_target_gender and bt_target_gender.upper() not in ['ANY', user_gender]:
             await query.answer(f"⚠️ Alert: This service is explicitly designed for {bt_target_gender.upper()} patients.", show_alert=True)
             return BT_FLOW
@@ -2360,16 +2360,19 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
         details = f"{context.user_data['selected_items'][0]} ({context.user_data.get('dose')})"
         
         # Dynamically build the generated schedule block
-        sched_str = "Your vaccination schedule has been created successfully.\n\nUpcoming Appointments:\n"
-        for s in stages:
-            sched_str += f"*{s['stage_name']}*\nDate: {s['date']}\nTime: {s['time']}\n\n"
-        sched_str += "Don't worry, we will send you a reminder before each appointment."
+        sched_str = ""
+        if stages:
+            sched_str = "Upcoming Schedule:\n\n"
+            for s in stages:
+                t_val = s['time'][:5] if len(s['time']) >= 5 else s['time']
+                sched_str += f"{s['stage_name']}\nDate: {s['date']}\nTime: {t_val}\n\n"
+            sched_str += "Don't worry, we will send you a reminder before each appointment."
 
         confirmed_summary = (f"✅ *Booking Successfully Confirmed!*\n\n📋 *Confirmed Booking Summary*\n"
                              f"Name: {context.user_data['name']}\n{id_label}: {context.user_data['ic']}\n"
                              f"Phone: {context.user_data['phone']}\n"
                              f"Service: {service}\nDetails: {details}{doc_text}\n\n"
-                             f"{sched_str}")
+                             f"{sched_str}").strip()
     else:
         if service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
         else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
@@ -2411,16 +2414,20 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
         "assigned_doctor_id": context.user_data.get('assigned_doctor_id') 
     }
 
+    stages = []
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(f"{API_BASE}/update-appointment", json={
+            # Use update-appointment endpoint
+            res = await client.post(f"{API_BASE}/update-appointment", json={
                 "appt_id": context.user_data['original_appt_id'],
                 "service_type": service,
                 "details": details_block,
                 "scheduled_time": context.user_data['book_time'],
-                "status": "scheduled",
-                "skip_notification": True
+                "status": "scheduled"
             }, timeout=10.0)
+            if res.status_code == 200:
+                data = res.json()
+                stages = data.get("stages", [])
         except Exception as e:
             logger.error(f"Error updating appointment: {e}")
             await query.message.reply_text("Failed to update appointment. Please try again.")
@@ -2430,9 +2437,19 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
     date_part, time_part = time_str.split(" ")
     
     # Format Details without single quotes and handle "Others" service
+    sched_str = ""
     if service == 'Vaccine':
         items = context.user_data.get('selected_items', [])
         details_str = f"{items[0]} ({context.user_data.get('dose')})" if items else "Vaccine"
+        
+        # Append updated schedule if stages exist
+        if stages:
+            sched_str = "\n\nUpdated Upcoming Schedule:\n\n"
+            for s in stages:
+                t_val = s['time'][:5] if len(s['time']) >= 5 else s['time']
+                sched_str += f"{s['stage_name']}\nDate: {s['date']}\nTime: {t_val}\n\n"
+            sched_str += "Don't worry, we will send you a reminder before each appointment."
+            
     elif service == 'Blood Test':
         details_str = ", ".join(context.user_data.get('selected_items', []))
     else:
@@ -2451,7 +2468,7 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Time: {time_part}\n"
         f"Service: {service}\n"
         f"Details: {details_str}\n"
-        f"Doctor: {doctor_name}\n"
+        f"Doctor: {doctor_name}{sched_str}"
     )
     
     await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
