@@ -2429,9 +2429,42 @@ async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends
             if appt:
                 patient = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
                 if patient:
+                    # Build the booking detail lines (service, details, doctor, earliest date/time)
+                    doc = db.query(models.Doctor).filter_by(ic_passport_number=appt.doctor_ic).first() if appt.doctor_ic else None
+                    appt_vaccines = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).all()
+                    appt_tests = db.query(models.AppointmentBloodTest).filter_by(appointment_id=appt.id).all()
+                    first_stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id).order_by(models.ApptStage.scheduled_time.asc()).first()
+
+                    service = "Others"
+                    details_str = appt.general_notes or "General Consultation"
+                    if appt_vaccines:
+                        service = "Vaccine"
+                        v = db.query(models.Vaccine).filter_by(id=appt_vaccines[0].vaccine_id).first()
+                        if v and first_stage:
+                            details_str = f"{v.name} ({first_stage.stage_name})"
+                        elif v:
+                            details_str = v.name
+                    elif appt_tests:
+                        service = "Blood Test"
+                        test_names = []
+                        for at in appt_tests:
+                            bt = db.query(models.BloodTest).filter_by(id=at.blood_test_id).first()
+                            if bt: test_names.append(bt.name)
+                        details_str = ", ".join(test_names)
+
+                    doctor_str = doc.name if doc else "ANY"
+                    date_str = first_stage.scheduled_time.strftime('%Y-%m-%d') if first_stage and first_stage.scheduled_time else "N/A"
+                    time_str = first_stage.scheduled_time.strftime('%H:%M') if first_stage and first_stage.scheduled_time else "N/A"
+
                     summary = (f"❌ Booking Successfully Cancelled!\n\n"
                                f"Name: {patient.name}\n"
                                f"IC/Passport: {patient.ic_passport_number}\n"
+                               f"Phone: {patient.phone}\n"
+                               f"Date: {date_str}\n"
+                               f"Time: {time_str}\n"
+                               f"Service: {service}\n"
+                               f"Details: {details_str}\n"
+                               f"Doctor: {doctor_str}\n"
                                f"Reason: {req.cancel_reason}")
                                
                     bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
@@ -3190,19 +3223,25 @@ def get_patient_by_id(clinic_id: str, ic_passport: str, db: Session = Depends(ge
     return patient
 
 @app.get("/patient/{clinic_id}/appointments/{ic}")
-def get_patient_appointments(clinic_id: str, ic: str, db: Session = Depends(get_db)):
+def get_patient_appointments(clinic_id: str, ic: str, include_canceled: bool = False, db: Session = Depends(get_db)):
     patient = db.query(models.Patient).filter(models.Patient.clinic_id == clinic_id, models.Patient.ic_passport_number == ic).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
     
-    # Get all stages (no time filter) for this patient
+    # Get all stages (no time filter) for this patient.
+    # include_canceled=True is used ONLY by the Telegram "Check Booking Details" list so
+    # canceled bookings are visible (view-only). All other callers keep the default
+    # behaviour of hiding canceled stages.
+    stage_filters = [models.Appointment.patient_id == patient.id]
+    if not include_canceled:
+        stage_filters.append(models.ApptStage.status != 'canceled')
+
     stages = db.query(models.ApptStage, models.Appointment, models.Doctor).join(
         models.Appointment, models.ApptStage.appointment_id == models.Appointment.id
     ).outerjoin(
         models.Doctor, models.Appointment.doctor_ic == models.Doctor.ic_passport_number
     ).filter(
-        models.Appointment.patient_id == patient.id,
-        models.ApptStage.status != 'canceled'
+        *stage_filters
     ).order_by(models.ApptStage.scheduled_time.asc()).all()
     
     res = []

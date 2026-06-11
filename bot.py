@@ -540,7 +540,7 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
     ic = context.user_data.get('ic')
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
+            res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}?include_canceled=true", timeout=5.0)
             if res.status_code == 404:
                 is_my = context.user_data.get('is_malaysian')
 
@@ -673,7 +673,7 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
         ic = context.user_data.get('ic')
         async with httpx.AsyncClient() as client:
             try:
-                res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}", timeout=5.0)
+                res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}?include_canceled=true", timeout=5.0)
                 if res.status_code == 200:
                     appts = res.json()
                     appt = next((a for a in appts if a['stage_id'] == stage_id), None)
@@ -681,7 +681,9 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
                         # Determine if appointment is in the future
                         from datetime import datetime
                         appt_dt = datetime.strptime(f"{appt['date']} {appt['time']}", "%Y-%m-%d %H:%M:%S")
-                        is_future = appt_dt > datetime.now() and appt.get('status', 'scheduled') != 'completed'
+                        # Canceled bookings are strictly view-only — no modify/cancel buttons.
+                        appt_status = appt.get('status', 'scheduled')
+                        is_future = appt_dt > datetime.now() and appt_status not in ['completed', 'canceled']
                         
                         details = f"📋 *Appointment Details*\n"
                         details += f"Date: {appt['date']}\nTime: {appt['time'][:5]}\nService: {appt['service']}\n"
@@ -2411,13 +2413,13 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
 
     async with httpx.AsyncClient() as client:
         try:
-            # Use update-appointment endpoint
             await client.post(f"{API_BASE}/update-appointment", json={
                 "appt_id": context.user_data['original_appt_id'],
                 "service_type": service,
                 "details": details_block,
                 "scheduled_time": context.user_data['book_time'],
-                "status": "scheduled"
+                "status": "scheduled",
+                "skip_notification": True
             }, timeout=10.0)
         except Exception as e:
             logger.error(f"Error updating appointment: {e}")
