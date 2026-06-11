@@ -115,16 +115,22 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
   };
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const checkPassedEvents = () => {
         if (!events.length || pendingReviewEvent) return;
         const now = new Date();
+        // Find ANY past event that is still 'scheduled', regardless of the date
         const passedEvent = events.find(e => 
             e.status === 'scheduled' && 
-            e.end < now && 
-            e.end.toDateString() === now.toDateString() 
+            e.end < now 
         );
         if (passedEvent) setPendingReviewEvent(passedEvent);
-    }, 15000); 
+    };
+
+    // Check immediately on page load/refresh
+    checkPassedEvents();
+
+    // Continue checking periodically
+    const interval = setInterval(checkPassedEvents, 15000); 
     return () => clearInterval(interval);
   }, [events, pendingReviewEvent]);
 
@@ -308,6 +314,9 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
             const errorData = await reviewRes.json();
             throw new Error(errorData.detail || 'Review action failed');
         }
+        
+        // Immediately update local state to prevent the popup from reappearing before fetch finishes
+        setEvents(prev => prev.map(e => e.id === pendingReviewEvent.id ? { ...e, status: status } : e));
         
         setPendingReviewEvent(null);
         loadAppointments(activeClinicId);
