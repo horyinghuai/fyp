@@ -182,11 +182,23 @@ async def generate_date_picker(active_cid, service, doctor_pref, is_editing=Fals
             logger.error(f"Error fetching available dates: {e}")
             valid_dates = []
         
+    STATUS_EMOJI = {"Green": "🟢", "Yellow": "🟡", "Red": "🔴"}
     keyboard = []
     row = []
-    for d_str in valid_dates:
+    for item in valid_dates:
+        # Accept both new {date, status} objects and legacy plain date strings
+        if isinstance(item, dict):
+            d_str = item.get("date")
+            status = item.get("status", "Green")
+        else:
+            d_str = item
+            status = "Green"
+        if not d_str:
+            continue
         d_obj = dt.datetime.strptime(d_str, "%Y-%m-%d")
-        row.append(InlineKeyboardButton(d_obj.strftime("%d %b %Y"), callback_data=f"date_{d_str}"))
+        emoji = STATUS_EMOJI.get(status, "")
+        label = f"{emoji} {d_obj.strftime('%d %b %Y')}".strip()
+        row.append(InlineKeyboardButton(label, callback_data=f"date_{d_str}"))
         if len(row) == 2:
             keyboard.append(row)
             row = []

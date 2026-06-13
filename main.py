@@ -1299,7 +1299,28 @@ def get_available_dates(req: DateRequest, db: Session = Depends(get_db)):
         d = start_date + timedelta(days=i)
         doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
         if doc_slots:
-            valid_dates.append(d.strftime("%Y-%m-%d"))
+            # --- Appointment Load Classification (Green/Yellow/Red) ---
+            # Count active appointments on this date for the doctors actually
+            # being offered (respects the doctor_pref already applied above).
+            doc_ics = [ds['doc'].ic_passport_number for ds in doc_slots]
+            day_start = datetime.combine(d, datetime.min.time())
+            day_end = datetime.combine(d, datetime.max.time())
+            appt_count = db.query(models.ApptStage).join(models.Appointment).filter(
+                models.Appointment.clinic_id == req.clinic_id,
+                models.Appointment.doctor_ic.in_(doc_ics),
+                models.ApptStage.scheduled_time >= day_start,
+                models.ApptStage.scheduled_time <= day_end,
+                models.ApptStage.status.notin_(['canceled', 'no-show'])
+            ).count()
+
+            if appt_count >= 10:
+                status = "Red"
+            elif appt_count >= 5:
+                status = "Yellow"
+            else:
+                status = "Green"
+
+            valid_dates.append({"date": d.strftime("%Y-%m-%d"), "status": status})
         if len(valid_dates) >= 14:
             break
     return valid_dates
