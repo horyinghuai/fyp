@@ -2537,47 +2537,10 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error(f"Error updating appointment: {e}")
             await query.message.reply_text("Failed to update appointment. Please try again.")
             return FINAL_HELP
-    
-    time_str = context.user_data['book_time']
-    date_part, time_part = time_str.split(" ")
-    
-    # Format Details without single quotes and handle "Others" service
-    sched_str = ""
-    if service == 'Vaccine':
-        items = context.user_data.get('selected_items', [])
-        details_str = f"{items[0]} ({context.user_data.get('dose')})" if items else "Vaccine"
-        
-        # Append updated schedule if stages exist
-        if stages:
-            sched_str = "\n\nUpdated Upcoming Schedule:\n\n"
-            for s in stages:
-                t_val = s['time'][:5] if len(s['time']) >= 5 else s['time']
-                sched_str += f"{s['stage_name']}\nDate: {s['date']}\nTime: {t_val}\n\n"
-            sched_str += "Don't worry, we will send you a reminder before each appointment."
-            
-    elif service == 'Blood Test':
-        details_str = ", ".join(context.user_data.get('selected_items', []))
-    else:
-        service = "Others"
-        details_str = context.user_data.get('general_notes', 'General Consultation')
 
-    # Get Assigned Doctor
-    doctor_name = context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))
-    
-    confirmed_summary = (
-        f"✅ *Appointment Successfully Updated!*\n\n"
-        f"Name: {context.user_data.get('name', 'N/A')}\n"
-        f"IC/Passport: {context.user_data.get('ic', 'N/A')}\n"
-        f"Phone: {context.user_data.get('phone', 'N/A')}\n"
-        f"Date: {date_part}\n"
-        f"Time: {time_part}\n"
-        f"Service: {service}\n"
-        f"Details: {details_str}\n"
-        f"Doctor: {doctor_name}{sched_str}"
-    )
-    
-    await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
-    
+    # Confirmed summary is no longer sent here — the backend's /update-appointment
+    # already sends the modification notification to the patient.
+
     # Ask if user wants to modify another appointment
     btns = [
         [InlineKeyboardButton("Yes, modify another", callback_data="modify_another")],
