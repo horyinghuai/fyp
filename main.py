@@ -16,6 +16,7 @@ import re
 import jwt
 import bcrypt
 import uuid
+import asyncio
 
 async def send_sms_async(to_phone: str, message: str):
     mocean_token = os.getenv("MOCEAN_API_TOKEN")
@@ -159,6 +160,132 @@ app = FastAPI(title="Clinic Smart Assistant Backend")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
+
+# Automatic Appointment Reminder Scheduler
+REMINDER_CHECK_INTERVAL_SECONDS = 1800  # re-scan every 30 minutes
+
+async def _send_single_reminder(db, stage, appt, patient):
+    # Build service / details / doctor strings (mirrors cancel-notification logic)
+    doc = db.query(models.Doctor).filter_by(ic_passport_number=appt.doctor_ic).first() if appt.doctor_ic else None
+    appt_vaccines = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).all()
+    appt_tests = db.query(models.AppointmentBloodTest).filter_by(appointment_id=appt.id).all()
+
+    service = "Others"
+    details_str = appt.general_notes or "General Consultation"
+    if appt_vaccines:
+        service = "Vaccine"
+        v = db.query(models.Vaccine).filter_by(id=appt_vaccines[0].vaccine_id).first()
+        details_str = f"{v.name} ({stage.stage_name})" if v else stage.stage_name
+    elif appt_tests:
+        service = "Blood Test"
+        names = []
+        for at in appt_tests:
+            bt = db.query(models.BloodTest).filter_by(id=at.blood_test_id).first()
+            if bt:
+                names.append(bt.name)
+        details_str = ", ".join(names)
+
+    doctor_str = doc.name if doc else "ANY"
+    date_str = stage.scheduled_time.strftime('%Y-%m-%d')
+    time_str = stage.scheduled_time.strftime('%H:%M')
+
+    summary = (
+        f"⏰ Appointment Reminder\n\n"
+        f"This is a friendly reminder that you have an appointment tomorrow.\n\n"
+        f"Name: {patient.name}\n"
+        f"IC/Passport: {patient.ic_passport_number}\n"
+        f"Phone: {patient.phone}\n"
+        f"Date: {date_str}\n"
+        f"Time: {time_str}\n"
+        f"Service: {service}\n"
+        f"Details: {details_str}\n"
+        f"Doctor: {doctor_str}"
+    )
+    if service == "Blood Test":
+        summary += (
+            "\n\n⚠️ Reminder: Kindly ensure that you fast for at least 9 hours "
+            "before your blood test. You are advised not to consume any food or "
+            "drinks except plain water during the fasting period."
+        )
+
+    sent = False
+
+    if patient.telegram_id:
+        try:
+            token = os.getenv("TELEGRAM_BOT_TOKEN")
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": patient.telegram_id, "text": summary},
+                    timeout=10.0
+                )
+            if res.status_code == 200:
+                sent = True
+                db.add(models.ChatMessage(
+                    clinic_id=patient.clinic_id, phone=patient.phone,
+                    telegram_id=patient.telegram_id, channel='telegram',
+                    message=None, reply=summary, status='replied'
+                ))
+        except Exception as e:
+            print(f"Reminder Telegram send failed: {e}")
+    elif patient.phone:
+        try:
+            ok = await send_sms_async(patient.phone, summary)
+            if ok:
+                sent = True
+                db.add(models.ChatMessage(
+                    clinic_id=patient.clinic_id, phone=patient.phone,
+                    telegram_id=None, channel='sms',
+                    message=None, reply=summary, status='replied'
+                ))
+        except Exception as e:
+            print(f"Reminder SMS send failed: {e}")
+
+    return sent
+
+async def send_appointment_reminders():
+    db = next(get_db())
+    try:
+        now = datetime.now()
+        target_date = (now + timedelta(days=1)).date()
+        day_start = datetime.combine(target_date, datetime.min.time())
+        day_end = datetime.combine(target_date, datetime.max.time())
+
+        stages = db.query(models.ApptStage).filter(
+            models.ApptStage.scheduled_time >= day_start,
+            models.ApptStage.scheduled_time <= day_end,
+            models.ApptStage.status == 'scheduled',
+            models.ApptStage.reminder_sent == False
+        ).all()
+
+        for stage in stages:
+            appt = db.query(models.Appointment).filter_by(id=stage.appointment_id).first()
+            if not appt:
+                continue
+            patient = db.query(models.Patient).filter_by(id=appt.patient_id).first()
+            if not patient:
+                continue
+            if not patient.telegram_id and not patient.phone:
+                continue
+
+            sent = await _send_single_reminder(db, stage, appt, patient)
+            if sent:
+                stage.reminder_sent = True
+                db.commit()   # commit per-stage so a later failure can't undo earlier sends
+    except Exception as e:
+        print(f"send_appointment_reminders error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+async def _reminder_scheduler_loop():
+    while True:
+        await send_appointment_reminders()
+        await asyncio.sleep(REMINDER_CHECK_INTERVAL_SECONDS)
+
+@app.on_event("startup")
+async def _start_reminder_scheduler():
+    asyncio.create_task(_reminder_scheduler_loop())
 
 # --- Pydantic Models ---
 class RequestEmailChangeReq(BaseModel):

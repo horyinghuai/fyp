@@ -89,6 +89,7 @@ class ApptStage(Base):
     cancel_reason = Column(String(255), nullable=True)
     depends_on_stage_id = Column(UUID(as_uuid=True), ForeignKey("appointment_stages.id"), nullable=True)
     appointment = relationship("Appointment", back_populates="stages")
+    reminder_sent = Column(Boolean, default=False)
 
 class AgentLog(Base):
     __tablename__ = "agent_logs"
