@@ -1446,26 +1446,39 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                       const selectedNum = getDoseNum(selectedDose);
                                       if (selectedNum > 1 && selectedNum !== 999) {
                                         // Ask for all prior doses that are not Booster
+                                        const firstDoseName = allDoseOptions[0] || 'Dose 1';
                                         const newManualDates: Record<string, string> = {};
-                                        for (let i = 1; i < selectedNum; i++) {
+                                        let i = 1;
+                                        while (i < selectedNum) {
                                           const priorDoseName = allDoseOptions[i - 1] || `Dose ${i}`;
-                                          let validDate = false;
-                                          while (!validDate) {
-                                            const entered = window.prompt(
-                                              `Patient has no recorded history.\nPlease enter the date for ${priorDoseName} taken at another clinic (YYYY-MM-DD):`
-                                            );
-                                            if (entered === null) {
-                                              // User cancelled — revert to first dose
-                                              setEditForm(prev => ({...prev, dose: allDoseOptions[0] || 'Dose 1'}));
-                                              return;
-                                            }
-                                            if (/^\d{4}-\d{2}-\d{2}$/.test(entered)) {
-                                              newManualDates[priorDoseName] = entered;
-                                              validDate = true;
-                                            } else {
-                                              alert('❌ Invalid date format. Please use YYYY-MM-DD.');
+                                          const entered = window.prompt(
+                                            `Patient has no recorded history.\nPlease enter the date for ${priorDoseName} taken at another clinic (YYYY-MM-DD):`
+                                          );
+                                          if (entered === null) {
+                                            // User cancelled — revert to first dose
+                                            setEditForm(prev => ({...prev, dose: firstDoseName}));
+                                            return;
+                                          }
+                                          if (!/^\d{4}-\d{2}-\d{2}$/.test(entered)) {
+                                            alert('❌ Invalid date format. Please use YYYY-MM-DD.');
+                                            continue; // re-prompt the same dose
+                                          }
+                                          // Chronological order check: a prior dose date must not be
+                                          // later than the next dose date (e.g. Dose 1 cannot be later
+                                          // than Dose 2). If violated, clear everything and restart
+                                          // collection from the first dose.
+                                          if (i > 1) {
+                                            const prevDoseName = allDoseOptions[i - 2] || `Dose ${i - 1}`;
+                                            const prevDateStr = newManualDates[prevDoseName];
+                                            if (prevDateStr && moment(prevDateStr).isAfter(moment(entered), 'day')) {
+                                              alert(`⚠️ The ${prevDoseName} date (${prevDateStr}) cannot be later than the ${priorDoseName} date (${entered}).\n\nPlease re-enter the dates starting from ${firstDoseName}.`);
+                                              Object.keys(newManualDates).forEach(k => delete newManualDates[k]);
+                                              i = 1; // restart from the first dose
+                                              continue;
                                             }
                                           }
+                                          newManualDates[priorDoseName] = entered;
+                                          i++;
                                         }
                                         setManualDates(prev => ({...prev, ...newManualDates}));
 

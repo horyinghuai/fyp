@@ -1930,7 +1930,32 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                         
                     if (total_stages - start_dose_num + 1) > 1:
                         mapped_appt_type = 'multi-stage'
-                
+
+        # Persist self-declared external dose dates (e.g. Dose 1/2 taken at another
+        # clinic) entered during a vaccine modification. Mirrors the save logic in
+        # /book-appointment. Only runs for vaccine edits that carry manual_dates.
+        manual_dates_edit = booking.details.get('manual_dates', {})
+        if manual_dates_edit and service == 'Vaccine' and v_model:
+            patient_for_ext = db.query(models.Patient).filter_by(id=appt.patient_id).first()
+            if patient_for_ext:
+                for d_name, d_date in manual_dates_edit.items():
+                    exists = db.query(models.ExternalVaccineRecord).filter_by(
+                        patient_ic=patient_for_ext.ic_passport_number,
+                        vaccine_id=v_model.id,
+                        dose_name=d_name
+                    ).first()
+                    if not exists:
+                        try:
+                            db.add(models.ExternalVaccineRecord(
+                                patient_ic=patient_for_ext.ic_passport_number,
+                                vaccine_id=v_model.id,
+                                dose_name=d_name,
+                                date_taken=datetime.strptime(d_date, "%Y-%m-%d")
+                            ))
+                            db.flush()
+                        except Exception:
+                            pass
+
         appt.appt_type = mapped_appt_type
         appt.total_stages = total_stages
         

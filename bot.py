@@ -1455,6 +1455,7 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
     context.user_data['selected_items'] = [vaccine_name]
+    context.user_data['restart_series'] = False   # reset; set True only on expiry
 
     # Back target depends on whether we're inside any edit flow (draft edit OR existing-appointment modify)
     if context.user_data.get('is_editing'):
@@ -1494,6 +1495,35 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=InlineKeyboardMarkup(btns)
                 )
                 return V_SELECT
+
+            # Series expired (prior doses taken in OUR clinic; the last recorded dose is
+            # older than interruption_restart_days). Alert the patient, reset this booking
+            # to a fresh Dose 1, then continue to doctor preference. MUST run before the
+            # no_history block below, since series_expired also carries no_history=True.
+            if agent.get('series_expired'):
+                restart_dose = agent.get('next_dose') or 'Dose 1'
+                context.user_data['dose'] = restart_dose
+                context.user_data['restart_series'] = True
+                context.user_data['manual_doses'] = {}
+                await query.edit_message_text(
+                    f"⚠️ Your previous {vaccine_name} series has expired because too much "
+                    f"time has passed since your last dose, so it must be restarted.\n\n"
+                    f"This booking will begin a new cycle from *{restart_dose}*.",
+                    parse_mode="Markdown"
+                )
+                if context.user_data.get('is_editing'):
+                    if context.user_data.get('service') == 'Vaccine':
+                        await trigger_datetime_prompt(update, context)
+                        return BOOK_DATE_TIME
+                    return await show_booking_summary(update, context, force_new=True)
+                return await show_doctor_preference(update, context, force_new=True)
+
+            # No prior history, OR a completed series that is now repeatable/expired
+            # (agent returns no_history=True with all_dose_options). Let the patient
+            # pick ANY dose so they can self-declare e.g. Dose 3 taken elsewhere,
+            # instead of auto-selecting Dose 1.
+            if agent.get('no_history') and agent.get('all_dose_options'):
+                return await render_v_dose_menu(update, context, vaccine_name)
 
             next_dose = agent.get('next_dose')
             if next_dose:
@@ -1582,6 +1612,31 @@ async def handle_manual_prev_dose(update: Update, context: ContextTypes.DEFAULT_
     dose_name = missing[idx]
     if 'manual_doses' not in context.user_data:
         context.user_data['manual_doses'] = {}
+
+    # --- Chronological order check ---
+    # A prior dose date must not be later than the next dose date
+    # (e.g. Dose 1 cannot be later than Dose 2). If violated, discard ALL
+    # entered dates and restart collection from the first missing dose.
+    if idx > 0:
+        prev_dose_name = missing[idx - 1]
+        prev_date_str = context.user_data['manual_doses'].get(prev_dose_name)
+        if prev_date_str:
+            try:
+                prev_date = dt.datetime.strptime(prev_date_str, "%Y-%m-%d")
+                if prev_date > parsed_date:
+                    selected_vac = context.user_data.get('selected_items', [None])[0]
+                    context.user_data['manual_doses'] = {}
+                    context.user_data['current_missing_idx'] = 0
+                    await update.message.reply_text(
+                        f"⚠️ The {prev_dose_name} date ({prev_date_str}) cannot be later than "
+                        f"the {dose_name} date ({text}).\n\n"
+                        f"Let's start over. Please enter the date you received {missing[0]} "
+                        f"for {selected_vac} (Format: YYYY-MM-DD):"
+                    )
+                    return MANUAL_PREV_DOSE
+            except ValueError:
+                pass
+
     context.user_data['manual_doses'][dose_name] = text
     
     idx += 1
@@ -1590,7 +1645,42 @@ async def handle_manual_prev_dose(update: Update, context: ContextTypes.DEFAULT_
         selected_vac = context.user_data.get('selected_items', [None])[0]
         await update.message.reply_text(f"Thank you. Now, please enter the date you received {missing[idx]} for {selected_vac} (Format: YYYY-MM-DD):")
         return MANUAL_PREV_DOSE
-        
+
+    # --- External-clinic series expiry check ---
+    # All prior doses entered manually (none in appointment_stages). If the most recent
+    # manually-entered dose date is older than interruption_restart_days, the series has
+    # lapsed: alert the patient, restart this booking from a fresh Dose 1, discard the
+    # lapsed cycle's dates, then continue to doctor preference.
+    selected_vac_name = context.user_data.get('selected_items', [None])[0]
+    vac = next((v for v in context.user_data.get('vaccines_list', []) if v['name'] == selected_vac_name), None)
+    if (vac and vac.get('restart_if_interrupted')
+            and vac.get('interruption_restart_days') is not None
+            and missing):
+        last_dose_name = missing[-1]
+        last_date_str = context.user_data.get('manual_doses', {}).get(last_dose_name)
+        if last_date_str:
+            try:
+                last_date = dt.datetime.strptime(last_date_str, "%Y-%m-%d")
+                expiry = last_date + dt.timedelta(days=int(vac['interruption_restart_days']))
+                if dt.datetime.now() > expiry:
+                    restart_dose = 'Dose 1' if vac.get('total_doses', 1) > 1 else 'Single Dose'
+                    context.user_data['dose'] = restart_dose
+                    context.user_data['restart_series'] = True
+                    context.user_data['manual_doses'] = {}   # discard the lapsed cycle's dates
+                    await update.message.reply_text(
+                        f"⚠️ Your previous {selected_vac_name} series has expired because too much "
+                        f"time has passed since your last dose, so it must be restarted.\n\n"
+                        f"This booking will begin a new cycle from {restart_dose}."
+                    )
+                    if context.user_data.get('is_editing'):
+                        if context.user_data.get('service') == 'Vaccine':
+                            await trigger_datetime_prompt(update, context)
+                            return BOOK_DATE_TIME
+                        return await show_booking_summary(update, context)
+                    return await show_doctor_preference(update, context)
+            except ValueError:
+                pass
+
     if context.user_data.get('is_editing'):
         if context.user_data.get('service') == 'Vaccine':
             await trigger_datetime_prompt(update, context)
@@ -2106,7 +2196,8 @@ async def process_availability(update, context, full_time_str):
             "vaccine_name": selected_vac,
             "target_dose": context.user_data.get('dose'),
             "requested_time": full_time_str,
-            "manual_dates": context.user_data.get('manual_doses', {})
+            "manual_dates": context.user_data.get('manual_doses', {}),
+            "restart_series": context.user_data.get('restart_series', False)
         }
         async with httpx.AsyncClient() as client:
             try:
@@ -2333,7 +2424,8 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
         "general_notes": context.user_data.get('general_notes'),
         "doctor_pref": context.user_data.get('doctor_pref', 'ANY'),
         "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
-        "assigned_doctor_id": context.user_data.get('assigned_doctor_id')
+        "assigned_doctor_id": context.user_data.get('assigned_doctor_id'),
+        "manual_dates": context.user_data.get('manual_doses', {})
     }
 
     stages = []
@@ -2411,7 +2503,8 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
         "dose": context.user_data.get('dose'),
         "general_notes": context.user_data.get('general_notes'),
         "assigned_doctor_name": context.user_data.get('assigned_doctor_name'),
-        "assigned_doctor_id": context.user_data.get('assigned_doctor_id') 
+        "assigned_doctor_id": context.user_data.get('assigned_doctor_id'),
+        "manual_dates": context.user_data.get('manual_doses', {})
     }
 
     stages = []
