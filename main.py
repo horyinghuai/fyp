@@ -2407,26 +2407,49 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     else:
                         date_part = booking.scheduled_time.split(" ")[0]
                         time_part = booking.scheduled_time.split(" ")[1][:5]
-                        fallback_stages = (
-                            db.query(models.ApptStage)
-                            .filter_by(appointment_id=appt.id, status='scheduled')
-                            .order_by(models.ApptStage.scheduled_time.asc())
-                            .all()
-                        )
-                        upcoming_fb = "".join(
-                            f"{st.stage_name}\nDate: {st.scheduled_time.strftime('%Y-%m-%d')}\nTime: {st.scheduled_time.strftime('%H:%M')}\n\n"
-                            for st in fallback_stages
-                        )
-                        summary = (
-                            f"✏️ Booking Successfully Modified!\n\n"
-                            f"Name: {patient.name}\n"
-                            f"IC/Passport: {patient.ic_passport_number}\n"
-                            f"Phone: {patient.phone}\n"
-                            f"New Date: {date_part}\nNew Time: {time_part}\n"
-                            f"Service: {booking.service_type}\n"
-                            f"Details: {details_str}{doctor_str}"
-                            + (f"\n\n📅 Updated Upcoming Schedule:\n\n{upcoming_fb}Don't worry, we will send you a reminder before each appointment." if fallback_stages else "")
-                        )
+
+                        if booking.service_type == 'Vaccine':
+                            fallback_stages = (
+                                db.query(models.ApptStage)
+                                .filter_by(appointment_id=appt.id, status='scheduled')
+                                .order_by(models.ApptStage.scheduled_time.asc())
+                                .all()
+                            )
+                            upcoming_fb = "".join(
+                                f"{st.stage_name}\nDate: {st.scheduled_time.strftime('%Y-%m-%d')}\nTime: {st.scheduled_time.strftime('%H:%M')}\n\n"
+                                for st in fallback_stages
+                            )
+                            summary = (
+                                f"✏️ Booking Successfully Modified!\n\n"
+                                f"Name: {patient.name}\n"
+                                f"IC/Passport: {patient.ic_passport_number}\n"
+                                f"Phone: {patient.phone}\n"
+                                f"Service: {booking.service_type}\n"
+                                f"Details: {details_str}{doctor_str}"
+                                + (f"\n\n📅 Updated Upcoming Schedule:\n\n{upcoming_fb}Don't worry, we will send you a reminder before each appointment." if fallback_stages else "")
+                            )
+                        elif booking.service_type == 'Blood Test':
+                            summary = (
+                                f"✏️ Booking Successfully Modified!\n\n"
+                                f"Name: {patient.name}\n"
+                                f"IC/Passport: {patient.ic_passport_number}\n"
+                                f"Phone: {patient.phone}\n"
+                                f"New Date: {date_part}\nNew Time: {time_part}\n"
+                                f"Service: {booking.service_type}\n"
+                                f"Details: {details_str}{doctor_str}\n\n"
+                                f"Kindly ensure that you fast for at least 9 hours before your blood test. "
+                                f"You are advised not to consume any food or drinks except plain water during the fasting period."
+                            )
+                        else:
+                            summary = (
+                                f"✏️ Booking Successfully Modified!\n\n"
+                                f"Name: {patient.name}\n"
+                                f"IC/Passport: {patient.ic_passport_number}\n"
+                                f"Phone: {patient.phone}\n"
+                                f"New Date: {date_part}\nNew Time: {time_part}\n"
+                                f"Service: {booking.service_type}\n"
+                                f"Details: {details_str}{doctor_str}"
+                            )
 
                     bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
 
