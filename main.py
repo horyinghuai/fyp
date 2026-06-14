@@ -199,7 +199,8 @@ async def _send_single_reminder(db, stage, appt, patient):
         f"Time: {time_str}\n"
         f"Service: {service}\n"
         f"Details: {details_str}\n"
-        f"Doctor: {doctor_str}"
+        f"Doctor: {doctor_str}\n\n"
+        f"If there is any modification needed, just type /start and choose 2. Check Appointment Details."
     )
     if service == "Blood Test":
         summary += (
