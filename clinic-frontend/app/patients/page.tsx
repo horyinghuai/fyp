@@ -998,7 +998,7 @@ export default function PatientsPage() {
                                           <option value="">Select Vaccine</option>
                                           {Object.keys(groupedVaccines).map(type => (
                                               <optgroup key={type} label={type}>
-                                                  {groupedVaccines[type].filter((v:any) => !v.is_low_stock).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
+                                                  {groupedVaccines[type].filter((v:any) => !v.is_low_stock || v.name === editForm.items[0]).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
                                               </optgroup>
                                           ))}
                                         </select>
