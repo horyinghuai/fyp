@@ -320,7 +320,7 @@ async def cancel_select_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
         details = a.get("details", {})
         item_text = details.get("items", [])[0] if details.get("items") else service_title
         btn_text = f"{a['date']} {a['time'][:5]} - {item_text}"
-        btns.append([InlineKeyboardButton(btn_text, callback_data=f"can_{a['appt_id']}")])
+        btns.append([InlineKeyboardButton(btn_text, callback_data=f"can_{a['stage_id']}")])
 
     btns.append([InlineKeyboardButton("❌ Nevermind, go back", callback_data="can_abort")])
     await update.message.reply_text("Select the appointment you wish to cancel:", reply_markup=InlineKeyboardMarkup(btns))
@@ -361,15 +361,15 @@ async def cancel_reason_logic(update: Update, context: ContextTypes.DEFAULT_TYPE
         return await execute_cancellation(update.message, context, reason)
 
 async def execute_cancellation(message, context, reason):
-    appt_id = context.user_data.get('cancel_target_id')
-    if not appt_id: return ConversationHandler.END
+    stage_id = context.user_data.get('cancel_target_id')
+    if not stage_id: return ConversationHandler.END
 
     # Apply sentence case to reason
     reason = reason.capitalize() if reason else reason
 
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(f"{API_BASE}/cancel-appointment/{appt_id}", json={"cancel_reason": reason}, timeout=5.0)
+            await client.post(f"{API_BASE}/cancel-appointment-stage/{stage_id}", json={"cancel_reason": reason}, timeout=5.0)
             text = "✅ Booking is cancelled successfully"
         except Exception as e:
             logger.error(f"Cancel error: {e}")
@@ -724,7 +724,7 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
                             btns.append([
                                 InlineKeyboardButton(
                                     "❌ Cancel Appointment",
-                                    callback_data=f"cancel_appt_{appt['appt_id']}"
+                                    callback_data=f"cancel_appt_{appt['stage_id']}"
                                 )
                             ])
                         btns.append([InlineKeyboardButton("🔙 Back to List", callback_data="back_to_appt_list")])
@@ -855,8 +855,8 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return APPOINTMENT_ACTION
 
     if data.startswith("cancel_appt_"):
-        appt_id = data.replace("cancel_appt_", "")
-        context.user_data['cancel_target_id'] = appt_id
+        stage_id = data.replace("cancel_appt_", "")
+        context.user_data['cancel_target_id'] = stage_id
         btns = [
             [InlineKeyboardButton("Change of schedule", callback_data="creason_Change of schedule")],
             [InlineKeyboardButton("Feeling better", callback_data="creason_Feeling better")],
@@ -2360,7 +2360,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                 btns = []
                 if is_future:
                     btns.append([InlineKeyboardButton("✏️ Modify Appointment", callback_data=f"modify_appt_{appt['appt_id']}")])
-                    btns.append([InlineKeyboardButton("❌ Cancel Appointment", callback_data=f"cancel_appt_{appt['appt_id']}")])
+                    btns.append([InlineKeyboardButton("❌ Cancel Appointment", callback_data=f"cancel_appt_{appt['stage_id']}")])
                 btns.append([InlineKeyboardButton("🔙 Back to List", callback_data="back_to_appt_list")])
                 await query.edit_message_text(details, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
                 return APPOINTMENT_ACTION

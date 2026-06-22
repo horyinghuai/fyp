@@ -1363,8 +1363,8 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
         if new_status in ('canceled', 'no-show') and 'cancel_reason' in data:
             stage.cancel_reason = data['cancel_reason']
 
-        # Auto-cascade cancel all future doses when a dose is marked no-show
-        if new_status == 'no-show':
+        # Auto-cascade cancel all future doses when a dose is marked no-show OR canceled
+        if new_status in ('no-show', 'canceled'):
             appt_for_cascade = db.query(models.Appointment).filter_by(id=stage.appointment_id).first()
             if appt_for_cascade and appt_for_cascade.appt_type == 'multi-stage':
                 # Determine numeric position of this stage
@@ -1379,6 +1379,7 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
 
                 this_num = _dose_num(stage.stage_name or '')
                 if this_num > 0:
+                    cascade_label = 'No-Show' if new_status == 'no-show' else 'Cancelled'
                     future_stages = db.query(models.ApptStage).filter(
                         models.ApptStage.appointment_id == stage.appointment_id,
                         models.ApptStage.id != stage.id,
@@ -1387,7 +1388,7 @@ def admin_update_stage(stage_id: str, data: dict, db: Session = Depends(get_db))
                     for fs in future_stages:
                         if _dose_num(fs.stage_name or '') > this_num:
                             fs.status = 'canceled'
-                            fs.cancel_reason = f'Auto-cancelled: {stage.stage_name} was marked as No-Show'
+                            fs.cancel_reason = f'Auto-cancelled: {stage.stage_name} was marked as {cascade_label}'
             
     if 'scheduled_time' in data:
         dt_str = data['scheduled_time'].replace("T", " ")
@@ -2115,6 +2116,8 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                         except Exception:
                             pass
 
+        original_appt_type = appt.appt_type   # capture BEFORE the reassignment below
+
         appt.appt_type = mapped_appt_type
         appt.total_stages = total_stages
         
@@ -2165,9 +2168,15 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
             return {"status": "success"}
 
         # -- Rescheduling Agent: UPDATE in place if same vaccine brand, cascade by delta --
-        if appt.appt_type == 'multi-stage' and mapped_appt_type == 'multi-stage' and v_model:
+        # Guard on the ORIGINAL appt type. Editing the LAST dose (e.g. Dose 3) or the
+        # Booster collapses mapped_appt_type to 'single-visit', which previously forced
+        # the destructive delete-and-recreate fallback and wiped earlier doses.
+        if original_appt_type == 'multi-stage' and v_model:
             vac_rec = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).first()
             if vac_rec and vac_rec.vaccine_id == v_model.id:
+                # Same brand → genuine in-place edit. Keep the appointment multi-stage;
+                # the reassignment above may have downgraded it for a last-dose/Booster edit.
+                appt.appt_type = 'multi-stage'
                 stage = db.query(models.ApptStage).filter_by(
                     appointment_id=appt.id, stage_name=dose_val
                 ).first()
@@ -2186,9 +2195,9 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     if status_val == 'canceled' and booking.cancel_reason:
                         stage.cancel_reason = booking.cancel_reason
 
-                    # FIX: Cascade cancel all future doses when marked no-show
+                    # FIX: Cascade cancel all future doses when marked no-show OR canceled
                     # Does NOT touch completed doses (dose 1 stays completed)
-                    if status_val == 'no-show':
+                    if status_val in ('no-show', 'canceled'):
                         def _noshow_dose_num(name: str) -> int:
                             if not name: return 0
                             n = name.lower().strip()
@@ -2199,6 +2208,7 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
 
                         this_num = _noshow_dose_num(stage.stage_name or '')
                         if this_num > 0:
+                            cascade_label = 'No-Show' if status_val == 'no-show' else 'Cancelled'
                             stages_to_cascade = db.query(models.ApptStage).filter(
                                 models.ApptStage.appointment_id == appt.id,
                                 models.ApptStage.id != stage.id,
@@ -2207,7 +2217,7 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                             for fs in stages_to_cascade:
                                 if _noshow_dose_num(fs.stage_name or '') > this_num:
                                     fs.status = 'canceled'
-                                    fs.cancel_reason = f'Auto-cancelled: {stage.stage_name} was marked as No-Show'
+                                    fs.cancel_reason = f'Auto-cancelled: {stage.stage_name} was marked as {cascade_label}'
 
                     all_stages = (
                         db.query(models.ApptStage)
@@ -2415,10 +2425,10 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
 
                 if current_calc_time:
-                    # FIX: Future doses become 'canceled' (not 'scheduled') when current is no-show
+                    # FIX: Future doses become 'canceled' (not 'scheduled') when current is no-show OR canceled
                     if i == start_dose_num:
                         final_status = status_val
-                    elif status_val == 'no-show':
+                    elif status_val in ('no-show', 'canceled'):
                         final_status = 'canceled'
                     else:
                         final_status = 'scheduled'
@@ -2449,10 +2459,10 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     current_calc_time = current_calc_time + timedelta(days=interval_days)
 
                 if current_calc_time:
-                    # FIX: Booster also becomes 'canceled' when a prior dose is no-show
+                    # FIX: Booster also becomes 'canceled' when a prior dose is no-show OR canceled
                     if start_dose_num == v_model.total_doses + 1:
                         final_status = status_val
-                    elif status_val == 'no-show':
+                    elif status_val in ('no-show', 'canceled'):
                         final_status = 'canceled'
                     else:
                         final_status = 'scheduled'
@@ -2627,7 +2637,11 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
     
 @app.post("/cancel-appointment/{appt_id}")
 async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends(get_db)):
-    db.query(models.ApptStage).filter(models.ApptStage.appointment_id == appt_id).update({"status": "canceled", "cancel_reason": req.cancel_reason})
+    # Only cancel stages still 'scheduled' — preserve completed and no-show doses.
+    db.query(models.ApptStage).filter(
+        models.ApptStage.appointment_id == appt_id,
+        models.ApptStage.status == 'scheduled'
+    ).update({"status": "canceled", "cancel_reason": req.cancel_reason}, synchronize_session=False)
     db.commit()
     
     if getattr(req, 'source', 'web') == 'web' and not getattr(req, 'skip_notification', False):
@@ -2640,7 +2654,7 @@ async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends
                     doc = db.query(models.Doctor).filter_by(ic_passport_number=appt.doctor_ic).first() if appt.doctor_ic else None
                     appt_vaccines = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).all()
                     appt_tests = db.query(models.AppointmentBloodTest).filter_by(appointment_id=appt.id).all()
-                    first_stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id).order_by(models.ApptStage.scheduled_time.asc()).first()
+                    first_stage = db.query(models.ApptStage).filter_by(appointment_id=appt.id, status='canceled').order_by(models.ApptStage.scheduled_time.asc()).first()
 
                     service = "Others"
                     details_str = appt.general_notes or "General Consultation"
@@ -2698,6 +2712,108 @@ async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends
         except Exception as e:
             print(f"Failed to send cancel summary: {e}")
             
+    return {"status": "success"}
+
+@app.post("/cancel-appointment-stage/{stage_id}")
+async def cancel_appointment_stage(stage_id: str, req: CancelReq, db: Session = Depends(get_db)):
+    target = db.query(models.ApptStage).filter_by(id=stage_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Stage not found")
+    appt = db.query(models.Appointment).filter_by(id=target.appointment_id).first()
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    def _dose_num(n: str) -> int:
+        if not n: return 0
+        nl = n.lower().strip()
+        if 'single' in nl: return 1
+        if 'booster' in nl: return 9999
+        m = re.match(r'dose\s+(\d+)', nl)
+        return int(m.group(1)) if m else 0
+
+    this_num = _dose_num(target.stage_name or '')
+
+    # Cancel the SELECTED stage itself (only if still scheduled)
+    cancelled_count = 0
+    if target.status == 'scheduled':
+        target.status = 'canceled'
+        target.cancel_reason = req.cancel_reason
+        cancelled_count += 1
+
+    # Cascade: cancel only LATER scheduled doses; preserve earlier doses
+    # (earlier completed doses stay completed, earlier scheduled doses stay scheduled)
+    if this_num > 0 and appt.appt_type == 'multi-stage':
+        later_stages = db.query(models.ApptStage).filter(
+            models.ApptStage.appointment_id == appt.id,
+            models.ApptStage.id != target.id,
+            models.ApptStage.status == 'scheduled'
+        ).all()
+        for fs in later_stages:
+            if _dose_num(fs.stage_name or '') > this_num:
+                fs.status = 'canceled'
+                fs.cancel_reason = f'Auto-cancelled: {target.stage_name} was cancelled'
+                cancelled_count += 1
+
+    db.commit()
+
+    if getattr(req, 'source', 'web') == 'web' and not getattr(req, 'skip_notification', False):
+        try:
+            patient = db.query(models.Patient).filter(models.Patient.id == appt.patient_id).first()
+            if patient:
+                doc = db.query(models.Doctor).filter_by(ic_passport_number=appt.doctor_ic).first() if appt.doctor_ic else None
+                appt_vaccines = db.query(models.AppointmentVaccine).filter_by(appointment_id=appt.id).all()
+                appt_tests = db.query(models.AppointmentBloodTest).filter_by(appointment_id=appt.id).all()
+
+                service = "Others"
+                details_str = appt.general_notes or "General Consultation"
+                if appt_vaccines:
+                    service = "Vaccine"
+                    v = db.query(models.Vaccine).filter_by(id=appt_vaccines[0].vaccine_id).first()
+                    details_str = f"{v.name} ({target.stage_name})" if v else target.stage_name
+                elif appt_tests:
+                    service = "Blood Test"
+                    test_names = []
+                    for at in appt_tests:
+                        bt = db.query(models.BloodTest).filter_by(id=at.blood_test_id).first()
+                        if bt: test_names.append(bt.name)
+                    details_str = ", ".join(test_names)
+
+                doctor_str = doc.name if doc else "ANY"
+                date_str = target.scheduled_time.strftime('%Y-%m-%d') if target.scheduled_time else "N/A"
+                time_str = target.scheduled_time.strftime('%H:%M') if target.scheduled_time else "N/A"
+                cascade_note = f"\n(+ {cancelled_count - 1} later dose(s) cancelled)" if cancelled_count > 1 else ""
+
+                summary = (f"❌ Booking Successfully Cancelled!\n\n"
+                           f"Name: {patient.name}\n"
+                           f"IC/Passport: {patient.ic_passport_number}\n"
+                           f"Phone: {patient.phone}\n"
+                           f"Date: {date_str}\n"
+                           f"Time: {time_str}\n"
+                           f"Service: {service}\n"
+                           f"Details: {details_str}\n"
+                           f"Doctor: {doctor_str}\n"
+                           f"Reason: {req.cancel_reason}{cascade_note}")
+
+                bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
+
+                if patient.telegram_id:
+                    summary += "\n\nIf there is any modification needed, just type /start and choose 2. Check Appointment Details."
+                    token = os.getenv("TELEGRAM_BOT_TOKEN")
+                    async with httpx.AsyncClient() as client:
+                        await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                            "chat_id": patient.telegram_id,
+                            "text": summary
+                        })
+                    db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone, telegram_id=patient.telegram_id, channel='telegram', message=None, reply=summary, status='replied'))
+                    db.commit()
+                else:
+                    summary += f"\n\nIf there is any modification needed, please contact us via https://t.me/{bot_username}?start={patient.clinic_id}"
+                    await send_sms_async(patient.phone, summary)
+                    db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone, telegram_id=None, channel='sms', message=None, reply=summary, status='replied'))
+                    db.commit()
+        except Exception as e:
+            print(f"Failed to send cancel summary: {e}")
+
     return {"status": "success"}
 
 @app.post("/admin/notify-cancellation")
