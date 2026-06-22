@@ -186,6 +186,8 @@ async def _send_single_reminder(db, stage, appt, patient):
         details_str = ", ".join(names)
 
     doctor_str = doc.name if doc else "ANY"
+    clinic = db.query(models.Clinic).filter_by(id=appt.clinic_id).first()
+    clinic_name = clinic.name if clinic else "Unknown Clinic"
     date_str = stage.scheduled_time.strftime('%Y-%m-%d')
     time_str = stage.scheduled_time.strftime('%H:%M')
 
@@ -199,7 +201,8 @@ async def _send_single_reminder(db, stage, appt, patient):
         f"Time: {time_str}\n"
         f"Service: {service}\n"
         f"Details: {details_str}\n"
-        f"Doctor: {doctor_str}\n\n"
+        f"Doctor: {doctor_str}\n"
+        f"Clinic: {clinic_name}\n\n"
         f"If there is any modification needed, just type /start and choose 2. Check Appointment Details."
     )
     if service == "Blood Test":
@@ -1964,7 +1967,10 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                 items      = details_dict.get('items', [])
                 dose       = details_dict.get('dose')
                 notes      = details_dict.get('general_notes')
-                doctor_str = f"\nDoctor: {actual_doc_name}"
+                
+                clinic_obj = db.query(models.Clinic).filter_by(id=new_appt.clinic_id).first()
+                clinic_name = clinic_obj.name if clinic_obj else "Unknown Clinic"
+                doctor_str = f"\nDoctor: {actual_doc_name}\nClinic: {clinic_name}"
 
                 if booking.service_type == 'Vaccine':
                     details_str = (
@@ -2312,6 +2318,10 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                                 items_n = booking.details.get('items', [])
                                 dose_n  = booking.details.get('dose')
                                 notes_n = booking.details.get('general_notes')
+                                
+                                clinic_obj = db.query(models.Clinic).filter_by(id=appt.clinic_id).first()
+                                clinic_name = clinic_obj.name if clinic_obj else "Unknown Clinic"
+                                doc_str_n = f"\nDoctor: {doc_name_n}\nClinic: {clinic_name}"
 
                                 if booking.service_type == 'Vaccine':
                                     det_n = (
@@ -2531,14 +2541,16 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     dose = booking.details.get('dose')
                     notes = booking.details.get('general_notes')
                     
+                    clinic_obj = db.query(models.Clinic).filter_by(id=appt.clinic_id).first()
+                    clinic_name = clinic_obj.name if clinic_obj else "Unknown Clinic"
+                    doctor_str = f"\nDoctor: {actual_doc_name}\nClinic: {clinic_name}"
+                    
                     if booking.service_type == 'Vaccine':
                         details_str = f"{items[0] if items else ''} ({dose})" if dose else ", ".join(items)
                     elif booking.service_type == 'Blood Test':
                         details_str = ", ".join(items) if items else ""
                     else:
                         details_str = str(notes) if notes else "General Consultation"
-                        
-                    doctor_str = f"\nDoctor: {actual_doc_name}"
                     
                     if booking.status == 'canceled':
                         reason_fb = (booking.cancel_reason or "Not specified").capitalize()
@@ -2674,6 +2686,8 @@ async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends
                         details_str = ", ".join(test_names)
 
                     doctor_str = doc.name if doc else "ANY"
+                    clinic_obj = db.query(models.Clinic).filter_by(id=appt.clinic_id).first()
+                    clinic_name = clinic_obj.name if clinic_obj else "Unknown Clinic"
                     date_str = first_stage.scheduled_time.strftime('%Y-%m-%d') if first_stage and first_stage.scheduled_time else "N/A"
                     time_str = first_stage.scheduled_time.strftime('%H:%M') if first_stage and first_stage.scheduled_time else "N/A"
 
@@ -2686,6 +2700,7 @@ async def cancel_appointment(appt_id: str, req: CancelReq, db: Session = Depends
                                f"Service: {service}\n"
                                f"Details: {details_str}\n"
                                f"Doctor: {doctor_str}\n"
+                               f"Clinic: {clinic_name}\n"
                                f"Reason: {req.cancel_reason}")
                                
                     bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
@@ -2779,6 +2794,8 @@ async def cancel_appointment_stage(stage_id: str, req: CancelReq, db: Session = 
                     details_str = ", ".join(test_names)
 
                 doctor_str = doc.name if doc else "ANY"
+                clinic_obj = db.query(models.Clinic).filter_by(id=appt.clinic_id).first()
+                clinic_name = clinic_obj.name if clinic_obj else "Unknown Clinic"
                 date_str = target.scheduled_time.strftime('%Y-%m-%d') if target.scheduled_time else "N/A"
                 time_str = target.scheduled_time.strftime('%H:%M') if target.scheduled_time else "N/A"
                 cascade_note = f"\n(+ {cancelled_count - 1} later dose(s) cancelled)" if cancelled_count > 1 else ""
@@ -2792,6 +2809,7 @@ async def cancel_appointment_stage(stage_id: str, req: CancelReq, db: Session = 
                            f"Service: {service}\n"
                            f"Details: {details_str}\n"
                            f"Doctor: {doctor_str}\n"
+                           f"Clinic: {clinic_name}\n"
                            f"Reason: {req.cancel_reason}{cascade_note}")
 
                 bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
@@ -2844,6 +2862,8 @@ async def notify_cancellation(req: CancelNotifyReq, db: Session = Depends(get_db
         details_str = ", ".join(test_names)
 
     doctor_str = doc.name if doc else "ANY"
+    clinic_obj = db.query(models.Clinic).filter_by(id=appt.clinic_id).first()
+    clinic_name = clinic_obj.name if clinic_obj else "Unknown Clinic"
     reason_text = req.cancel_reason.capitalize() if req.cancel_reason else "Not specified"
     cascade_note = f"\n(+ {req.total_cancelled - 1} additional dependent dose(s) cancelled)" if req.total_cancelled > 1 else ""
 
@@ -2855,6 +2875,7 @@ async def notify_cancellation(req: CancelNotifyReq, db: Session = Depends(get_db
                f"Date: {stage.scheduled_time.strftime('%Y-%m-%d')}\n"
                f"Time: {stage.scheduled_time.strftime('%H:%M')}\n"
                f"Doctor: {doctor_str}\n"
+               f"Clinic: {clinic_name}\n"
                f"Cancellation Reason: {reason_text}{cascade_note}")
 
     bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")

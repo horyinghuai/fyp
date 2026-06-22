@@ -772,6 +772,8 @@ async def appointment_selected(update: Update, context: ContextTypes.DEFAULT_TYP
                             details += f"Reason: {reason}\n"
                         doctor = appt.get('doctor_name', 'ANY')
                         details += f"Doctor: {doctor}\n"
+                        clinic_name = context.user_data.get('clinic_name', 'Unknown Clinic')
+                        details += f"Clinic: {clinic_name}\n"
                         
                         btns = []
                         if is_future:
@@ -2334,7 +2336,8 @@ async def show_booking_summary(update: Update, context: ContextTypes.DEFAULT_TYP
     elif service == 'Blood Test': details = ", ".join(context.user_data['selected_items'])
     else: details = f"{context.user_data.get('general_notes', 'General Consultation')}"
 
-    doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))}"
+    clinic_name = context.user_data.get('clinic_name', 'Unknown Clinic')
+    doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', context.user_data.get('doctor_pref', 'ANY'))}\nClinic: {clinic_name}"
     full_time_str = context.user_data['book_time']
 
     id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
@@ -2432,6 +2435,8 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
                     details += f"Reason: {reason}\n"
                 doctor = appt.get('doctor_name', 'ANY')
                 details += f"Doctor: {doctor}\n"
+                clinic_name = context.user_data.get('clinic_name', 'Unknown Clinic')
+                details += f"Clinic: {clinic_name}\n"
                 btns = []
                 if is_future:
                     btns.append([InlineKeyboardButton("✏️ Modify Appointment", callback_data=f"modify_appt_{appt['appt_id']}")])
@@ -2533,7 +2538,8 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
     time_str = context.user_data['book_time']
     date_part, time_part = time_str.split(" ")
     
-    doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}"
+    clinic_name = context.user_data.get('clinic_name', 'Unknown Clinic')
+    doc_text = f"\nDoctor: {context.user_data.get('assigned_doctor_name', 'Assigned dynamically')}\nClinic: {clinic_name}"
     id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
 
     if service == 'Vaccine':
