@@ -1938,6 +1938,16 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Please choose a doctor:", reply_markup=InlineKeyboardMarkup(btns))
         return DOC_SELECT
     else:
+        # This single block handles BOTH Male and Female checks
+        if pref in ["MALE", "FEMALE"]:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(f"{API_BASE}/doctors/{active_cid}")
+                doctors = res.json()
+                matching_docs = [d for d in doctors if d.get('gender', '').upper() == pref]
+                if not matching_docs:
+                    await query.edit_message_text(f"❌ No {pref.lower()} doctors available in this clinic. Please choose another doctor preference.")
+                    return await show_doctor_preference(update, context, force_new=True)
+
         context.user_data['doctor_pref'] = pref
         if pref == "ANY":
             await query.edit_message_text("You selected: Any Doctor")
