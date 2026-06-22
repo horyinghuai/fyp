@@ -38,13 +38,18 @@ async def log_chat_to_db(clinic_id, tg_id, user_msg=None, bot_reply=None, msg_id
 
 from telegram import Message, CallbackQuery
 
+# Global dictionary to track active clinic ID per user for logging purposes
+ACTIVE_CLINICS = {}
+
 # Monkey-patch reply_text to log all new bot messages
 _original_reply_text = Message.reply_text
 async def _patched_reply_text(self, *args, **kwargs):
     msg = await _original_reply_text(self, *args, **kwargs)
     text = kwargs.get('text') or (args[0] if args else "")
     if text:
-        await log_chat_to_db(None, self.chat.id, bot_reply=text, msg_id=msg.message_id if msg else None)
+        tg_id = self.chat.id
+        active_cid = ACTIVE_CLINICS.get(tg_id, DEFAULT_CLINIC_ID)
+        await log_chat_to_db(active_cid, tg_id, bot_reply=text, msg_id=msg.message_id if msg else None)
     return msg
 Message.reply_text = _patched_reply_text
 
@@ -55,7 +60,8 @@ async def _patched_edit_message_text(self, *args, **kwargs):
     text = kwargs.get('text') or (args[0] if args else "")
     if text:
         tg_id = self.message.chat.id if self.message else self.from_user.id
-        await log_chat_to_db(None, tg_id, bot_reply=text)
+        active_cid = ACTIVE_CLINICS.get(tg_id, DEFAULT_CLINIC_ID)
+        await log_chat_to_db(active_cid, tg_id, bot_reply=text)
     return msg
 CallbackQuery.edit_message_text = _patched_edit_message_text
 
@@ -65,6 +71,7 @@ async def log_all_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         if text.startswith('/'): return
         active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+        ACTIVE_CLINICS[update.effective_user.id] = active_cid # Keep tracker synced
         await log_chat_to_db(active_cid, update.effective_user.id, user_msg=text, msg_id=update.message.message_id)
 
 logging.basicConfig(
@@ -467,15 +474,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.args and len(context.args) > 0:
         context.user_data['active_clinic_id'] = context.args[0]
+        ACTIVE_CLINICS[telegram_id] = context.args[0]
     elif 'active_clinic_id' not in context.user_data:
         context.user_data['active_clinic_id'] = DEFAULT_CLINIC_ID
+        ACTIVE_CLINICS[telegram_id] = DEFAULT_CLINIC_ID
+    else:
+        ACTIVE_CLINICS[telegram_id] = context.user_data['active_clinic_id']
         
     return await proceed_with_start(update, context)
 
 async def handle_start_clinic_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    context.user_data['active_clinic_id'] = query.data.replace("startclinic_", "")
+    active_cid = query.data.replace("startclinic_", "")
+    context.user_data['active_clinic_id'] = active_cid
+    ACTIVE_CLINICS[update.effective_user.id] = active_cid
     return await proceed_with_start(update, context, query=True)
 
 async def proceed_with_start(update, context, query=False):
@@ -2665,6 +2678,7 @@ async def handle_reminder_action(update: Update, context: ContextTypes.DEFAULT_T
                     p_data = res.json()
                     context.user_data['ic'] = p_data['ic']
                     context.user_data['active_clinic_id'] = p_data['clinic_id']
+                    ACTIVE_CLINICS[tg_id] = p_data['clinic_id'] # <--- Add this line
                     context.user_data['name'] = p_data['name']
                     context.user_data['is_malaysian'] = True 
                 else:
@@ -2674,6 +2688,9 @@ async def handle_reminder_action(update: Update, context: ContextTypes.DEFAULT_T
                 logger.error(f"Error fetching patient: {e}")
                 await query.message.reply_text("Server error. Please try again later.")
                 return ConversationHandler.END
+    else:
+        # <--- Add this else block to keep existing memory synced
+        ACTIVE_CLINICS[tg_id] = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
                 
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
 

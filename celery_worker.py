@@ -84,11 +84,20 @@ def run_reminder_agent():
         for stage, appt, patient in upcoming_stages:
             is_blood_test = db.query(models.AppointmentBloodTest).filter_by(appointment_id=appt.id).first() is not None
             
+            # Fetch Doctor and Clinic names
+            doc = db.query(models.Doctor).filter_by(ic_passport_number=appt.doctor_ic).first() if appt.doctor_ic else None
+            doctor_str = doc.name if doc else "ANY"
+            
+            clinic = db.query(models.Clinic).filter_by(id=appt.clinic_id).first()
+            clinic_name = clinic.name if clinic else "Unknown Clinic"
+            
             msg = (f"🔔 *Appointment Reminder*\n\n"
                    f"Hello {patient.name}, this is a reminder for your upcoming clinic visit tomorrow.\n\n"
                    f"Service: {stage.stage_name}\n"
                    f"Date: {stage.scheduled_time.strftime('%Y-%m-%d')}\n"
-                   f"Time: {stage.scheduled_time.strftime('%H:%M %p')}\n\n")
+                   f"Time: {stage.scheduled_time.strftime('%H:%M %p')}\n"
+                   f"Doctor: {doctor_str}\n"
+                   f"Clinic: {clinic_name}\n\n")
 
             if is_blood_test:
                 msg += "⚠️ Kindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period.\n\n"
