@@ -15,7 +15,7 @@ export default function DeveloperPage() {
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
-
+  const [errors, setErrors] = useState<string[]>([]);
   const [adminIcParts, setAdminIcParts] = useState(['', '', '']);
   const [tempAdminIcParts, setTempAdminIcParts] = useState(['', '', '']);
 
@@ -68,6 +68,7 @@ export default function DeveloperPage() {
 
   const openForm = (clinic: any = null) => {
       setStatusMsg({ type: '', text: '' });
+      setErrors([]);
       if (clinic) {
           setIsEditing(clinic.id);
           const adminIsMy = clinic.admin?.ic ? clinic.admin.ic.replace(/\D/g, '').length === 12 : true;
@@ -102,41 +103,67 @@ export default function DeveloperPage() {
   const handleSaveClinic = async (e: React.FormEvent) => {
       e.preventDefault();
       setStatusMsg({ type: '', text: '' });
-
-      if (!devForm.clinic_name) return setStatusMsg({ type: 'error', text: 'Clinic Name is required.' });
-      if (!devForm.registration_number) return setStatusMsg({ type: 'error', text: 'Registration Number is required.' });
-      if (checkRegistrationNumberExists(devForm.registration_number, isEditing && isEditing !== 'new' ? isEditing : undefined)) return setStatusMsg({ type: 'error', text: `Registration Number '${devForm.registration_number.toUpperCase()}' already exists.` });
       
+      const newErrors: string[] = [];
+      let errorMessage = '';
+
+      if (!devForm.clinic_name) { newErrors.push('clinic_name'); errorMessage = errorMessage || 'Clinic Name is required.'; }
+      if (!devForm.registration_number) { newErrors.push('registration_number'); errorMessage = errorMessage || 'Registration Number is required.'; }
+      else if (checkRegistrationNumberExists(devForm.registration_number, isEditing && isEditing !== 'new' ? isEditing : undefined)) {
+          newErrors.push('registration_number'); errorMessage = errorMessage || `Registration Number '${devForm.registration_number.toUpperCase()}' already exists.`;
+      }
+
+      if (!devForm.admin_name) newErrors.push('admin_name');
+      if (!devForm.admin_email) newErrors.push('admin_email');
+      if (!devForm.temp_admin_name) newErrors.push('temp_admin_name');
+      if (!devForm.temp_admin_email) newErrors.push('temp_admin_email');
+
       if (!devForm.admin_name || !devForm.admin_email || !devForm.temp_admin_name || !devForm.temp_admin_email) {
-          return setStatusMsg({ type: 'error', text: 'All Primary and Temporary Admin fields are required.' });
+          errorMessage = errorMessage || 'All Primary and Temporary Admin fields are required.';
       }
 
       if (devForm.contact_number) {
           const formattedPhone = formatAndValidatePhone(devForm.contact_number);
-          if (!formattedPhone) return setStatusMsg({ type: 'error', text: 'Invalid Clinic Phone Format.' });
-          devForm.contact_number = formattedPhone;
+          if (!formattedPhone) { newErrors.push('contact_number'); errorMessage = errorMessage || 'Invalid Clinic Phone Format.'; }
+          else devForm.contact_number = formattedPhone;
       }
 
-      if (!validateEmail(devForm.admin_email) || !validateEmail(devForm.temp_admin_email)) return setStatusMsg({ type: 'error', text: 'Invalid Email format.' });
+      if (devForm.admin_email && !validateEmail(devForm.admin_email)) { newErrors.push('admin_email'); errorMessage = errorMessage || 'Invalid Email format.'; }
+      if (devForm.temp_admin_email && !validateEmail(devForm.temp_admin_email)) { newErrors.push('temp_admin_email'); errorMessage = errorMessage || 'Invalid Email format.'; }
 
       let finalAdminIC = devForm.admin_ic.toUpperCase(), finalTempAdminIC = devForm.temp_admin_ic.toUpperCase();
       
       if (devForm.admin_is_my) {
           const [p1, p2, p3] = adminIcParts;
-          if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) return setStatusMsg({ type: 'error', text: 'Admin IC must be exactly 12 digits.' });
-          if (p1 === '000000' || p2 === '00' || p3 === '0000') return setStatusMsg({ type: 'error', text: 'Invalid Admin IC format. Zeroes are not allowed.' });
-          const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
-          if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return setStatusMsg({ type: 'error', text: 'Invalid date in Admin IC.' });
-          finalAdminIC = `${p1}-${p2}-${p3}`;
+          if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) { newErrors.push('admin_ic'); errorMessage = errorMessage || 'Admin IC must be exactly 12 digits.'; }
+          else if (p1 === '000000' || p2 === '00' || p3 === '0000') { newErrors.push('admin_ic'); errorMessage = errorMessage || 'Invalid Admin IC format. Zeroes are not allowed.'; }
+          else {
+              const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
+              if (mm < 1 || mm > 12 || dd < 1 || dd > 31) { newErrors.push('admin_ic'); errorMessage = errorMessage || 'Invalid date in Admin IC.'; }
+              else finalAdminIC = `${p1}-${p2}-${p3}`;
+          }
+      } else if (!devForm.admin_ic) {
+          newErrors.push('admin_ic'); errorMessage = errorMessage || 'Admin ID is required.';
       }
       
       if (devForm.temp_admin_is_my) {
           const [p1, p2, p3] = tempAdminIcParts;
-          if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) return setStatusMsg({ type: 'error', text: 'Temp Admin IC must be exactly 12 digits.' });
-          if (p1 === '000000' || p2 === '00' || p3 === '0000') return setStatusMsg({ type: 'error', text: 'Invalid Temp Admin IC format. Zeroes are not allowed.' });
-          const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
-          if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return setStatusMsg({ type: 'error', text: 'Invalid date in Temp Admin IC.' });
-          finalTempAdminIC = `${p1}-${p2}-${p3}`;
+          if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) { newErrors.push('temp_admin_ic'); errorMessage = errorMessage || 'Temp Admin IC must be exactly 12 digits.'; }
+          else if (p1 === '000000' || p2 === '00' || p3 === '0000') { newErrors.push('temp_admin_ic'); errorMessage = errorMessage || 'Invalid Temp Admin IC format. Zeroes are not allowed.'; }
+          else {
+              const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
+              if (mm < 1 || mm > 12 || dd < 1 || dd > 31) { newErrors.push('temp_admin_ic'); errorMessage = errorMessage || 'Invalid date in Temp Admin IC.'; }
+              else finalTempAdminIC = `${p1}-${p2}-${p3}`;
+          }
+      } else if (!devForm.temp_admin_ic) {
+          newErrors.push('temp_admin_ic'); errorMessage = errorMessage || 'Temp Admin ID is required.';
+      }
+
+      if (newErrors.length > 0) {
+          setErrors(newErrors);
+          setStatusMsg({ type: 'error', text: errorMessage || 'Please correct the highlighted fields.' });
+          setTimeout(() => setErrors([]), 2000); // Clear errors after animation finishes so it can be re-triggered
+          return;
       }
 
       if (!window.confirm(`Are you sure you want to save the clinic details?`)) return;
@@ -187,6 +214,17 @@ export default function DeveloperPage() {
 
   return (
     <div className="max-w-6xl mx-auto">
+        <style>{`
+          @keyframes blink-error {
+            0%, 100% { border-color: #ef4444; background-color: #fef2f2; box-shadow: 0 0 0 2px rgba(239,68,68,0.5); }
+            50% { border-color: #e2e8f0; background-color: #f8fafc; box-shadow: none; }
+          }
+          .error-blink {
+            animation: blink-error 0.4s ease-in-out 4;
+            border-color: #ef4444 !important;
+          }
+        `}</style>
+        
         <div className="flex justify-between items-center mb-8">
              <div>
                  <h1 className="text-3xl font-black text-slate-800 tracking-tight">AICAS Global Provisioning</h1>
@@ -201,9 +239,9 @@ export default function DeveloperPage() {
                 <div>
                     <h3 className="font-bold text-lg text-blue-700 mb-4 border-b pb-2">1. Clinic Information</h3>
                     <div className="grid grid-cols-2 gap-6">
-                        <div><label className="block text-sm font-semibold mb-2">Clinic Name *</label><input type="text" required value={devForm.clinic_name} onChange={e => setDevForm({...devForm, clinic_name: e.target.value})} className="w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase" /></div>
-                        <div><label className="block text-sm font-semibold mb-2">Registration Number *</label><input type="text" required value={devForm.registration_number} onChange={e => setDevForm({...devForm, registration_number: e.target.value})} className="w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase" /></div>
-                        <div><label className="block text-sm font-semibold mb-2">Contact Number</label><input type="text" value={devForm.contact_number} onChange={e => setDevForm({...devForm, contact_number: e.target.value})} className="w-full p-3 border rounded-xl outline-none bg-slate-50" /></div>
+                        <div><label className="block text-sm font-semibold mb-2">Clinic Name *</label><input type="text" required value={devForm.clinic_name} onChange={e => setDevForm({...devForm, clinic_name: e.target.value})} className={`w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase ${errors.includes('clinic_name') ? 'error-blink' : ''}`} /></div>
+                        <div><label className="block text-sm font-semibold mb-2">Registration Number *</label><input type="text" required value={devForm.registration_number} onChange={e => setDevForm({...devForm, registration_number: e.target.value})} className={`w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase ${errors.includes('registration_number') ? 'error-blink' : ''}`} /></div>
+                        <div><label className="block text-sm font-semibold mb-2">Contact Number</label><input type="text" value={devForm.contact_number} onChange={e => setDevForm({...devForm, contact_number: e.target.value})} className={`w-full p-3 border rounded-xl outline-none bg-slate-50 ${errors.includes('contact_number') ? 'error-blink' : ''}`} /></div>
                         <div><label className="block text-sm font-semibold mb-2">Full Address</label><input type="text" value={devForm.address} onChange={e => setDevForm({...devForm, address: e.target.value})} className="w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase" /></div>
                     </div>
                 </div>
@@ -216,7 +254,7 @@ export default function DeveloperPage() {
                         <div>
                             <label className="block text-sm font-semibold mb-2">{devForm.admin_is_my ? "IC Number" : "Passport Number"} *</label>
                             {devForm.admin_is_my ? (
-                                <div className="flex w-full items-center bg-slate-50 border rounded-xl focus-within:ring-2 focus-within:ring-purple-500 overflow-hidden">
+                                <div className={`flex w-full items-center bg-slate-50 border rounded-xl focus-within:ring-2 focus-within:ring-purple-500 overflow-hidden ${errors.includes('admin_ic') ? 'error-blink' : ''}`}>
                                     <input style={{flex: 3}} type="text" placeholder="YYMMDD" maxLength={6} value={adminIcParts[0]} onChange={e => handleAdminICPart(0, e.target.value)} className="bg-transparent p-3 outline-none font-mono text-center text-sm min-w-0" />
                                     <span className="text-slate-400 font-bold">-</span>
                                     <input style={{flex: 1}} type="text" placeholder="XX" maxLength={2} value={adminIcParts[1]} onChange={e => handleAdminICPart(1, e.target.value)} className="bg-transparent p-3 outline-none font-mono text-center text-sm min-w-0" />
@@ -224,12 +262,12 @@ export default function DeveloperPage() {
                                     <input style={{flex: 2}} type="text" placeholder="XXXX" maxLength={4} value={adminIcParts[2]} onChange={e => handleAdminICPart(2, e.target.value)} className="bg-transparent p-3 outline-none font-mono text-center text-sm min-w-0" />
                                 </div>
                             ) : (
-                                <input type="text" required value={devForm.admin_ic} onChange={e => setDevForm({...devForm, admin_ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase" />
+                                <input type="text" required value={devForm.admin_ic} onChange={e => setDevForm({...devForm, admin_ic: e.target.value})} className={`w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-purple-500 bg-slate-50 uppercase ${errors.includes('admin_ic') ? 'error-blink' : ''}`} />
                             )}
                         </div>
 
-                        <div><label className="block text-sm font-semibold mb-2">Full Name *</label><input type="text" required value={devForm.admin_name} onChange={e => setDevForm({...devForm, admin_name: e.target.value})} className="w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase" /></div>
-                        <div><label className="block text-sm font-semibold mb-2">Login Email *</label><input type="email" required value={devForm.admin_email} onChange={e => setDevForm({...devForm, admin_email: e.target.value})} className="w-full p-3 border rounded-xl outline-none bg-slate-50" /></div>
+                        <div><label className="block text-sm font-semibold mb-2">Full Name *</label><input type="text" required value={devForm.admin_name} onChange={e => setDevForm({...devForm, admin_name: e.target.value})} className={`w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase ${errors.includes('admin_name') ? 'error-blink' : ''}`} /></div>
+                        <div><label className="block text-sm font-semibold mb-2">Login Email *</label><input type="email" required value={devForm.admin_email} onChange={e => setDevForm({...devForm, admin_email: e.target.value})} className={`w-full p-3 border rounded-xl outline-none bg-slate-50 ${errors.includes('admin_email') ? 'error-blink' : ''}`} /></div>
                         {isEditing !== 'new' && ( <div><label className="block text-sm font-semibold mb-2">Status</label><select value={devForm.admin_status} onChange={e => setDevForm({...devForm, admin_status: e.target.value})} className="w-full p-3 border rounded-xl bg-white"><option value="active">Active</option><option value="inactive">Inactive</option></select></div> )}
                     </div>
                 </div>
@@ -242,7 +280,7 @@ export default function DeveloperPage() {
                         <div>
                             <label className="block text-sm font-semibold mb-2">{devForm.temp_admin_is_my ? "IC Number" : "Passport Number"} *</label>
                             {devForm.temp_admin_is_my ? (
-                                <div className="flex w-full items-center bg-slate-50 border rounded-xl focus-within:ring-2 focus-within:ring-emerald-500 overflow-hidden">
+                                <div className={`flex w-full items-center bg-slate-50 border rounded-xl focus-within:ring-2 focus-within:ring-emerald-500 overflow-hidden ${errors.includes('temp_admin_ic') ? 'error-blink' : ''}`}>
                                     <input style={{flex: 3}} type="text" placeholder="YYMMDD" maxLength={6} value={tempAdminIcParts[0]} onChange={e => handleTempAdminICPart(0, e.target.value)} className="bg-transparent p-3 outline-none font-mono text-center text-sm min-w-0" />
                                     <span className="text-slate-400 font-bold">-</span>
                                     <input style={{flex: 1}} type="text" placeholder="XX" maxLength={2} value={tempAdminIcParts[1]} onChange={e => handleTempAdminICPart(1, e.target.value)} className="bg-transparent p-3 outline-none font-mono text-center text-sm min-w-0" />
@@ -250,12 +288,12 @@ export default function DeveloperPage() {
                                     <input style={{flex: 2}} type="text" placeholder="XXXX" maxLength={4} value={tempAdminIcParts[2]} onChange={e => handleTempAdminICPart(2, e.target.value)} className="bg-transparent p-3 outline-none font-mono text-center text-sm min-w-0" />
                                 </div>
                             ) : (
-                                <input type="text" required value={devForm.temp_admin_ic} onChange={e => setDevForm({...devForm, temp_admin_ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase" />
+                                <input type="text" required value={devForm.temp_admin_ic} onChange={e => setDevForm({...devForm, temp_admin_ic: e.target.value})} className={`w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50 uppercase ${errors.includes('temp_admin_ic') ? 'error-blink' : ''}`} />
                             )}
                         </div>
 
-                        <div><label className="block text-sm font-semibold mb-2">Full Name *</label><input type="text" required value={devForm.temp_admin_name} onChange={e => setDevForm({...devForm, temp_admin_name: e.target.value})} className="w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase" /></div>
-                        <div><label className="block text-sm font-semibold mb-2">Login Email *</label><input type="email" required value={devForm.temp_admin_email} onChange={e => setDevForm({...devForm, temp_admin_email: e.target.value})} className="w-full p-3 border rounded-xl outline-none bg-slate-50" /></div>
+                        <div><label className="block text-sm font-semibold mb-2">Full Name *</label><input type="text" required value={devForm.temp_admin_name} onChange={e => setDevForm({...devForm, temp_admin_name: e.target.value})} className={`w-full p-3 border rounded-xl outline-none bg-slate-50 uppercase ${errors.includes('temp_admin_name') ? 'error-blink' : ''}`} /></div>
+                        <div><label className="block text-sm font-semibold mb-2">Login Email *</label><input type="email" required value={devForm.temp_admin_email} onChange={e => setDevForm({...devForm, temp_admin_email: e.target.value})} className={`w-full p-3 border rounded-xl outline-none bg-slate-50 ${errors.includes('temp_admin_email') ? 'error-blink' : ''}`} /></div>
                         {isEditing !== 'new' && devForm.temp_admin_ic && ( <div><label className="block text-sm font-semibold mb-2">Status</label><select value={devForm.temp_admin_status} onChange={e => setDevForm({...devForm, temp_admin_status: e.target.value})} className="w-full p-3 border rounded-xl bg-white"><option value="active">Active</option><option value="inactive">Inactive</option></select></div> )}
                     </div>
                 </div>
