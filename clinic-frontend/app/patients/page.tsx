@@ -548,8 +548,8 @@ export default function PatientsPage() {
 
   const handleSave = async () => {
     let finalIC = formData.ic;
-    if (!finalIC) return alert("⚠️ IC / Passport Number is required.");
 
+    // 1. Process IC first based on nationality
     if (isMalaysian) {
         const [p1, p2, p3] = icParts;
         if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) return alert("⚠️ Malaysian IC must be exactly 12 digits completely filled.");
@@ -558,23 +558,31 @@ export default function PatientsPage() {
         if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return alert("⚠️ Invalid date within the IC format.");
         finalIC = `${p1}-${p2}-${p3}`;
     } else {
+        // Only check if formData.ic is missing for non-Malaysians
+        if (!finalIC) return alert("⚠️ Passport Number is required.");
         if (!/^[a-zA-Z0-9]+$/.test(finalIC)) return alert("⚠️ Passport Number cannot contain symbols.");
     }
 
     if (!formData.name) return alert("⚠️ Patient Name is required.");
     if (!formData.phone) return alert("⚠️ Phone Number is required.");
 
+    // 2. Process Phone Number to strictly output +60XXXXXXXXX or +60XXXXXXXXXX (No hyphens)
     let finalPhone = formData.phone.trim();
-    const phoneRegex = /^(\+60|0|60)?\d{2,3}-?\d{7,8}$/;
-    if (!phoneRegex.test(finalPhone)) return alert("Invalid phone format! Please enter as +60XX-XXXXXXXX or XXX-XXXXXXXX.");
     
+    // Strip everything except numbers to easily check length and digits regardless of how the user typed it
     let cleanDigits = finalPhone.replace(/[^\d]/g, '');
+    
+    // Remove the 60 or 0 at the start to get the base mobile number
     if (cleanDigits.startsWith('60')) cleanDigits = cleanDigits.substring(2);
     else if (cleanDigits.startsWith('0')) cleanDigits = cleanDigits.substring(1);
-    if (cleanDigits.length < 8 || cleanDigits.length > 10) return alert("Invalid phone length.");
-    let prefix = cleanDigits.startsWith('11') || cleanDigits.startsWith('15') ? cleanDigits.substring(0, 3) : cleanDigits.substring(0, 2);
-    let suffix = cleanDigits.startsWith('11') || cleanDigits.startsWith('15') ? cleanDigits.substring(3) : cleanDigits.substring(2);
-    finalPhone = `+60${prefix}-${suffix}`;
+
+    // Malaysian numbers must start with '1' and have 9 to 10 digits (e.g. 123456789 or 1123456789)
+    if (!cleanDigits.startsWith('1') || cleanDigits.length < 9 || cleanDigits.length > 10) {
+        return alert("⚠️ Invalid phone format! Please enter a valid number (e.g., 012-3456789, +6011-23456789, 0123456789).");
+    }
+
+    // Format correctly WITHOUT hyphen as requested
+    finalPhone = `+60${cleanDigits}`;
 
     if (!window.confirm("Are you sure this details are correct?")) return;
 
