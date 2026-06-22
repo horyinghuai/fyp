@@ -3780,11 +3780,12 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
     api_key = os.getenv("GOOGLE_VISION_API_KEY")
     json_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     
+    ic_num, name, address, gender = "", "", "", "MALE"
     extracted_text = ""
-    # 1. Google Cloud Vision API Integration (JSON Credentials OR API Key)
+    
+    # 1. Google Cloud Vision API Integration
     if json_creds or api_key:
         try:
-            # If using pip install google-cloud-vision and JSON file
             from google.cloud import vision
             client = vision.ImageAnnotatorClient()
             image = vision.Image(content=content)
@@ -3792,68 +3793,166 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
             if response.text_annotations:
                 extracted_text = response.text_annotations[0].description
         except ImportError:
-            # Fallback to REST API if library isn't installed but key is present
             async with httpx.AsyncClient() as client:
-                payload = {
-                    "requests": [{
-                        "image": {"content": encoded_image},
-                        "features": [{"type": "TEXT_DETECTION"}]
-                    }]
-                }
+                payload = {"requests": [{"image": {"content": encoded_image}, "features": [{"type": "TEXT_DETECTION"}]}]}
                 res = await client.post(f"https://vision.googleapis.com/v1/images:annotate?key={api_key}", json=payload)
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("responses") and "textAnnotations" in data["responses"][0]:
                         extracted_text = data["responses"][0]["textAnnotations"][0]["description"]
-    # 2. EasyOCR Fallback (If GCP fails or missing)
-    if not extracted_text:
+
+    # 2. Jika menggunakan GCP
+    if extracted_text:
+        lines = [line.strip() for line in extracted_text.split('\n') if line.strip()]
+        ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
+        ic_index = -1
+        for i, line in enumerate(lines):
+            match = ic_pattern.search(line)
+            if match:
+                raw_ic = match.group(0)
+                ic_num = f"{raw_ic[:6]}-{raw_ic[6:8]}-{raw_ic[8:]}" if len(raw_ic) == 12 and "-" not in raw_ic else raw_ic
+                ic_index = i
+                gender = "FEMALE" if int(ic_num[-1]) % 2 == 0 else "MALE"
+                break
+                
+        if ic_index != -1:
+            potential_name_lines = []
+            for i in range(ic_index + 1, min(ic_index + 4, len(lines))):
+                if re.search(r'\d', lines[i]) or any(sw in lines[i].upper() for sw in ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA"]): continue
+                potential_name_lines.append(re.sub(r'[^A-Z\s]', '', lines[i].upper()).strip())
+            if potential_name_lines: name = potential_name_lines[0]
+                
+            address_lines = []
+            postcode_found = False
+            lines_after = 0
+            for i in range(ic_index + 1, len(lines)):
+                text = lines[i]
+                if any(sw in text.upper() for sw in ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", name]): continue
+                address_lines.append(text)
+                if re.search(r'\d{5}', text): postcode_found = True
+                if postcode_found:
+                    lines_after += 1
+                    if lines_after >= 2: break
+            address = ", ".join(address_lines)
+
+    # 3. EasyOCR Fallback (Untuk kamera web PC jika GCP gagal/tiada)
+    else:
         import easyocr
         import tempfile
-        reader = easyocr.Reader(['en', 'ms'], gpu=False) # Suppresses CUDA warning by forcing CPU
+        import re
+        reader = easyocr.Reader(['en', 'ms'], gpu=False)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
             tf.write(content)
             tf_path = tf.name
         results = reader.readtext(tf_path)
-        extracted_text = "\n".join([text for _, text, _ in results])
         os.remove(tf_path)
-
-    # 3. Regex Extraction Logic for Malaysian IC
-    lines = [line.strip() for line in extracted_text.split('\n') if line.strip()]
-    ic_num, name, address, gender = "", "", "", "MALE"
-    ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
-    
-    ic_index = -1
-    for i, line in enumerate(lines):
-        match = ic_pattern.search(line)
-        if match:
-            raw_ic = match.group(0)
-            if len(raw_ic) == 12 and "-" not in raw_ic:
-                ic_num = f"{raw_ic[:6]}-{raw_ic[6:8]}-{raw_ic[8:]}"
-            else:
-                ic_num = raw_ic
-            ic_index = i
-            last_digit = int(ic_num[-1])
-            gender = "FEMALE" if last_digit % 2 == 0 else "MALE"
-            break
-            
-    if ic_index != -1:
-        potential_name_lines = []
-        for i in range(ic_index + 1, min(ic_index + 4, len(lines))):
-            text = lines[i]
-            if re.search(r'\d', text) or any(sw in text.upper() for sw in ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA"]):
-                continue
-            potential_name_lines.append(re.sub(r'[^A-Z\s]', '', text.upper()).strip())
-        if potential_name_lines:
-            name = potential_name_lines[0]
-            
-        address_lines = []
-        for i in range(ic_index + 1, len(lines)):
-            text = lines[i]
-            if any(sw in text.upper() for sw in ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", name]): continue
-            address_lines.append(text)
-            if re.search(r'\d{5}', text): break
-        address = ", ".join(address_lines)
         
+        if results:
+            # A. Penapisan Paksi-X (Potong 40% bahagian kanan)
+            all_x = [p[0] for r in results for p in r[0]]
+            if all_x:
+                min_x, max_x = min(all_x), max(all_x)
+                right_limit = min_x + ((max_x - min_x) * 0.6)
+                filtered = [r for r in results if min(p[0] for p in r[0]) < right_limit]
+                
+                # B. Gabungkan kotak perkataan menjadi BARISAN (Lines) menggunakan Titik Tengah (Center Y)
+                # Ini menghalang baris atas dan bawah daripada bercampur akibat toleransi statik yang terlalu besar.
+                elements = []
+                for r in filtered:
+                    bbox = r[0]
+                    # Kira nilai tengah Y dan ketinggian kotak teks
+                    center_y = (bbox[0][1] + bbox[2][1]) / 2
+                    height = bbox[2][1] - bbox[0][1]
+                    elements.append({'bbox': bbox, 'text': r[1], 'center_y': center_y, 'height': height})
+
+                # Susun menegak dari atas ke bawah
+                elements.sort(key=lambda e: e['center_y'])
+
+                lines_grouped = []
+                curr_line = []
+                curr_center_y = None
+                
+                for e in elements:
+                    if curr_center_y is None: 
+                        curr_center_y = e['center_y']
+                        curr_line.append(e)
+                    # Toleransi dinamik (40% daripada tinggi kotak). Sangat ketat untuk pisahkan baris alamat.
+                    elif abs(e['center_y'] - curr_center_y) <= (e['height'] * 0.4): 
+                        curr_line.append(e)
+                        # Kemas kini purata center_y supaya selari jika imej senget sedikit
+                        curr_center_y = sum(item['center_y'] for item in curr_line) / len(curr_line)
+                    else:
+                        # Susun perkataan dari kiri ke kanan dalam baris yang sama
+                        curr_line.sort(key=lambda x: x['bbox'][0][0])
+                        line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
+                        lines_grouped.append(line_text)
+                        curr_line = [e]
+                        curr_center_y = e['center_y']
+                        
+                if curr_line:
+                    curr_line.sort(key=lambda x: x['bbox'][0][0])
+                    line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
+                    lines_grouped.append(line_text)
+                
+                # C. Pengekstrakan Maklumat daripada barisan teks
+                ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
+                ic_index = -1
+                
+                for i, text in enumerate(lines_grouped):
+                    match = ic_pattern.search(text)
+                    if match:
+                        raw_ic = match.group(0)
+                        ic_num = f"{raw_ic[:6]}-{raw_ic[6:8]}-{raw_ic[8:]}" if len(raw_ic) == 12 and "-" not in raw_ic else raw_ic
+                        ic_index = i
+                        gender = "FEMALE" if int(ic_num[-1]) % 2 == 0 else "MALE"
+                        break
+                        
+                if ic_index != -1:
+                    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA"]
+                    name_lines = []
+                    address_start = ic_index + 1
+                    
+                    # Cari Nama
+                    for i in range(ic_index + 1, min(ic_index + 4, len(lines_grouped))):
+                        text = lines_grouped[i]
+                        if any(sw in text for sw in stop_words): continue
+                        if re.search(r'\d', text): # Jika terjumpa nombor, itu permulaan alamat
+                            address_start = i
+                            break
+                        # Buang sebarang simbol pelik pada nama
+                        clean_name = re.sub(r'[^A-Z\s\@\']', '', text).strip()
+                        if clean_name: name_lines.append(clean_name)
+                        address_start = i + 1
+                    name = " ".join(name_lines).strip()
+                    
+                    # Cari Alamat
+                    addr_lines = []
+                    pc_found = False
+                    lines_after = 0
+                    
+                    for i in range(address_start, len(lines_grouped)):
+                        text = lines_grouped[i]
+                        if any(sw in text for sw in stop_words): continue
+                        
+                        # Buang simbol pelik (cth: '{', ']', '_') akibat silau kamera web
+                        text = re.sub(r'[^A-Z0-9\s,\.\-\/]', '', text).strip()
+                        
+                        # Betulkan poskod yang melekat dengan huruf akibat ralat kamera (cth: 31200CHEMOR -> 31200 CHEMOR)
+                        text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text) 
+                        
+                        if not text: continue
+                        addr_lines.append(text)
+                        
+                        if re.search(r'\b\d{5}\b', text): 
+                            pc_found = True
+                            
+                        if pc_found:
+                            lines_after += 1
+                            if lines_after >= 2: break # Tunggu 1 baris tambahan selepas poskod untuk tangkap nama Negeri
+                            
+                    # Gabungkan setiap BARIS dengan koma
+                    address = ", ".join(addr_lines)
+
     return {
         "success": True,
         "data": {
