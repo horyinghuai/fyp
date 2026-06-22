@@ -4517,6 +4517,14 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, clinic_id: Optional[str] =
         return opts
 
     # Fetch ALL clinic history (including no-show/cancelled) for full analysis
+    # Clinic-isolated: only this clinic's appointment history is considered.
+    rows_filters = [
+        models.Patient.ic_passport_number == ic,
+        models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
+    ]
+    if clinic_id:
+        rows_filters.append(models.Patient.clinic_id == clinic_id)
+
     rows = db.query(
         models.ApptStage.stage_name, models.ApptStage.status,
         models.ApptStage.scheduled_time, models.AppointmentVaccine.vaccine_id
@@ -4524,10 +4532,8 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, clinic_id: Optional[str] =
      .join(models.Appointment, models.ApptStage.appointment_id == models.Appointment.id)\
      .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
      .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
-     .filter(
-         models.Patient.ic_passport_number == ic,
-         models.AppointmentVaccine.vaccine_id.in_(same_type_ids)
-     ).order_by(models.ApptStage.scheduled_time.asc()).all()
+     .filter(*rows_filters)\
+     .order_by(models.ApptStage.scheduled_time.asc()).all()
 
     pid = _clinic_patient_id(db, ic, clinic_id) if clinic_id else None
     external_records = db.query(models.ExternalVaccineRecord).filter(

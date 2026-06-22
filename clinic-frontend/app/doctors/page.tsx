@@ -266,20 +266,32 @@ export default function DoctorsPage() {
                         <div>
                             <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">Identity</h3>
                             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                                <div className="flex gap-2 col-span-1 md:col-span-2">
-                                    <select value={form.is_my ? "my" : "non_my"} onChange={e => setForm({...form, is_my: e.target.value === "my", ic: ''})} className="p-3 border rounded-xl outline-none bg-slate-50 font-medium text-slate-700 w-1/3 disabled:opacity-50" disabled={isEditing !== 'new'}>
-                                        <option value="my">Malaysian</option>
-                                        <option value="non_my">Non-Malaysian</option>
-                                    </select>
-                                    <input type="text" placeholder={form.is_my ? "IC Number *" : "Passport Number *"} required disabled={isEditing !== 'new'} value={form.ic} onChange={e => setForm({...form, ic: e.target.value})} className="p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-mono flex-1 disabled:opacity-50" />
+                                <div className="col-span-1 md:col-span-2 flex gap-2">
+                                    <div className="w-1/3">
+                                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Nationality</label>
+                                        <select value={form.is_my ? "my" : "non_my"} onChange={e => setForm({...form, is_my: e.target.value === "my", ic: ''})} className="w-full p-3 border rounded-xl outline-none bg-slate-50 font-medium text-slate-700 disabled:opacity-50" disabled={isEditing !== 'new'}>
+                                            <option value="my">Malaysian</option>
+                                            <option value="non_my">Non-Malaysian</option>
+                                        </select>
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">{form.is_my ? "IC Number" : "Passport Number"} <span className="text-red-500">*</span></label>
+                                        <input type="text" placeholder={form.is_my ? "IC Number *" : "Passport Number *"} required disabled={isEditing !== 'new'} value={form.ic} onChange={e => setForm({...form, ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-mono disabled:opacity-50" />
+                                    </div>
                                 </div>
-                                
-                                <input type="text" placeholder="Full Name (E.g. Dr. John) *" required value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="col-span-1 md:col-span-1 p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-medium" />
-                                
-                                <select value={form.gender} onChange={e => setForm({...form, gender: e.target.value})} className="col-span-1 md:col-span-1 p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-medium">
-                                    <option value="MALE">MALE</option>
-                                    <option value="FEMALE">FEMALE</option>
-                                </select>
+
+                                <div className="col-span-1 md:col-span-1">
+                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Full Name <span className="text-red-500">*</span></label>
+                                    <input type="text" placeholder="Full Name (E.g. Dr. John) *" required value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-medium" />
+                                </div>
+
+                                <div className="col-span-1 md:col-span-1">
+                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Gender</label>
+                                    <select value={form.gender} onChange={e => setForm({...form, gender: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 font-medium">
+                                        <option value="MALE">MALE</option>
+                                        <option value="FEMALE">FEMALE</option>
+                                    </select>
+                                </div>
                             </div>
                         </div>
 
