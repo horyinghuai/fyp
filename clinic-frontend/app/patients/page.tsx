@@ -176,7 +176,7 @@ export default function PatientsPage() {
             setIsLoadingContext(false);
         });
 
-        if (isSystemGenerated) {
+        if (isEditingAppt) {
             fetch(`http://127.0.0.1:8000/recommend-slots`, {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
@@ -1124,7 +1124,7 @@ export default function PatientsPage() {
                               </div>
 
                               {/* --- AI RECOMMENDATION BOX --- */}
-                              {isSystemGenerated && isEditingAppt && aiRec && (
+                              {isEditingAppt && aiRec && (
                                   <div className="col-span-2 mb-4 bg-indigo-50 border border-indigo-200 rounded-xl p-4 shadow-sm relative overflow-hidden">
                                       <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
                                       <div className="flex items-center gap-2 mb-2">
