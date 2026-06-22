@@ -136,11 +136,15 @@ export default function PatientsPage() {
   const manualDatesKey = Object.entries(manualDates).map(([k, v]) => `${k}:${v}`).join('|');
 
   useEffect(() => {
+    let ignore = false; // guards against out-of-order async responses (race condition)
+
     if (isEditingAppt && editForm.service) {
-        if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
+        if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) {
+            return () => { ignore = true; };
+        }
         if (editForm.service === 'Vaccine' && editForm.dose === 'Calculating...') {
             setAiRec(null);
-            return;
+            return () => { ignore = true; };
         }
 
         setIsLoadingContext(true);
@@ -164,9 +168,11 @@ export default function PatientsPage() {
                 manual_dates: manualDates
             })
         }).then(r => r.json()).then(data => {
+            if (ignore) return;   // a newer selection superseded this request
             setAgentContext(data);
             setIsLoadingContext(false);
         }).catch(err => {
+            if (ignore) return;
             setIsLoadingContext(false);
         });
 
@@ -178,7 +184,10 @@ export default function PatientsPage() {
                     base_date: (minEditDateRef.current > moment().format("YYYY-MM-DD"))
                         ? minEditDateRef.current
                         : moment().format("YYYY-MM-DD"),
-                    doctor_pref: editForm.doctor_ic || 'ANY',
+                    // Always send 'ANY' so the backend's least-workload comparison runs.
+                    // (Sending editForm.doctor_ic passed an IC where the backend expects a
+                    //  NAME, returning "no doctors found" and hiding the suggestion box.)
+                    doctor_pref: 'ANY',
                     duration: editForm.service === 'Vaccine' ? 15 : 30,
                     service_type: editForm.service,
                     vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
@@ -188,14 +197,21 @@ export default function PatientsPage() {
                     original_appt_id: selectedApptDetail ? selectedApptDetail.appt_id : null
                 })
             }).then(r => r.json()).then(data => {
+                if (ignore) return;          // ignore stale response from a previous vaccine/dose
                 if (!data.error) setAiRec(data);
-                else setAiRec(null);
-            }).catch(err => setAiRec(null));
+                else setAiRec(null);         // clear so a stale recommendation never lingers
+            }).catch(err => {
+                if (ignore) return;
+                setAiRec(null);
+            });
         } else {
             setAiRec(null);
         }
+
+        return () => { ignore = true; };
     } else {
         setAgentContext(null); setAiRec(null); setIsLoadingContext(false);
+        return () => { ignore = true; };
     }
   }, [isEditingAppt, isSystemGenerated, clinicId, selectedApptDetail, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear, minEditDate, manualDatesKey]);
 
