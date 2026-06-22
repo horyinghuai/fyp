@@ -144,6 +144,8 @@ export default function DeveloperPage() {
           }
       } else if (!devForm.admin_ic) {
           newErrors.push('admin_ic'); errorMessage = errorMessage || 'Admin ID is required.';
+      } else if (!/^[a-zA-Z0-9]+$/.test(devForm.admin_ic)) {
+          newErrors.push('admin_ic'); errorMessage = errorMessage || 'Admin Passport Number cannot contain symbols.';
       }
       
       if (devForm.temp_admin_is_my) {
@@ -157,6 +159,8 @@ export default function DeveloperPage() {
           }
       } else if (!devForm.temp_admin_ic) {
           newErrors.push('temp_admin_ic'); errorMessage = errorMessage || 'Temp Admin ID is required.';
+      } else if (!/^[a-zA-Z0-9]+$/.test(devForm.temp_admin_ic)) {
+          newErrors.push('temp_admin_ic'); errorMessage = errorMessage || 'Temp Admin Passport Number cannot contain symbols.';
       }
 
       if (newErrors.length > 0) {

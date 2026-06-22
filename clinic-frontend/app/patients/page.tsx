@@ -529,6 +529,8 @@ export default function PatientsPage() {
 
   const handleSave = async () => {
     let finalIC = formData.ic;
+    if (!finalIC) return alert("⚠️ IC / Passport Number is required.");
+
     if (isMalaysian) {
         const [p1, p2, p3] = icParts;
         if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) return alert("⚠️ Malaysian IC must be exactly 12 digits completely filled.");
@@ -536,9 +538,10 @@ export default function PatientsPage() {
         const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
         if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return alert("⚠️ Invalid date within the IC format.");
         finalIC = `${p1}-${p2}-${p3}`;
+    } else {
+        if (!/^[a-zA-Z0-9]+$/.test(finalIC)) return alert("⚠️ Passport Number cannot contain symbols.");
     }
 
-    if (!finalIC) return alert("⚠️ IC / Passport Number is required.");
     if (!formData.name) return alert("⚠️ Patient Name is required.");
     if (!formData.phone) return alert("⚠️ Phone Number is required.");
 

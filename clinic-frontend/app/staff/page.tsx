@@ -81,6 +81,8 @@ export default function StaffPage() {
         if (!form.name || !form.email) return setStatusMsg({ type: 'error', text: 'All identity fields are required.' });
         
         let finalIC = form.ic.toUpperCase();
+        if (!finalIC) return setStatusMsg({ type: 'error', text: 'IC / Passport Number is required.' });
+
         if (form.is_my) {
             const [p1, p2, p3] = icParts;
             if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) return setStatusMsg({ type: 'error', text: 'IC must be complete (12 digits).' });
@@ -88,6 +90,8 @@ export default function StaffPage() {
             const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
             if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return setStatusMsg({ type: 'error', text: 'Invalid date format in IC.' });
             finalIC = `${p1}-${p2}-${p3}`;
+        } else {
+            if (!/^[a-zA-Z0-9]+$/.test(finalIC)) return setStatusMsg({ type: 'error', text: 'Passport Number cannot contain symbols.' });
         }
         
         if (form.status === 'resigned' && !form.resign_reason) return setStatusMsg({ type: 'error', text: 'Please provide a reason for resignation.' });
@@ -170,7 +174,7 @@ export default function StaffPage() {
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="flex gap-2">
                                     <select value={form.is_my ? "my" : "non_my"} onChange={e => { setForm({...form, is_my: e.target.value === "my", ic: ''}); setIcParts(['','','']); }} className="p-3 border rounded-xl outline-none bg-slate-50 w-1/3">
-                                        <option value="my">MyKad</option><option value="non_my">Passport</option>
+                                        <option value="my">Malaysian</option><option value="non_my">Non-Malaysian</option>
                                     </select>
                                     {form.is_my ? (
                                         <div className={`flex gap-2 flex-1 items-center bg-slate-50 border rounded-xl px-2 ${isEditing === 'new' ? 'focus-within:ring-2 focus-within:ring-blue-500' : 'opacity-60'}`}>

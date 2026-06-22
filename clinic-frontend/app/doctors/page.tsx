@@ -113,11 +113,15 @@ export default function DoctorsPage() {
         e.preventDefault();
         
         let finalIC = form.ic.toUpperCase();
+        if (!finalIC) return alert("IC / Passport Number is required.");
+
         if (form.is_my) {
             if (finalIC.replace(/\D/g, '').length !== 12) {
                 return alert('IC must be exactly 12 digits for Malaysians.');
             }
             finalIC = formatIC(finalIC);
+        } else {
+            if (!/^[a-zA-Z0-9]+$/.test(finalIC)) return alert("Passport Number cannot contain symbols.");
         }
 
         if (form.status === 'resigned' && !form.resign_reason) return alert('Please provide a reason for resignation.');

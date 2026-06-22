@@ -1020,7 +1020,10 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['gender'] = "FEMALE" if int(ic_digits[-1]) % 2 == 0 else "MALE"
             context.user_data['nationality'] = "MALAYSIA"
     else:
-        context.user_data['ic'] = text
+        if not re.match(r"^[a-zA-Z0-9]+$", text):
+            await update.message.reply_text("❌ Wrong format! Passport Number cannot contain symbols. Please enter your Passport Number again:")
+            return MAN_ID_CHECK
+        context.user_data['ic'] = text.upper()
         
     if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
 
