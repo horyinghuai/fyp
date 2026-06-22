@@ -4059,6 +4059,7 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                     .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
                     .filter(
                         models.Patient.ic_passport_number == req.ic,
+                        models.Patient.clinic_id == req.clinic_id, # <--- ADD THIS LINE
                         models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
                         models.ApptStage.stage_name == prev_dose_name,
                         models.ApptStage.status.notin_(['canceled', 'no-show'])
@@ -4293,6 +4294,7 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
                     .join(models.Patient, models.Appointment.patient_id == models.Patient.id)\
                     .filter(
                         models.Patient.ic_passport_number == req.ic,
+                        models.Patient.clinic_id == req.clinic_id, # <--- ADD THIS LINE
                         models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
                         models.ApptStage.stage_name == prev_dose_name,
                         models.ApptStage.status.notin_(['canceled', 'no-show'])
@@ -4486,6 +4488,7 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
         .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
         .filter(
             models.Patient.ic_passport_number == req.ic,
+            models.Patient.clinic_id == req.clinic_id, # <--- ADD THIS LINE
             models.AppointmentVaccine.vaccine_id == vaccine.id,
             models.ApptStage.status != 'canceled'
         ).all()
@@ -4529,6 +4532,7 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
         .join(models.AppointmentVaccine, models.Appointment.id == models.AppointmentVaccine.appointment_id)\
         .filter(
             models.Patient.ic_passport_number == req.ic,
+            models.Patient.clinic_id == req.clinic_id, # <--- ADD THIS LINE
             models.AppointmentVaccine.vaccine_id.in_(same_type_ids),
             models.ApptStage.status != 'canceled'
         )
