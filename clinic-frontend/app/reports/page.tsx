@@ -617,8 +617,11 @@ export default function ReportsPage() {
 
     const doctorCounts = new Map<string, number>();
     appointmentGroups.forEach((a) => {
-      const name = a.doctor || "Unassigned";
-      doctorCounts.set(name, (doctorCounts.get(name) || 0) + 1);
+      // Only calculate workload for scheduled or completed appointments
+      if (a.latestStatus === "scheduled" || a.latestStatus === "completed") {
+        const name = a.doctor || "Unassigned";
+        doctorCounts.set(name, (doctorCounts.get(name) || 0) + 1);
+      }
     });
 
     const doctorWorkload: ChartItem[] = [...doctorCounts.entries()]
