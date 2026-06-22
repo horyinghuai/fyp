@@ -141,13 +141,17 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
     .join('|');
 
   useEffect(() => {
+    let ignore = false; // guards against out-of-order async responses (race condition)
+
     if ((isNewBooking || isEditingEvent) && editForm.patient_ic && editForm.service) {
-        if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) return;
+        if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) {
+            return () => { ignore = true; };
+        }
 
         // Clear stale recommendation while dose is being determined (prevents old suggestion showing)
         if (editForm.service === 'Vaccine' && editForm.dose === 'Calculating...') {
             setAiRec(null);
-            return;
+            return () => { ignore = true; };
         }
 
         setIsLoadingContext(true);
@@ -169,15 +173,17 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                 doctor_ic: editForm.doctor_ic || null,
                 view_start_date: effectiveStart,
                 view_days: 42,
-                manual_dates: manualDates  // FIX: pass external clinic dates to date picker
+                manual_dates: manualDates  // pass external clinic dates to date picker
             })
         }).then(r => r.json()).then(data => {
+            if (ignore) return;   // a newer selection superseded this request
             setAgentContext(data);
             setIsLoadingContext(false);
             if (isNewBooking && data.doctors && data.doctors.length > 0 && (!editForm.doctor_ic || editForm.doctor_ic === 'ANY')) {
                 setEditForm(prev => ({...prev, doctor_ic: data.doctors[0].ic}));
             }
         }).catch(err => {
+            if (ignore) return;
             console.error('Failed to load scheduling context:', err);
             setIsLoadingContext(false);
         });
@@ -191,23 +197,35 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                     base_date: (isEditingEvent && minEditDateRef.current > moment().format("YYYY-MM-DD"))
                         ? minEditDateRef.current
                         : moment().format("YYYY-MM-DD"),
-                    doctor_pref: editForm.doctor_ic || 'ANY',
+                    // Always evaluate ALL doctors so the backend picks the lowest future workload.
+                    // (Sending editForm.doctor_ic passed an IC where the backend expects a NAME,
+                    //  which returned "no doctors found" and hid the suggestion box.)
+                    doctor_pref: 'ANY',
                     duration: editForm.service === 'Vaccine' ? 15 : 30,
                     service_type: editForm.service,
                     vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
                     dose: editForm.dose,
                     ic: editForm.patient_ic,
-                    manual_dates: manualDates  // FIX: pass external clinic dates
+                    manual_dates: manualDates  // pass external clinic dates
                 })
             }).then(r => r.json()).then(data => {
+                if (ignore) return;          // ignore stale response from a previous vaccine/dose
                 if (!data.error) setAiRec(data);
-            }).catch(err => console.error('Failed to load AI recommendations:', err));
+                else setAiRec(null);         // clear so a stale recommendation never lingers
+            }).catch(err => {
+                if (ignore) return;
+                console.error('Failed to load AI recommendations:', err);
+                setAiRec(null);
+            });
         } else {
             setAiRec(null);
         }
 
+        return () => { ignore = true; };
+
     } else {
         setAgentContext(null); setAiRec(null); setIsLoadingContext(false);
+        return () => { ignore = true; };
     }
   }, [isNewBooking, isEditingEvent, isSystemGenerated, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear, minEditDate, manualDatesKey]);
 
