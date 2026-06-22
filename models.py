@@ -9,7 +9,7 @@ class Clinic(Base):
     __tablename__ = "clinics"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
-    registration_number = Column(String(100))
+    registration_number = Column(String(100), unique=True)
     address = Column(String)
     contact_number = Column(String(20))
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -59,7 +59,8 @@ class Patient(Base):
     phone = Column(String(20))
     address = Column(String) 
     gender = Column(String(10)) 
-    nationality = Column(String(50)) 
+    nationality = Column(String(50))
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     __table_args__ = (
         UniqueConstraint('ic_passport_number', 'clinic_id', name='uq_patient_ic_clinic'),
@@ -71,7 +72,7 @@ class Appointment(Base):
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False) 
     
-    doctor_ic = Column(String(20), ForeignKey("doctors.ic_passport_number"), nullable=True) 
+    doctor_ic = Column(String(20), ForeignKey("doctors.ic_passport_number", ondelete="SET NULL"), nullable=True) 
     appt_type = Column("type", String(50)) 
     total_stages = Column(Integer, default=1)
     general_notes = Column(String(255), nullable=True)
@@ -187,8 +188,8 @@ class ChatTemplate(Base):
 
 class ExternalVaccineRecord(Base):
     __tablename__ = "external_vaccine_records"
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    patient_ic = Column(String, index=True)
-    vaccine_id = Column(Integer, ForeignKey("vaccines.id"))
-    dose_name = Column(String)
-    date_taken = Column(DateTime)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False, index=True)
+    vaccine_id = Column(Integer, ForeignKey("vaccines.id", ondelete="CASCADE"), nullable=False)
+    dose_name = Column(String(50), nullable=False)
+    date_taken = Column(DateTime, nullable=False)

@@ -545,6 +545,16 @@ class ValidateVaccineDateReq(BaseModel):
     restart_series: Optional[bool] = False 
 
 # --- Helper Functions ---
+def _clinic_patient_id(db: Session, ic: str, clinic_id: str):
+    """Resolve the patient_id for an IC within ONE specific clinic.
+    external_vaccine_records.patient_id isolates data per clinic, so every
+    external lookup must use this clinic-scoped id (never the raw IC)."""
+    p = db.query(models.Patient.id).filter(
+        models.Patient.ic_passport_number == ic,
+        models.Patient.clinic_id == clinic_id
+    ).first()
+    return p[0] if p else None
+
 def logging_agent(db: Session, clinic_id: str, action: str, reasoning: str):
     log = models.AgentLog(clinic_id=clinic_id, action=action, reasoning=reasoning)
     db.add(log)
@@ -1896,14 +1906,14 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
         if manual_dates and booking.service_type == 'Vaccine' and v_model:
             for d_name, d_date in manual_dates.items():
                 exists = db.query(models.ExternalVaccineRecord).filter_by(
-                    patient_ic=patient.ic_passport_number,
+                    patient_id=patient.id,
                     vaccine_id=v_model.id,
                     dose_name=d_name
                 ).first()
                 if not exists:
                     try:
                         db.add(models.ExternalVaccineRecord(
-                            patient_ic  = patient.ic_passport_number,
+                            patient_id  = patient.id,
                             vaccine_id  = v_model.id,
                             dose_name   = d_name,
                             date_taken  = datetime.strptime(d_date, "%Y-%m-%d")
@@ -2089,14 +2099,14 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
             if patient_for_ext:
                 for d_name, d_date in manual_dates_edit.items():
                     exists = db.query(models.ExternalVaccineRecord).filter_by(
-                        patient_ic=patient_for_ext.ic_passport_number,
+                        patient_id=patient_for_ext.id,
                         vaccine_id=v_model.id,
                         dose_name=d_name
                     ).first()
                     if not exists:
                         try:
                             db.add(models.ExternalVaccineRecord(
-                                patient_ic=patient_for_ext.ic_passport_number,
+                                patient_id=patient_for_ext.id,
                                 vaccine_id=v_model.id,
                                 dose_name=d_name,
                                 date_taken=datetime.strptime(d_date, "%Y-%m-%d")
@@ -3855,18 +3865,18 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
                         except:
                             pass
 
-                # Priority 3: external_vaccine_records (previously saved from a
-                # past booking cycle — covers rebooking scenarios where the
-                # patient has booked before and external records are already in DB)
+                # Priority 3: external_vaccine_records (clinic-isolated via patient_id)
                 if not prev_date:
-                    ext = db.query(models.ExternalVaccineRecord).filter(
-                        models.ExternalVaccineRecord.patient_ic == req.ic,
-                        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids),
-                        models.ExternalVaccineRecord.dose_name == prev_dose_name
-                    ).order_by(models.ExternalVaccineRecord.date_taken.desc()).first()
-                    if ext:
-                        d = ext.date_taken
-                        prev_date = d.date() if isinstance(d, datetime) else d
+                    pid = _clinic_patient_id(db, req.ic, req.clinic_id)
+                    if pid:
+                        ext = db.query(models.ExternalVaccineRecord).filter(
+                            models.ExternalVaccineRecord.patient_id == pid,
+                            models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids),
+                            models.ExternalVaccineRecord.dose_name == prev_dose_name
+                        ).order_by(models.ExternalVaccineRecord.date_taken.desc()).first()
+                        if ext:
+                            d = ext.date_taken
+                            prev_date = d.date() if isinstance(d, datetime) else d
 
                 if prev_date:
                     sched = db.query(models.VaccineDoseSchedule).filter_by(
@@ -4087,16 +4097,18 @@ def get_scheduling_context(req: SchedContextReq, db: Session = Depends(get_db)):
                         except:
                             pass
 
-                # Priority 3: external_vaccine_records (saved from a previous booking cycle)
+                # Priority 3: external_vaccine_records (clinic-isolated via patient_id)
                 if not prev_date:
-                    ext = db.query(models.ExternalVaccineRecord).filter(
-                        models.ExternalVaccineRecord.patient_ic == req.ic,
-                        models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids),
-                        models.ExternalVaccineRecord.dose_name == prev_dose_name
-                    ).order_by(models.ExternalVaccineRecord.date_taken.desc()).first()
-                    if ext:
-                        d = ext.date_taken
-                        prev_date = d.date() if isinstance(d, datetime) else d
+                    pid = _clinic_patient_id(db, req.ic, req.clinic_id)
+                    if pid:
+                        ext = db.query(models.ExternalVaccineRecord).filter(
+                            models.ExternalVaccineRecord.patient_id == pid,
+                            models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids),
+                            models.ExternalVaccineRecord.dose_name == prev_dose_name
+                        ).order_by(models.ExternalVaccineRecord.date_taken.desc()).first()
+                        if ext:
+                            d = ext.date_taken
+                            prev_date = d.date() if isinstance(d, datetime) else d
 
                 if prev_date:
                     sched = db.query(models.VaccineDoseSchedule).filter_by(
@@ -4271,10 +4283,11 @@ def check_vaccine_history(req: VaccineHistoryCheckReq, db: Session = Depends(get
         v.id for v in db.query(models.Vaccine.id)
                         .filter(models.Vaccine.type == vaccine.type).all()
     ]
+    pid = _clinic_patient_id(db, req.ic, req.clinic_id)
     ext_records = db.query(models.ExternalVaccineRecord).filter(
-        models.ExternalVaccineRecord.patient_ic == req.ic,
+        models.ExternalVaccineRecord.patient_id == pid,
         models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
-    ).all()
+    ).all() if pid else []
     for ext in ext_records:
         found_doses.add(ext.dose_name)
 
@@ -4311,11 +4324,12 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
 
     past_stages = past_stages_query.order_by(models.ApptStage.scheduled_time.asc()).all()
         
-    # --- Fetch External Records ---
+    # --- Fetch External Records (clinic-isolated via patient_id) ---
+    pid = _clinic_patient_id(db, req.ic, req.clinic_id)
     external_records = db.query(models.ExternalVaccineRecord).filter(
-        models.ExternalVaccineRecord.patient_ic == req.ic,
+        models.ExternalVaccineRecord.patient_id == pid,
         models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
-    ).all()
+    ).all() if pid else []
 
     completed_doses = []
     scheduled_doses = []
@@ -4462,7 +4476,7 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     return {"is_valid": True, "target_dose": target_name, "min_allowed_date": min_allowed_date_str}
 
 @app.get("/patients/{ic}/next-vaccine-dose/{vaccine_name}")
-def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_db)):
+def get_next_vaccine_dose(ic: str, vaccine_name: str, clinic_id: Optional[str] = None, db: Session = Depends(get_db)):
     from datetime import datetime, timedelta
 
     vaccine = db.query(models.Vaccine).filter(models.Vaccine.name == vaccine_name).first()
@@ -4515,10 +4529,11 @@ def get_next_vaccine_dose(ic: str, vaccine_name: str, db: Session = Depends(get_
          models.AppointmentVaccine.vaccine_id.in_(same_type_ids)
      ).order_by(models.ApptStage.scheduled_time.asc()).all()
 
+    pid = _clinic_patient_id(db, ic, clinic_id) if clinic_id else None
     external_records = db.query(models.ExternalVaccineRecord).filter(
-        models.ExternalVaccineRecord.patient_ic == ic,
+        models.ExternalVaccineRecord.patient_id == pid,
         models.ExternalVaccineRecord.vaccine_id.in_(same_type_ids)
-    ).all()
+    ).all() if pid else []
 
     # Build dose_map: dose_num -> most recent {status, date, vaccine_id}
     dose_map: dict = {}

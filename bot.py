@@ -1482,9 +1482,10 @@ async def vaccine_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ic = context.user_data.get('ic')
     if ic:
         agent = None
+        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
         async with httpx.AsyncClient() as client:
             try:
-                res = await client.get(f"{API_BASE}/patients/{ic}/next-vaccine-dose/{vaccine_name}", timeout=5.0)
+                res = await client.get(f"{API_BASE}/patients/{ic}/next-vaccine-dose/{vaccine_name}?clinic_id={active_cid}", timeout=5.0)
                 if res.status_code == 200:
                     agent = res.json()
             except Exception as e:

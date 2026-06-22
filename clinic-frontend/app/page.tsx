@@ -1381,7 +1381,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
 
                                         if (val && tempIc) {
                                             try {
-                                                const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}`);
+                                                const res = await fetch(`http://127.0.0.1:8000/patients/${tempIc}/next-vaccine-dose/${encodeURIComponent(val)}?clinic_id=${activeClinicId}`);
                                                 if (res.ok) {
                                                     const data = await res.json();
                                                     if (data.is_brand_switch) {
