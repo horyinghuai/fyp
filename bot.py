@@ -1251,7 +1251,8 @@ async def man_nat_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def man_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone_input = clean_bot_username(update.message.text).replace(' ', '')
     
-    if context.user_data.get('is_malaysian'):
+    # Check if they are Malaysian OR if a non-Malaysian enters a Malaysian format (+60 or 01)
+    if context.user_data.get('is_malaysian') or phone_input.startswith('+60') or phone_input.startswith('01'):
         clean_digits = re.sub(r'\D', '', phone_input)
         if clean_digits.startswith('60'):
             clean_digits = clean_digits[2:]
