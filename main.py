@@ -4148,16 +4148,13 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
             key = (dic, date_key)
             daily_workload[key] = daily_workload.get(key, 0) + 1
 
-    # FIX: Sort doctors by total workload ASCENDING so least-busy doctor is
-    # always considered first — guarantees recommendation matches star rating
-    sorted_doctors = sorted(doctors, key=lambda d: workloads[d.ic_passport_number])
+    # --- Build available slots for EVERY candidate doctor ---
+    # We must look at all doctors who actually have an open slot before deciding
+    # who is least busy. Otherwise a lower-workload doctor with no availability in
+    # the window is never compared, and the loop falls through to a busier doctor.
+    doctor_slots_map: dict = {}   # doc_ic -> sorted list of that doctor's open slots
 
-    # --- Generate and collect slots for each doctor in workload order ---
-    best = None
-    alts = []
-    seen_displays: set = set()
-
-    for doc in sorted_doctors:
+    for doc in doctors:
         doc_slots = []
 
         for i in range(8):
@@ -4179,9 +4176,6 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
 
                 while t + timedelta(minutes=req.duration) <= end_t:
                     if t > datetime.now() and t >= earliest_allowed_dt:
-                        # FIX: Range-based conflict check instead of exact time match.
-                        # Catches appointments that START within this slot's window,
-                        # preventing full slots (like 9:15am) from being suggested.
                         slot_end = t + timedelta(minutes=req.duration)
                         conflict = db.query(models.ApptStage).join(models.Appointment).filter(
                             models.Appointment.doctor_ic == doc.ic_passport_number,
@@ -4206,28 +4200,55 @@ def recommend_slots(req: RecommendSlotReq, db: Session = Depends(get_db)):
 
                     t += timedelta(minutes=req.duration)
 
-        # Sort this doctor's slots: least-busy day first, then earliest time
-        doc_slots.sort(key=lambda x: (x["day_load"], x["t_val"]))
+        if doc_slots:
+            # least-busy day first, then earliest time
+            doc_slots.sort(key=lambda x: (x["day_load"], x["t_val"]))
+            doctor_slots_map[doc.ic_passport_number] = doc_slots
 
-        # First slot from least-workload doctor = recommendation
-        # First slots from subsequent doctors = alternatives
-        for slot in doc_slots:
-            if slot["display"] not in seen_displays:
-                seen_displays.add(slot["display"])
-                if best is None:
-                    best = slot
-                elif len(alts) < 3:
-                    alts.append(slot)
+    # --- Pick the recommended doctor ---
+    # Among ONLY the doctors who have an open slot, choose the one with the lowest
+    # total future workload. Ties broken deterministically by IC so the same request
+    # always returns the same doctor (previously a tie fell back to DB row order,
+    # which could return the busier doctor).
+    available_ics = sorted(
+        doctor_slots_map.keys(),
+        key=lambda ic: (workloads[ic], ic)
+    )
 
-        if best and len(alts) >= 3:
-            break
-
-    if not best:
+    if not available_ics:
         return {"error": "No available slots within the valid timeframe.", "min_allowed_date": earliest_allowed_dt.strftime("%Y-%m-%d")}
 
+    chosen_ic = available_ics[0]
+    best = doctor_slots_map[chosen_ic][0]
+
+    # --- Build up to 3 alternatives ---
+    # Chosen doctor's remaining slots first, then other doctors in workload order.
+    # De-dupe on doctor + date + time (the display string omits the doctor, so two
+    # doctors free at the same time would otherwise collide and one be dropped).
+    alts = []
+    seen = {(best["doc_ic"], best["display"])}
+    for ic in available_ics:
+        for slot in doctor_slots_map[ic]:
+            if len(alts) >= 3:
+                break
+            key = (slot["doc_ic"], slot["display"])
+            if key not in seen:
+                seen.add(key)
+                alts.append(slot)
+        if len(alts) >= 3:
+            break
+
+    # --- Log the full workload comparison so the decision is auditable ---
+    workload_summary = ", ".join(
+        f"{d.name} (workload={workloads[d.ic_passport_number]}"
+        f"{'' if d.ic_passport_number in doctor_slots_map else ', no availability'})"
+        for d in sorted(doctors, key=lambda d: (workloads[d.ic_passport_number], d.ic_passport_number))
+    )
     log_reasoning = (
-        f"Recommended {best['doctor']} on {best['date_str']} at {best['formatted_time']}. "
-        f"Total future workload: {workloads[best['doc_ic']]}. "
+        f"Recommended {best['doctor']} on {best['date_str']} at {best['formatted_time']} "
+        f"(future workload {workloads[best['doc_ic']]}). "
+        f"Selected as the lowest-workload doctor that has an open slot. "
+        f"Workload comparison: [{workload_summary}]. "
         f"Alternatives generated: {len(alts)}."
     )
     logging_agent(db, req.clinic_id, "Scheduling Recommendation", log_reasoning)
