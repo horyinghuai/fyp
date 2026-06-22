@@ -239,7 +239,33 @@ def extract_ic_info(image_path: str):
     reader = get_ocr_reader()
     results = reader.readtext(image_path)
     if not results: return None, None, None, None, None
-    results = sorted(results, key=lambda r: r[0][0][1])
+    
+    # 1. SPATIAL SORTING: Group elements into horizontal lines (15px tolerance)
+    # This prevents text from the right side of the IC from mixing into the left side.
+    results.sort(key=lambda r: r[0][0][1])
+    grouped_results = []
+    current_line = []
+    current_y = None
+    
+    for r in results:
+        y = r[0][0][1]
+        if current_y is None:
+            current_y = y
+            current_line.append(r)
+        elif abs(y - current_y) <= 15:  
+            current_line.append(r)
+        else:
+            current_line.sort(key=lambda item: item[0][0][0])
+            grouped_results.extend(current_line)
+            current_line = [r]
+            current_y = y
+            
+    if current_line:
+        current_line.sort(key=lambda item: item[0][0][0])
+        grouped_results.extend(current_line)
+        
+    results = grouped_results
+    
     ic_num = None
     ic_index = -1
     ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
@@ -261,26 +287,48 @@ def extract_ic_info(image_path: str):
     
     name_lines = []
     address_start_idx = ic_index + 1
-    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA"]
     
+    # Added "MALAYSIA" to prevent the bottom-most label from bleeding into the address
+    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA", "MALAYSIA"]
+    
+    # 2. NAME EXTRACTION: Improved to skip stop words without breaking the loop
     for i in range(ic_index + 1, min(ic_index + 4, len(cleaned_results))):
         text = cleaned_results[i][1]
-        if re.search(r'\d', text) or any(sw in text for sw in stop_words):
+        if any(sw in text for sw in stop_words): 
+            continue 
+            
+        if re.search(r'\d', text):
+            address_start_idx = i
             break
-        name_lines.append(re.sub(r'[^A-Z\s]', '', text).strip())
+            
+        name_lines.append(re.sub(r'[^A-Z\s\@\']', '', text).strip())
         address_start_idx = i + 1
         
     name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
 
-    address_lines = []
-    for i in range(address_start_idx, min(address_start_idx + 6, len(cleaned_results))):
-        text = cleaned_results[i][1]
-        if any(sw in text for sw in stop_words): continue
-        address_lines.append(text)
-        if re.search(r'\d{5}', text): 
-            break
+    # 3. ADDRESS EXTRACTION: Allow 1 extra line after the postcode to grab the State
+    address_elements = []
+    postcode_found = False
+    lines_after_postcode = 0
+    
+    for i in range(address_start_idx, min(address_start_idx + 8, len(cleaned_results))):
+        bbox, text, prob = cleaned_results[i]
+        if any(sw in text for sw in stop_words): 
+            continue
             
-    address = ", ".join(address_lines) if address_lines else "UNKNOWN"
+        address_elements.append((bbox, text))
+        
+        if re.search(r'\b\d{5}\b', text): 
+            postcode_found = True
+            
+        if postcode_found:
+            lines_after_postcode += 1
+            if lines_after_postcode >= 2:
+                break
+
+    address_elements.sort(key=lambda item: item[0][0][1])
+    
+    address = ", ".join([item[1] for item in address_elements]) if address_elements else "UNKNOWN"
     return name, ic_num, address, gender, nationality
 
 def clean_bot_username(text: str) -> str:
