@@ -49,6 +49,7 @@ export default function PatientsPage() {
   const [patients, setPatients] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [nameSort, setNameSort] = useState<'asc' | 'desc'>('asc');
   
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState<any>(null);
@@ -693,6 +694,14 @@ export default function PatientsPage() {
     }
   };
 
+  // Filter by search, then sort by name (A-Z or Z-A)
+  const visiblePatients = patients
+    .filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.ic_passport_number.includes(search))
+    .sort((a, b) => {
+      const cmp = (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+      return nameSort === 'asc' ? cmp : -cmp;
+    });
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="flex justify-between items-center mb-8">
@@ -707,17 +716,27 @@ export default function PatientsPage() {
         <table className="w-full text-left border-collapse">
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
-              <th className="p-4 font-semibold text-slate-600">Patient Details</th>
+              <th className="p-4 font-semibold text-slate-600">
+              <button
+                  type="button"
+                  onClick={() => setNameSort(prev => (prev === 'asc' ? 'desc' : 'asc'))}
+                  className="flex items-center gap-1 font-semibold text-slate-600 hover:text-blue-600"
+                  title={`Sort by name (${nameSort === 'asc' ? 'A → Z' : 'Z → A'})`}
+              >
+                  Patient Details
+                  <span className="text-xs">{nameSort === 'asc' ? '▲' : '▼'}</span>
+              </button>
+              </th>
               <th className="p-4 font-semibold text-slate-600">IC / Passport</th>
               <th className="p-4 font-semibold text-slate-600">Contact</th>
               <th className="p-4 font-semibold text-slate-600 text-center">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {patients.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.ic_passport_number.includes(search)).length === 0 && !isLoading && (
+            {visiblePatients.length === 0 && !isLoading && (
                 <tr key="empty-patients"><td colSpan={4} className="p-8 text-center text-slate-500 font-medium">[No patient found]</td></tr>
             )}
-            {patients.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.ic_passport_number.includes(search)).map((p, i) => (
+            {visiblePatients.map((p, i) => (
               <tr key={p.id || `patient-${i}`} className={`border-b border-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                 <td className="p-4">
                   <div className="font-bold text-slate-800">{p.name}</div>
