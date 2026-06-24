@@ -234,13 +234,20 @@ async def _send_single_reminder(db, stage, appt, patient):
             print(f"Reminder Telegram send failed: {e}")
     elif patient.phone:
         try:
-            ok = await send_sms_async(patient.phone, summary)
+            bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
+            contact_number = clinic.contact_number if clinic else None
+            contact_suffix = f" or {contact_number}" if contact_number else ""
+            sms_summary = summary.replace(
+                "If there is any modification needed, just type /start and choose 2. Check Appointment Details.",
+                f"If you have any inquiries, you can contact us on Telegram: https://t.me/{bot_username}{contact_suffix}"
+            )
+            ok = await send_sms_async(patient.phone, sms_summary)
             if ok:
                 sent = True
                 db.add(models.ChatMessage(
                     clinic_id=patient.clinic_id, phone=patient.phone,
                     telegram_id=None, channel='sms',
-                    message=None, reply=summary, status='replied'
+                    message=None, reply=sms_summary, status='replied'
                 ))
         except Exception as e:
             print(f"Reminder SMS send failed: {e}")
@@ -3743,7 +3750,10 @@ async def new_chat(req: NewChatReq, db: Session = Depends(get_db)):
 
     if channel == 'sms':
         bot_username = os.getenv("BOT_USERNAME", "aicas_clinic_bot")
-        final_message += f"\n\n[You can also contact us on Telegram: https://t.me/{bot_username}]"
+        clinic = db.query(models.Clinic).filter_by(id=req.clinic_id).first()
+        contact_number = clinic.contact_number if clinic else None
+        contact_suffix = f" or {contact_number}" if contact_number else ""
+        final_message += f"\n\nIf you have any inquiries, you can contact us on Telegram: https://t.me/{bot_username}{contact_suffix}"
 
     # Database store occurs BEFORE sending the message
     new_msg = models.ChatMessage(
