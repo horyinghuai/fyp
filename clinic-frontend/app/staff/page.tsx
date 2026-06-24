@@ -80,17 +80,19 @@ export default function StaffPage() {
 
         if (!form.name || !form.email) return setStatusMsg({ type: 'error', text: 'All identity fields are required.' });
         
-        let finalIC = form.ic.toUpperCase();
-        if (!finalIC) return setStatusMsg({ type: 'error', text: 'IC / Passport Number is required.' });
+        let finalIC = '';
 
         if (form.is_my) {
             const [p1, p2, p3] = icParts;
+            if (!p1 && !p2 && !p3) return setStatusMsg({ type: 'error', text: 'IC / Passport Number is required.' });
             if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) return setStatusMsg({ type: 'error', text: 'IC must be complete (12 digits).' });
             if (p1 === '000000' || p2 === '00' || p3 === '0000') return setStatusMsg({ type: 'error', text: 'Invalid IC format. 000000, 00, or 0000 are not allowed.' });
             const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
             if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return setStatusMsg({ type: 'error', text: 'Invalid date format in IC.' });
             finalIC = `${p1}-${p2}-${p3}`;
         } else {
+            finalIC = form.ic.toUpperCase();
+            if (!finalIC) return setStatusMsg({ type: 'error', text: 'IC / Passport Number is required.' });
             if (!/^[a-zA-Z0-9]+$/.test(finalIC)) return setStatusMsg({ type: 'error', text: 'Passport Number cannot contain symbols.' });
         }
         
