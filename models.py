@@ -5,6 +5,11 @@ import uuid
 import datetime
 from database import Base
 
+MALAYSIA_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+def malaysia_now():
+    return datetime.datetime.now(MALAYSIA_TZ).replace(tzinfo=None)
+
 class Clinic(Base):
     __tablename__ = "clinics"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -12,7 +17,7 @@ class Clinic(Base):
     registration_number = Column(String(100), unique=True)
     address = Column(String)
     contact_number = Column(String(20))
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=malaysia_now)
 
 class User(Base):
     __tablename__ = "users"
@@ -20,7 +25,7 @@ class User(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=True) 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=malaysia_now)
 
 class ClinicStaff(Base):
     __tablename__ = "clinic_staff"
@@ -31,7 +36,7 @@ class ClinicStaff(Base):
     assigned_by = Column(String(20), ForeignKey("users.ic_passport_number", ondelete="SET NULL", onupdate="CASCADE"), nullable=True)
     permissions = Column(String)
     resign_reason = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=malaysia_now)
 
 class VerificationCode(Base):
     __tablename__ = "verification_code"
@@ -40,7 +45,7 @@ class VerificationCode(Base):
     code_hash = Column(String(255), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     used = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=malaysia_now)
 
 class Doctor(Base):
     __tablename__ = "doctors"
@@ -60,7 +65,7 @@ class Patient(Base):
     address = Column(String) 
     gender = Column(String(10)) 
     nationality = Column(String(50))
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=malaysia_now)
     
     __table_args__ = (
         UniqueConstraint('ic_passport_number', 'clinic_id', name='uq_patient_ic_clinic'),
@@ -98,7 +103,7 @@ class AgentLog(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"))
     action = Column(String(255))
     reasoning = Column(String)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=malaysia_now)
 
 class BloodTest(Base):
     __tablename__ = "blood_tests"
@@ -120,7 +125,7 @@ class ChatMessage(Base):
     message = Column(String)
     reply = Column(String, nullable=True)
     telegram_message_id = Column(BigInteger, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=malaysia_now)
     status = Column(String(20), default='unread')
 
 class Vaccine(Base):

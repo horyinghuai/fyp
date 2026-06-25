@@ -665,7 +665,7 @@ def check_and_update_user(db: Session, ic: str, name: str, email: str, force_ema
                 temp_pwd = generate_temp_password()
                 hashed_pwd = get_password_hash(temp_pwd)
                 user.password_hash = hashed_pwd
-                db.add(models.VerificationCode(ic_passport_number=ic, code_hash=hashed_pwd, expires_at=datetime.utcnow() + timedelta(days=7)))
+                db.add(models.VerificationCode(ic_passport_number=ic, code_hash=hashed_pwd, expires_at=models.malaysia_now() + timedelta(days=7)))
         user.name = name.upper()
         db.flush()
     else:
@@ -683,7 +683,7 @@ def check_and_update_user(db: Session, ic: str, name: str, email: str, force_ema
         )
         db.add(user)
         db.flush()
-        db.add(models.VerificationCode(ic_passport_number=ic, code_hash=hashed_pwd, expires_at=datetime.utcnow() + timedelta(days=7)))
+        db.add(models.VerificationCode(ic_passport_number=ic, code_hash=hashed_pwd, expires_at=models.malaysia_now() + timedelta(days=7)))
     return user, temp_pwd
 
 # --- PUBLIC ENDPOINTS ---
@@ -847,7 +847,7 @@ async def forgot_password(req: ForgotPasswordReq, db: Session = Depends(get_db))
     v_code = models.VerificationCode(
         ic_passport_number=user.ic_passport_number,
         code_hash=hashed_code,
-        expires_at=datetime.utcnow() + timedelta(minutes=15)
+        expires_at=models.malaysia_now() + timedelta(minutes=15)
     )
     db.add(v_code)
     db.commit()
@@ -901,7 +901,7 @@ def verify_code(req: VerifyCodeReq, db: Session = Depends(get_db)):
     v_code = db.query(models.VerificationCode).filter(
         models.VerificationCode.ic_passport_number == user.ic_passport_number,
         models.VerificationCode.used == False,
-        models.VerificationCode.expires_at > datetime.utcnow()
+        models.VerificationCode.expires_at > models.malaysia_now()
     ).order_by(models.VerificationCode.created_at.desc()).first()
     
     if not v_code or not verify_password(req.code, v_code.code_hash):
@@ -918,7 +918,7 @@ def reset_password(req: ResetPasswordReq, db: Session = Depends(get_db)):
     v_code = db.query(models.VerificationCode).filter(
         models.VerificationCode.ic_passport_number == user.ic_passport_number,
         models.VerificationCode.used == False,
-        models.VerificationCode.expires_at > datetime.utcnow()
+        models.VerificationCode.expires_at > models.malaysia_now()
     ).order_by(models.VerificationCode.created_at.desc()).first()
     
     if not v_code or not verify_password(req.code, v_code.code_hash):
@@ -1190,7 +1190,7 @@ async def request_email_change(req: RequestEmailChangeReq, db: Session = Depends
         v_code = models.VerificationCode(
             ic_passport_number=user.ic_passport_number, 
             code_hash=hashed_code, 
-            expires_at=datetime.utcnow() + timedelta(minutes=15)
+            expires_at=models.malaysia_now() + timedelta(minutes=15)
         )
         db.add(v_code)
         db.commit()
@@ -1235,7 +1235,7 @@ def verify_email_change(req: VerifyEmailChangeReq, db: Session = Depends(get_db)
         v_code = db.query(models.VerificationCode).filter(
             models.VerificationCode.ic_passport_number == user.ic_passport_number,
             models.VerificationCode.used == False,
-            models.VerificationCode.expires_at > datetime.utcnow()
+            models.VerificationCode.expires_at > models.malaysia_now()
         ).order_by(models.VerificationCode.created_at.desc()).first()
         
         if not v_code or not verify_password(req.code, v_code.code_hash):
