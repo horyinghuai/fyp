@@ -65,6 +65,9 @@ export default function BloodTestsPage() {
       return;
     }
 
+    const actionText = editingBt ? "save these changes" : "add this new blood test";
+    if (!window.confirm(`Are you sure you want to ${actionText}?`)) return;
+
     const payload = {
       clinic_id: clinicId,
       name: formData.name.trim(),
