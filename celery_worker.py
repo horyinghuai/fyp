@@ -44,10 +44,11 @@ def send_sms_sync(to_phone: str, message: str):
                     "mocean-from": "AICAS",
                     "mocean-text": message
                 },
-                timeout=5.0
+                timeout=15.0
             )
-            if res.status_code == 200: return True
-        except: pass
+            if 200 <= res.status_code < 300: return True
+        except Exception as e:
+            logging.error(f"MoceanAPI SMS failed: {e}")
 
     # 2. Try Plivo (Backup)
     if plivo_auth_id and plivo_auth_token:
@@ -56,10 +57,11 @@ def send_sms_sync(to_phone: str, message: str):
                 f"https://api.plivo.com/v1/Account/{plivo_auth_id}/Message/",
                 auth=(plivo_auth_id, plivo_auth_token),
                 json={"src": plivo_from, "dst": clean_phone, "text": message},
-                timeout=5.0
+                timeout=15.0
             )
-            if res.status_code in [200, 202]: return True
-        except: pass
+            if 200 <= res.status_code < 300: return True
+        except Exception as e:
+            logging.error(f"Plivo SMS failed: {e}")
         
     return False
 
@@ -123,6 +125,18 @@ def run_reminder_agent():
                 success = send_sms_sync(patient.phone, msg.replace("*", ""))
 
             if success:
+                stage.reminder_sent = True
+                # Record the reminder in chat_messages (so it shows in the dashboard
+                # and is not treated as an un-sent reminder)
+                db.add(models.ChatMessage(
+                    clinic_id=appt.clinic_id,
+                    telegram_id=patient.telegram_id if patient.telegram_id else None,
+                    phone=patient.phone,
+                    channel='telegram' if patient.telegram_id else 'sms',
+                    message=None,
+                    reply=msg if patient.telegram_id else msg.replace("*", ""),
+                    status='replied'
+                ))
                 log = models.AgentLog(
                     clinic_id=appt.clinic_id, 
                     action="Reminder Sent", 

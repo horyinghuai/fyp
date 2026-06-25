@@ -103,7 +103,7 @@ class AgentLog(Base):
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"))
     action = Column(String(255))
     reasoning = Column(String)
-    created_at = Column(DateTime, default=malaysia_now)
+    timestamp = Column(DateTime, default=malaysia_now)
 
 class BloodTest(Base):
     __tablename__ = "blood_tests"

@@ -41,9 +41,9 @@ async def send_sms_async(to_phone: str, message: str):
                         "mocean-from": "AICAS",
                         "mocean-text": message
                     },
-                    timeout=5.0
+                    timeout=15.0
                 )
-                if res.status_code == 200:
+                if 200 <= res.status_code < 300:
                     return True
         except Exception as e:
             print(f"MoceanAPI failed: {e}")
@@ -56,9 +56,9 @@ async def send_sms_async(to_phone: str, message: str):
                     f"https://api.plivo.com/v1/Account/{plivo_auth_id}/Message/",
                     auth=(plivo_auth_id, plivo_auth_token),
                     json={"src": plivo_from, "dst": clean_phone, "text": message},
-                    timeout=5.0
+                    timeout=15.0
                 )
-                if res.status_code in [200, 202]:
+                if 200 <= res.status_code < 300:
                     return True
         except Exception as e:
             print(f"Plivo failed: {e}")
