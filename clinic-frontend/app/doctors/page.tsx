@@ -156,6 +156,9 @@ export default function DoctorsPage() {
             ? (form.resign_reason === 'Others' ? form.custom_resign_reason : form.resign_reason)
             : null;
 
+        const actionText = isEditing === 'new' ? "register this new doctor" : "save these changes";
+        if (!window.confirm(`Are you sure you want to ${actionText}?`)) return;
+
         const payload = {
             clinic_id: clinicId,
             ic: finalIC,
