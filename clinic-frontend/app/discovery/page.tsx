@@ -74,7 +74,7 @@ export default function DiscoveryPage() {
                     </div>
                 ) : filteredClinics.length === 0 ? (
                     <div className="bg-white p-12 rounded-2xl shadow-xl text-center">
-                        <Info size="{48}" className="mx-auto text-slate-300 mb-4"/>
+                        <Info className="w-6 h-6 mx-auto text-slate-300 mb-3" />
                         <h2 className="text-2xl font-bold text-slate-800 mb-2">No clinics found</h2>
                         <p className="text-slate-500">We couldn't find any clinic matching "{searchQuery}". Try a different location.</p>
                     </div>
