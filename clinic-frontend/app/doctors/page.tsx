@@ -14,6 +14,13 @@ export default function DoctorsPage() {
         ic: '', name: '', gender: 'MALE', 
         status: 'active', resign_reason: '', custom_resign_reason: '', is_my: true
     });
+
+    const [icParts, setIcParts] = useState(['', '', '']);
+    const handleICPartChange = (index: number, val: string) => {
+        const clean = val.replace(/\D/g, '');
+        const newParts = [...icParts]; newParts[index] = clean;
+        setIcParts(newParts);
+    };
     
     const PRESET_SPECIALIZATIONS = ["General Practitioner", "Pediatrician", "Internal Medicine", "Dermatologist", "Cardiologist", "Gynecologist", "Orthopedic"];
     const [selectedSpecs, setSelectedSpecs] = useState<string[]>([]);
@@ -76,6 +83,13 @@ export default function DoctorsPage() {
 
         const isMy = /^\d{6}-\d{2}-\d{4}$/.test(doc.ic_passport_number) || doc.ic_passport_number.replace(/\D/g, '').length === 12;
 
+        if (isMy) {
+            const clean = doc.ic_passport_number.replace(/\D/g, '');
+            setIcParts([clean.substring(0,6), clean.substring(6,8), clean.substring(8,12)]);
+        } else {
+            setIcParts(['', '', '']);
+        }
+
         setForm({
             ic: doc.ic_passport_number,
             name: doc.name,
@@ -112,15 +126,19 @@ export default function DoctorsPage() {
     const handleSave = async (e: React.FormEvent) => {
         e.preventDefault();
         
-        let finalIC = form.ic.toUpperCase();
-        if (!finalIC) return alert("IC / Passport Number is required.");
+        let finalIC = '';
 
         if (form.is_my) {
-            if (finalIC.replace(/\D/g, '').length !== 12) {
-                return alert('IC must be exactly 12 digits for Malaysians.');
-            }
-            finalIC = formatIC(finalIC);
+            const [p1, p2, p3] = icParts;
+            if (!p1 && !p2 && !p3) return alert('IC / Passport Number is required.');
+            if (p1.length !== 6 || p2.length !== 2 || p3.length !== 4) return alert('IC must be exactly 12 digits for Malaysians.');
+            if (p1 === '000000' || p2 === '00' || p3 === '0000') return alert('Invalid IC format. 000000, 00, or 0000 are not allowed.');
+            const mm = parseInt(p1.substring(2,4)), dd = parseInt(p1.substring(4,6));
+            if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return alert('Invalid date format in IC.');
+            finalIC = `${p1}-${p2}-${p3}`;
         } else {
+            finalIC = form.ic.toUpperCase();
+            if (!finalIC) return alert("IC / Passport Number is required.");
             if (!/^[a-zA-Z0-9]+$/.test(finalIC)) return alert("Passport Number cannot contain symbols.");
         }
 
@@ -255,7 +273,7 @@ export default function DoctorsPage() {
                     <p className="text-slate-500 mt-1 text-sm">Manage doctors, specializations, and clinic schedules.</p>
                 </div>
                 {!isEditing && (
-                    <button onClick={() => { setIsEditing('new'); setForm({ic:'', name:'', gender:'MALE', status: 'active', resign_reason:'', custom_resign_reason:'', is_my: true}); setSelectedSpecs([]); setIsOthersSpec(false); setCustomSpec(''); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
+                    <button onClick={() => { setIsEditing('new'); setForm({ic:'', name:'', gender:'MALE', status: 'active', resign_reason:'', custom_resign_reason:'', is_my: true}); setSelectedSpecs([]); setIsOthersSpec(false); setCustomSpec(''); setIcParts(['','','']); }} className="bg-blue-600 text-white font-bold px-6 py-2.5 rounded-xl hover:bg-blue-700 transition shadow-sm flex items-center gap-2">
                         <Plus size={18} /> Add Doctor
                     </button>
                 )}
@@ -273,14 +291,26 @@ export default function DoctorsPage() {
                                 <div className="col-span-1 md:col-span-2 flex gap-2">
                                     <div className="w-1/3">
                                         <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Nationality</label>
-                                        <select value={form.is_my ? "my" : "non_my"} onChange={e => setForm({...form, is_my: e.target.value === "my", ic: ''})} className="w-full p-3 border rounded-xl outline-none bg-slate-50 font-medium text-slate-700 disabled:opacity-50" disabled={isEditing !== 'new'}>
+                                        <select value={form.is_my ? "my" : "non_my"} onChange={e => { setForm({...form, is_my: e.target.value === "my", ic: ''}); setIcParts(['','','']); }} className="w-full p-3 border rounded-xl outline-none bg-slate-50 font-medium text-slate-700 disabled:opacity-50" disabled={isEditing !== 'new'}>
                                             <option value="my">Malaysian</option>
                                             <option value="non_my">Non-Malaysian</option>
                                         </select>
                                     </div>
                                     <div className="flex-1">
                                         <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">{form.is_my ? "IC Number" : "Passport Number"} <span className="text-red-500">*</span></label>
-                                        <input type="text" placeholder={form.is_my ? "IC Number *" : "Passport Number *"} required disabled={isEditing !== 'new'} value={form.ic} onChange={e => setForm({...form, ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-mono disabled:opacity-50" />
+                                        
+                                        {form.is_my ? (
+                                            <div className={`flex gap-2 w-full items-center bg-slate-50 border rounded-xl px-2 ${isEditing === 'new' ? 'focus-within:ring-2 focus-within:ring-blue-500' : 'opacity-60'}`}>
+                                                <input type="text" placeholder="YYMMDD" maxLength={6} value={icParts[0]} onChange={e => handleICPartChange(0, e.target.value)} disabled={isEditing !== 'new'} className="w-[40%] bg-transparent p-3 outline-none font-mono text-center disabled:opacity-100" />
+                                                <span className="text-slate-400 font-bold">-</span>
+                                                <input type="text" placeholder="XX" maxLength={2} value={icParts[1]} onChange={e => handleICPartChange(1, e.target.value)} disabled={isEditing !== 'new'} className="w-[20%] bg-transparent p-3 outline-none font-mono text-center disabled:opacity-100" />
+                                                <span className="text-slate-400 font-bold">-</span>
+                                                <input type="text" placeholder="XXXX" maxLength={4} value={icParts[2]} onChange={e => handleICPartChange(2, e.target.value)} disabled={isEditing !== 'new'} className="w-[40%] bg-transparent p-3 outline-none font-mono text-center disabled:opacity-100" />
+                                            </div>
+                                        ) : (
+                                            <input type="text" placeholder="Passport Number *" required disabled={isEditing !== 'new'} value={form.ic} onChange={e => setForm({...form, ic: e.target.value})} className="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 uppercase font-mono disabled:opacity-50" />
+                                        )}
+
                                     </div>
                                 </div>
 
