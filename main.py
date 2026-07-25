@@ -3866,7 +3866,7 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
                     if lines_after >= 2: break
             address = ", ".join(address_lines)
 
-    # 3. EasyOCR Fallback (Untuk kamera web PC jika GCP gagal/tiada)
+    # 3. EasyOCR Fallback
     else:
         import easyocr
         import tempfile
