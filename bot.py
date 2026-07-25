@@ -296,46 +296,99 @@ def extract_ic_info(image_path: str):
     address_start_idx = ic_index + 1
     
     # Added "MALAYSIA" to prevent the bottom-most label from bleeding into the address
-    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA", "MALAYSIA"]
+    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA", "MALAYSIA", "MYKAD", "KAD", "PENGENALAN", "IDENTITY", "CARD"]
+    addr_indicators = ["NO ", "NO.", "JALAN", "JLN", "TAMAN", "TMN", "KAMPUNG", "KG ", "LORONG", "PT ", "LOT ", "BLOK", "TINGKAT", "BATU"]
+    states = ["JOHOR", "KEDAH", "KELANTAN", "MELAKA", "NEGERI SEMBILAN", "PAHANG", "PERAK", "PERLIS", "PULAU PINANG", "SABAH", "SARAWAK", "SELANGOR", "TERENGGANU", "KUALA LUMPUR", "LABUAN", "PUTRAJAYA"]
     
-    # 2. NAME EXTRACTION: Improved to skip stop words without breaking the loop
-    for i in range(ic_index + 1, min(ic_index + 4, len(cleaned_results))):
-        text = cleaned_results[i][1]
-        if any(sw in text for sw in stop_words): 
-            continue 
-            
-        if re.search(r'\d', text):
+    # 2. NAME EXTRACTION (Capitalized)
+    address_start_idx = ic_index + 1
+    for i in range(ic_index + 1, min(ic_index + 6, len(cleaned_results))):
+        text = cleaned_results[i][1].upper()
+        
+        if re.match(r'^\d', text) or any(ind in text for ind in addr_indicators):
             address_start_idx = i
-            break
+            break 
             
-        name_lines.append(re.sub(r'[^A-Z\s\@\']', '', text).strip())
+        if any(sw in text for sw in stop_words): 
+            continue
+            
+        clean_name = re.sub(r'[^A-Z\s\@\']', '', text).strip()
+        if clean_name.startswith('D '):
+            clean_name = clean_name[2:].strip()
+            
+        if clean_name and len(clean_name) > 1:
+            name_lines.append(clean_name)
+            
         address_start_idx = i + 1
         
     name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
 
-    # 3. ADDRESS EXTRACTION: Allow 1 extra line after the postcode to grab the State
+    # 3. ADDRESS EXTRACTION (Capitalized and Comma-Separated)
     address_elements = []
-    postcode_found = False
-    lines_after_postcode = 0
     
-    for i in range(address_start_idx, min(address_start_idx + 8, len(cleaned_results))):
+    for i in range(address_start_idx, len(cleaned_results)):
         bbox, text, prob = cleaned_results[i]
-        if any(sw in text for sw in stop_words): 
+        text = text.upper()
+        
+        if any(sw in text for sw in stop_words) or (name and text in name) or re.search(r'\d{4}-\d{2}-\d{4}', text): 
             continue
             
-        address_elements.append((bbox, text))
-        
-        if re.search(r'\b\d{5}\b', text): 
-            postcode_found = True
-            
-        if postcode_found:
-            lines_after_postcode += 1
-            if lines_after_postcode >= 2:
-                break
+        text = re.sub(r'[^A-Z0-9\s,\.\-\/]', '', text).strip()
+        text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text)
+        if not text or len(text) <= 1: 
+            continue
 
-    address_elements.sort(key=lambda item: item[0][0][1])
+        address_elements.append({'bbox': bbox, 'text': text})
+
+    address_lines = []
+    if address_elements:
+        address_elements.sort(key=lambda e: e['bbox'][0][1])
+        curr_line = []
+        curr_y = None
+        postcode_found = False
+        lines_after_postcode = 0
+        
+        for e in address_elements:
+            y = e['bbox'][0][1]
+            if curr_y is None:
+                curr_y = y
+                curr_line.append(e)
+            elif abs(y - curr_y) <= 15:
+                curr_line.append(e)
+            else:
+                curr_line.sort(key=lambda x: x['bbox'][0][0])
+                line_str = " ".join([item['text'] for item in curr_line])
+                address_lines.append(line_str)
+                
+                if postcode_found:
+                    lines_after_postcode += 1
+                    if lines_after_postcode == 1:
+                        prev_line = address_lines[-2] if len(address_lines) >= 2 else ""
+                        if line_str in prev_line or not any(s in line_str for s in states):
+                            address_lines.pop()
+                        break
+                        
+                if re.search(r'\b\d{5}\b', line_str): 
+                    postcode_found = True
+                        
+                curr_line = [e]
+                curr_y = y
+                
+        if curr_line and lines_after_postcode < 2:
+            curr_line.sort(key=lambda x: x['bbox'][0][0])
+            line_str = " ".join([item['text'] for item in curr_line])
+            address_lines.append(line_str)
+            
+            if postcode_found:
+                lines_after_postcode += 1
+                if lines_after_postcode == 1:
+                    prev_line = address_lines[-2] if len(address_lines) >= 2 else ""
+                    if line_str in prev_line or not any(s in line_str for s in states):
+                        address_lines.pop()
+
+    address = ", ".join(address_lines) if address_lines else "UNKNOWN"
+    address = re.sub(r',\s*,', ',', address).strip(', ')
     
-    address = ", ".join([item[1] for item in address_elements]) if address_elements else "UNKNOWN"
     return name, ic_num, address, gender, nationality
 
 def clean_bot_username(text: str) -> str:

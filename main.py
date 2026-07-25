@@ -3806,6 +3806,9 @@ async def pass_to_bot(req: PassToBotReq, db: Session = Depends(get_db)):
 
 @app.post("/admin/ocr-mykad")
 async def process_mykad_ocr(file: UploadFile = File(...)):
+    import os
+    import tempfile
+    
     content = await file.read()
     encoded_image = base64.b64encode(content).decode('utf-8')
     api_key = os.getenv("GOOGLE_VISION_API_KEY")
@@ -3832,11 +3835,15 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
                     if data.get("responses") and "textAnnotations" in data["responses"][0]:
                         extracted_text = data["responses"][0]["textAnnotations"][0]["description"]
 
+    addr_indicators = ["NO ", "NO.", "JALAN", "JLN", "TAMAN", "TMN", "KAMPUNG", "KG ", "LORONG", "PT ", "LOT ", "BLOK", "TINGKAT", "BATU"]
+    states = ["JOHOR", "KEDAH", "KELANTAN", "MELAKA", "NEGERI SEMBILAN", "PAHANG", "PERAK", "PERLIS", "PULAU PINANG", "SABAH", "SARAWAK", "SELANGOR", "TERENGGANU", "KUALA LUMPUR", "LABUAN", "PUTRAJAYA"]
+
     # 2. Jika menggunakan GCP
     if extracted_text:
         lines = [line.strip() for line in extracted_text.split('\n') if line.strip()]
         ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
         ic_index = -1
+        
         for i, line in enumerate(lines):
             match = ic_pattern.search(line)
             if match:
@@ -3848,29 +3855,69 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
                 
         if ic_index != -1:
             potential_name_lines = []
-            for i in range(ic_index + 1, min(ic_index + 4, len(lines))):
-                if re.search(r'\d', lines[i]) or any(sw in lines[i].upper() for sw in ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA"]): continue
-                potential_name_lines.append(re.sub(r'[^A-Z\s]', '', lines[i].upper()).strip())
-            if potential_name_lines: name = potential_name_lines[0]
+            stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA", "BUDDHA", "HINDU", "KRISTIAN", "MYKAD", "KAD", "PENGENALAN", "IDENTITY", "CARD"]
+            
+            # Extract Name (Capitalized)
+            address_start_idx = ic_index + 1
+            for i in range(ic_index + 1, min(ic_index + 6, len(lines))):
+                text_line = lines[i].upper()
                 
+                # Definitively reached the address line
+                if re.match(r'^\d', text_line) or any(ind in text_line for ind in addr_indicators):
+                    address_start_idx = i
+                    break 
+                
+                # Skip noise words, do not break the loop
+                if any(sw in text_line for sw in stop_words):
+                    continue
+                    
+                clean_name = re.sub(r'[^A-Z\s\@\']', '', text_line).strip()
+                if clean_name.startswith('D '):
+                    clean_name = clean_name[2:].strip()
+                    
+                if clean_name and len(clean_name) > 1: 
+                    potential_name_lines.append(clean_name)
+                    
+                address_start_idx = i + 1
+                    
+            name = " ".join(potential_name_lines).strip() if potential_name_lines else "UNKNOWN"
+            
+            # Extract Address (Capitalized and Comma-Separated)
             address_lines = []
             postcode_found = False
             lines_after = 0
-            for i in range(ic_index + 1, len(lines)):
-                text = lines[i]
-                if any(sw in text.upper() for sw in ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", name]): continue
+            
+            for i in range(address_start_idx, len(lines)):
+                text = lines[i].upper()
+                if any(sw in text for sw in stop_words) or (name and text in name) or re.search(r'\d{4}-\d{2}-\d{4}', text): 
+                    continue
+                
+                text = re.sub(r'[^A-Z0-9\s,\.\-\/]', '', text).strip()
+                text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text)
+                
+                if not text or len(text) <= 1: 
+                    continue
+                
                 address_lines.append(text)
-                if re.search(r'\d{5}', text): postcode_found = True
+                
                 if postcode_found:
                     lines_after += 1
-                    if lines_after >= 2: break
+                    # Evaluate the exactly one line allowed after the postcode
+                    if lines_after == 1:
+                        prev_line = address_lines[-2] if len(address_lines) >= 2 else ""
+                        if text in prev_line or not any(s in text for s in states):
+                            address_lines.pop()
+                        break 
+                        
+                if re.search(r'\b\d{5}\b', text): 
+                    postcode_found = True
+                        
             address = ", ".join(address_lines)
+            address = re.sub(r',\s*,', ',', address).strip(', ')
 
-    # 3. EasyOCR Fallback
+    # 3. EasyOCR Fallback (Untuk kamera web PC jika GCP gagal/tiada)
     else:
         import easyocr
-        import tempfile
-        import re
         reader = easyocr.Reader(['en', 'ms'], gpu=False)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
             tf.write(content)
@@ -3887,16 +3934,13 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
                 filtered = [r for r in results if min(p[0] for p in r[0]) < right_limit]
                 
                 # B. Gabungkan kotak perkataan menjadi BARISAN (Lines) menggunakan Titik Tengah (Center Y)
-                # Ini menghalang baris atas dan bawah daripada bercampur akibat toleransi statik yang terlalu besar.
                 elements = []
                 for r in filtered:
                     bbox = r[0]
-                    # Kira nilai tengah Y dan ketinggian kotak teks
                     center_y = (bbox[0][1] + bbox[2][1]) / 2
                     height = bbox[2][1] - bbox[0][1]
                     elements.append({'bbox': bbox, 'text': r[1], 'center_y': center_y, 'height': height})
 
-                # Susun menegak dari atas ke bawah
                 elements.sort(key=lambda e: e['center_y'])
 
                 lines_grouped = []
@@ -3907,13 +3951,10 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
                     if curr_center_y is None: 
                         curr_center_y = e['center_y']
                         curr_line.append(e)
-                    # Toleransi dinamik (40% daripada tinggi kotak). Sangat ketat untuk pisahkan baris alamat.
                     elif abs(e['center_y'] - curr_center_y) <= (e['height'] * 0.4): 
                         curr_line.append(e)
-                        # Kemas kini purata center_y supaya selari jika imej senget sedikit
                         curr_center_y = sum(item['center_y'] for item in curr_line) / len(curr_line)
                     else:
-                        # Susun perkataan dari kiri ke kanan dalam baris yang sama
                         curr_line.sort(key=lambda x: x['bbox'][0][0])
                         line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
                         lines_grouped.append(line_text)
@@ -3939,55 +3980,68 @@ async def process_mykad_ocr(file: UploadFile = File(...)):
                         break
                         
                 if ic_index != -1:
-                    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA"]
+                    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA", "BUDDHA", "HINDU", "KRISTIAN", "MYKAD", "KAD", "PENGENALAN", "IDENTITY", "CARD"]
                     name_lines = []
                     address_start = ic_index + 1
                     
-                    # Cari Nama
-                    for i in range(ic_index + 1, min(ic_index + 4, len(lines_grouped))):
-                        text = lines_grouped[i]
-                        if any(sw in text for sw in stop_words): continue
-                        if re.search(r'\d', text): # Jika terjumpa nombor, itu permulaan alamat
+                    # Cari Nama (Capitalized)
+                    for i in range(ic_index + 1, min(ic_index + 6, len(lines_grouped))):
+                        text = lines_grouped[i].upper()
+                        
+                        if re.match(r'^\d', text) or any(ind in text for ind in addr_indicators):
                             address_start = i
                             break
-                        # Buang sebarang simbol pelik pada nama
+                            
+                        if any(sw in text for sw in stop_words):
+                            continue
+                            
                         clean_name = re.sub(r'[^A-Z\s\@\']', '', text).strip()
-                        if clean_name: name_lines.append(clean_name)
+                        if clean_name.startswith('D '):
+                            clean_name = clean_name[2:].strip()
+                            
+                        if clean_name and len(clean_name) > 1: 
+                            name_lines.append(clean_name)
+                            
                         address_start = i + 1
-                    name = " ".join(name_lines).strip()
+                        
+                    name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
                     
-                    # Cari Alamat
+                    # Cari Alamat (Capitalized and Comma-Separated)
                     addr_lines = []
                     pc_found = False
                     lines_after = 0
                     
                     for i in range(address_start, len(lines_grouped)):
-                        text = lines_grouped[i]
-                        if any(sw in text for sw in stop_words): continue
+                        text = lines_grouped[i].upper()
+                        if any(sw in text for sw in stop_words) or (name and text in name) or re.search(r'\d{4}-\d{2}-\d{4}', text): 
+                            continue
                         
-                        # Buang simbol pelik (cth: '{', ']', '_') akibat silau kamera web
                         text = re.sub(r'[^A-Z0-9\s,\.\-\/]', '', text).strip()
-                        
-                        # Betulkan poskod yang melekat dengan huruf akibat ralat kamera (cth: 31200CHEMOR -> 31200 CHEMOR)
                         text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text) 
                         
-                        if not text: continue
+                        if not text or len(text) <= 1: 
+                            continue
+                            
                         addr_lines.append(text)
                         
-                        if re.search(r'\b\d{5}\b', text): 
-                            pc_found = True
-                            
                         if pc_found:
                             lines_after += 1
-                            if lines_after >= 2: break # Tunggu 1 baris tambahan selepas poskod untuk tangkap nama Negeri
-                            
-                    # Gabungkan setiap BARIS dengan koma
+                            if lines_after == 1:
+                                prev_line = addr_lines[-2] if len(addr_lines) >= 2 else ""
+                                if text in prev_line or not any(s in text for s in states):
+                                    addr_lines.pop()
+                                break 
+                                
+                        if re.search(r'\b\d{5}\b', text): 
+                            pc_found = True
+                                
                     address = ", ".join(addr_lines)
+            address = re.sub(r',\s*,', ',', address).strip(', ')
 
     return {
         "success": True,
         "data": {
-            "ic": ic_num, "name": name, "address": address.upper(),
+            "ic": ic_num, "name": name, "address": address,
             "gender": gender, "nationality": "MALAYSIA"
         }
     }
