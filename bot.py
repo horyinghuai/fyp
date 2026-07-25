@@ -243,152 +243,128 @@ async def generate_time_picker(active_cid, service, date_str, doctor_pref):
     return InlineKeyboardMarkup(keyboard)
 
 def extract_ic_info(image_path: str):
+    import re
     reader = get_ocr_reader()
     results = reader.readtext(image_path)
     if not results: return None, None, None, None, None
     
-    # 1. SPATIAL SORTING: Group elements into horizontal lines (15px tolerance)
-    # This prevents text from the right side of the IC from mixing into the left side.
-    results.sort(key=lambda r: r[0][0][1])
-    grouped_results = []
-    current_line = []
-    current_y = None
+    ic_num, name, address, gender, nationality = None, "UNKNOWN", "UNKNOWN", "MALE", "MALAYSIA"
     
-    for r in results:
-        y = r[0][0][1]
-        if current_y is None:
-            current_y = y
-            current_line.append(r)
-        elif abs(y - current_y) <= 15:  
-            current_line.append(r)
-        else:
-            current_line.sort(key=lambda item: item[0][0][0])
-            grouped_results.extend(current_line)
-            current_line = [r]
-            current_y = y
-            
-    if current_line:
-        current_line.sort(key=lambda item: item[0][0][0])
-        grouped_results.extend(current_line)
+    # A. Penapisan Paksi-X (Potong 40% bahagian kanan)
+    all_x = [p[0] for r in results for p in r[0]]
+    if all_x:
+        min_x, max_x = min(all_x), max(all_x)
+        right_limit = min_x + ((max_x - min_x) * 0.6)
+        filtered = [r for r in results if min(p[0] for p in r[0]) < right_limit]
         
-    results = grouped_results
-    
-    ic_num = None
-    ic_index = -1
-    ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
-    cleaned_results = [(bbox, text.upper().strip(), prob) for bbox, text, prob in results]
+        # B. Gabungkan kotak perkataan menjadi BARISAN (Lines) menggunakan Titik Tengah (Center Y)
+        elements = []
+        for r in filtered:
+            bbox = r[0]
+            center_y = (bbox[0][1] + bbox[2][1]) / 2
+            height = bbox[2][1] - bbox[0][1]
+            elements.append({'bbox': bbox, 'text': r[1], 'center_y': center_y, 'height': height})
 
-    for i, (bbox, text, prob) in enumerate(cleaned_results):
-        match = ic_pattern.search(text)
-        if match:
-            ic_num = match.group(0)
-            if len(ic_num) == 12 and "-" not in ic_num:
-                ic_num = f"{ic_num[:6]}-{ic_num[6:8]}-{ic_num[8:]}"
-            ic_index = i
-            break
+        elements.sort(key=lambda e: e['center_y'])
 
-    if not ic_num: return None, None, None, None, None
-    last_digit = int(ic_num[-1])
-    gender = "FEMALE" if last_digit % 2 == 0 else "MALE"
-    nationality = "MALAYSIA"
-    
-    name_lines = []
-    address_start_idx = ic_index + 1
-    
-    # Added "MALAYSIA" to prevent the bottom-most label from bleeding into the address
-    stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "BUDDHA", "HINDU", "KRISTIAN", "WARGANEGARA", "WARGA", "NEGARA", "MALAYSIA", "MYKAD", "KAD", "PENGENALAN", "IDENTITY", "CARD"]
-    addr_indicators = ["NO ", "NO.", "JALAN", "JLN", "TAMAN", "TMN", "KAMPUNG", "KG ", "LORONG", "PT ", "LOT ", "BLOK", "TINGKAT", "BATU"]
-    states = ["JOHOR", "KEDAH", "KELANTAN", "MELAKA", "NEGERI SEMBILAN", "PAHANG", "PERAK", "PERLIS", "PULAU PINANG", "SABAH", "SARAWAK", "SELANGOR", "TERENGGANU", "KUALA LUMPUR", "LABUAN", "PUTRAJAYA"]
-    
-    # 2. NAME EXTRACTION (Capitalized)
-    address_start_idx = ic_index + 1
-    for i in range(ic_index + 1, min(ic_index + 6, len(cleaned_results))):
-        text = cleaned_results[i][1].upper()
-        
-        if re.match(r'^\d', text) or any(ind in text for ind in addr_indicators):
-            address_start_idx = i
-            break 
-            
-        if any(sw in text for sw in stop_words): 
-            continue
-            
-        clean_name = re.sub(r'[^A-Z\s\@\']', '', text).strip()
-        if clean_name.startswith('D '):
-            clean_name = clean_name[2:].strip()
-            
-        if clean_name and len(clean_name) > 1:
-            name_lines.append(clean_name)
-            
-        address_start_idx = i + 1
-        
-    name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
-
-    # 3. ADDRESS EXTRACTION (Capitalized and Comma-Separated)
-    address_elements = []
-    
-    for i in range(address_start_idx, len(cleaned_results)):
-        bbox, text, prob = cleaned_results[i]
-        text = text.upper()
-        
-        if any(sw in text for sw in stop_words) or (name and text in name) or re.search(r'\d{4}-\d{2}-\d{4}', text): 
-            continue
-            
-        text = re.sub(r'[^A-Z0-9\s,\.\-\/]', '', text).strip()
-        text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text)
-        if not text or len(text) <= 1: 
-            continue
-
-        address_elements.append({'bbox': bbox, 'text': text})
-
-    address_lines = []
-    if address_elements:
-        address_elements.sort(key=lambda e: e['bbox'][0][1])
+        lines_grouped = []
         curr_line = []
-        curr_y = None
-        postcode_found = False
-        lines_after_postcode = 0
+        curr_center_y = None
         
-        for e in address_elements:
-            y = e['bbox'][0][1]
-            if curr_y is None:
-                curr_y = y
+        for e in elements:
+            if curr_center_y is None: 
+                curr_center_y = e['center_y']
                 curr_line.append(e)
-            elif abs(y - curr_y) <= 15:
+            elif abs(e['center_y'] - curr_center_y) <= (e['height'] * 0.4): 
                 curr_line.append(e)
+                curr_center_y = sum(item['center_y'] for item in curr_line) / len(curr_line)
             else:
                 curr_line.sort(key=lambda x: x['bbox'][0][0])
-                line_str = " ".join([item['text'] for item in curr_line])
-                address_lines.append(line_str)
-                
-                if postcode_found:
-                    lines_after_postcode += 1
-                    if lines_after_postcode == 1:
-                        prev_line = address_lines[-2] if len(address_lines) >= 2 else ""
-                        if line_str in prev_line or not any(s in line_str for s in states):
-                            address_lines.pop()
-                        break
-                        
-                if re.search(r'\b\d{5}\b', line_str): 
-                    postcode_found = True
-                        
+                line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
+                lines_grouped.append(line_text)
                 curr_line = [e]
-                curr_y = y
+                curr_center_y = e['center_y']
                 
-        if curr_line and lines_after_postcode < 2:
+        if curr_line:
             curr_line.sort(key=lambda x: x['bbox'][0][0])
-            line_str = " ".join([item['text'] for item in curr_line])
-            address_lines.append(line_str)
+            line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
+            lines_grouped.append(line_text)
+        
+        # C. Pengekstrakan Maklumat daripada barisan teks
+        ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
+        ic_index = -1
+        
+        for i, text in enumerate(lines_grouped):
+            match = ic_pattern.search(text)
+            if match:
+                raw_ic = match.group(0)
+                ic_num = f"{raw_ic[:6]}-{raw_ic[6:8]}-{raw_ic[8:]}" if len(raw_ic) == 12 and "-" not in raw_ic else raw_ic
+                ic_index = i
+                gender = "FEMALE" if int(ic_num[-1]) % 2 == 0 else "MALE"
+                break
+                
+        if ic_index != -1:
+            stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA", "BUDDHA", "HINDU", "KRISTIAN", "MYKAD", "KAD", "PENGENALAN", "IDENTITY", "CARD"]
+            addr_indicators = ["NO ", "NO.", "JALAN", "JLN", "TAMAN", "TMN", "KAMPUNG", "KG ", "LORONG", "PT ", "LOT ", "BLOK", "TINGKAT", "BATU"]
+            states = ["JOHOR", "KEDAH", "KELANTAN", "MELAKA", "NEGERI SEMBILAN", "PAHANG", "PERAK", "PERLIS", "PULAU PINANG", "SABAH", "SARAWAK", "SELANGOR", "TERENGGANU", "KUALA LUMPUR", "LABUAN", "PUTRAJAYA"]
             
-            if postcode_found:
-                lines_after_postcode += 1
-                if lines_after_postcode == 1:
-                    prev_line = address_lines[-2] if len(address_lines) >= 2 else ""
-                    if line_str in prev_line or not any(s in line_str for s in states):
-                        address_lines.pop()
+            name_lines = []
+            address_start = ic_index + 1
+            
+            # Cari Nama (Capitalized)
+            for i in range(ic_index + 1, min(ic_index + 6, len(lines_grouped))):
+                text = lines_grouped[i].upper()
+                
+                if re.match(r'^\d', text) or any(ind in text for ind in addr_indicators):
+                    address_start = i
+                    break
+                    
+                if any(sw in text for sw in stop_words):
+                    continue
+                    
+                clean_name = re.sub(r'[^A-Z\s\@\']', '', text).strip()
+                if clean_name.startswith('D '):
+                    clean_name = clean_name[2:].strip()
+                    
+                if clean_name and len(clean_name) > 1: 
+                    name_lines.append(clean_name)
+                    
+                address_start = i + 1
+                
+            name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
+            
+            # Cari Alamat (Capitalized and Comma-Separated)
+            addr_lines = []
+            pc_found = False
+            lines_after = 0
+            
+            for i in range(address_start, len(lines_grouped)):
+                text = lines_grouped[i].upper()
+                if any(sw in text for sw in stop_words) or (name and text in name) or re.search(r'\d{4}-\d{2}-\d{4}', text): 
+                    continue
+                
+                text = re.sub(r'[^A-Z0-9\s,\.\-\/]', '', text).strip()
+                text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text) 
+                
+                if not text or len(text) <= 1: 
+                    continue
+                    
+                addr_lines.append(text)
+                
+                if pc_found:
+                    lines_after += 1
+                    if lines_after == 1:
+                        prev_line = addr_lines[-2] if len(addr_lines) >= 2 else ""
+                        if text in prev_line or not any(s in text for s in states):
+                            addr_lines.pop()
+                        break 
+                        
+                if re.search(r'\b\d{5}\b', text): 
+                    pc_found = True
+                        
+            address = ", ".join(addr_lines)
+            address = re.sub(r',\s*,', ',', address).strip(', ')
 
-    address = ", ".join(address_lines) if address_lines else "UNKNOWN"
-    address = re.sub(r',\s*,', ',', address).strip(', ')
-    
     return name, ic_num, address, gender, nationality
 
 def clean_bot_username(text: str) -> str:
