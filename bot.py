@@ -2358,61 +2358,57 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         text = clean_bot_username(update.message.text)
         if not text: return BOOK_DATE_TIME 
 
-        processing_msg = await update.message.reply_text("🤖 AI is reading your request...")
+        # COMPLETELY REMOVED AI EXTRACTION.
+        # Instead, we pass any typed text directly to your global interception logic
+        # to check if they are trying to start a new process or ask a general question.
         
+        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+
         async with httpx.AsyncClient() as client:
             try:
-                res = await client.post(f"{API_BASE}/ai-extract", json={"text": text}, timeout=120.0)
-                ext = res.json() if res.status_code == 200 else {"error": "Backend offline."}
-            except Exception as e:
-                logger.error(f"AI Extract Error: {e}")
-                ext = {"error": "Connection to AI failed."}
-            
-        await processing_msg.delete()
-        
-        if "error" in ext:
-            is_editing = context.user_data.get('is_editing', False)
-            markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing, base_date=context.user_data.get('min_allowed_date'))
-            msg = f"⚠️ AI Process Error: {ext['error']}\n\nPlease select a Date below."
-            await update.message.reply_text(msg, reply_markup=markup)
+                res = await client.post(f"{API_BASE}/classify-message", json={"text": text}, timeout=30.0)
+                category = res.json().get("category", "other") if res.status_code == 200 else "other"
+            except Exception:
+                category = "other"
+
+        if category == "other":
+            context.user_data['pending_admin_msg'] = text
+            btns = [
+                [InlineKeyboardButton("No, continue the process", callback_data="global_admin_no")],
+                [InlineKeyboardButton("Yes, send this message to clinic admin", callback_data="global_admin_yes")]
+            ]
+            await update.message.reply_text(
+                "Are you sure you want to send this message to the clinic admin? Your current process will not be saved.",
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
             return BOOK_DATE_TIME
 
-        intent = ext.get('intent', 'booking')
+        # Check if the text matches the current process
+        current_is_check = context.user_data.get('for_check', False)
+        msg_is_check = category in ['check', 'modify', 'delete']
 
-        if intent == 'reschedule':
-            await update.message.reply_text("I see you want to reschedule. Let's make a new booking, then you can type /cancel to cancel your old one.")
-        
-        date_pref = ext.get('date_preference')
-        time_pref = ext.get('time_preference')
-        
-        if ext.get('doctor_preference'): context.user_data['doctor_pref'] = ext.get('doctor_preference')
-        if ext.get('general_notes'): context.user_data['general_notes'] = ext.get('general_notes')
-        
-        if date_pref and time_pref:
-            full_time_str = f"{date_pref} {time_pref}"
-            context.user_data['book_date'] = date_pref
-            return await process_availability(update, context, full_time_str)
-        elif date_pref:
-            context.user_data['book_date'] = date_pref
-            markup = await generate_time_picker(active_cid, service, date_pref, context.user_data.get('doctor_pref'))
-            msg = f"I successfully understood your preferred date: {date_pref}.\nHowever, time selection is still required.\n\nPlease select an available time below, or type your preferred time. (You can also pick a new date below if you changed your mind)."
-            await update.message.reply_text(msg, reply_markup=markup)
-            return BOOK_DATE_TIME
-        elif time_pref:
-            markup = await generate_date_picker(active_cid, service, context.user_data.get('doctor_pref'), context.user_data.get('is_editing', False), base_date=context.user_data.get('min_allowed_date'))
-            msg = f"I successfully understood your preferred time: {time_pref}.\nHowever, the date is missing.\nPlease select a valid date below or type it."
-            await update.message.reply_text(msg, reply_markup=markup)
-            return BOOK_DATE_TIME
+        if current_is_check == msg_is_check:
+            btns = [
+                [InlineKeyboardButton("Continue current process", callback_data="global_restart_no")],
+                [InlineKeyboardButton("Restart this process", callback_data="global_restart_yes")]
+            ]
+            await update.message.reply_text(
+                "You are already in this process. Do you want to continue where you left off, or restart this process? (Your current progress will not be saved if you restart).",
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
         else:
-            is_editing = context.user_data.get('is_editing', False)
-            if is_editing and ext.get('general_notes') and context.user_data.get('book_time'):
-                await update.message.reply_text(f"✅ Notes noted: {ext.get('general_notes')}")
-                return await show_booking_summary(update, context)
+            target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+            context.user_data['pending_switch_check'] = msg_is_check
+            btns = [
+                [InlineKeyboardButton("No, continue this process", callback_data="global_switch_no")],
+                [InlineKeyboardButton(f"Yes, start {target_service}", callback_data="global_switch_yes")]
+            ]
+            await update.message.reply_text(
+                f"You are currently in the middle of a process. Do you want to terminate this and start {target_service}? (Your current progress will not be saved).",
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
             
-            markup = await generate_date_picker(active_cid, service, context.user_data.get('doctor_pref'), is_editing, base_date=context.user_data.get('min_allowed_date'))
-            msg = "I understood you want to book an appointment, but the date and time format was invalid or missing.\nPlease select a Date below or provide the exact date and time."
-            await update.message.reply_text(msg, reply_markup=markup)
-            return BOOK_DATE_TIME
+        return BOOK_DATE_TIME
 
 async def process_availability(update, context, full_time_str):
     service = context.user_data['service']
@@ -2919,31 +2915,107 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = clean_bot_username(update.message.text)
     if not text:
         return
+
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
-    # If message is booking related, direct back to bot
-    if is_booking_related(text):
-        context.user_data['is_live_chat'] = False
-        await update.message.reply_text("Redirecting you back to the appointment service...")
-        return await proceed_with_start(update, context)
-    # Otherwise, forward to admin
+
+    # Check category of message
     async with httpx.AsyncClient() as client:
         try:
-            await client.post(f"{API_BASE}/ask-admin", json={
-                "clinic_id": active_cid,
-                "telegram_id": update.effective_user.id,
-                "message": text
-            }, timeout=5.0)
-            if not context.user_data.get('is_live_chat'):
-                context.user_data['is_live_chat'] = True
-                bot_reply = "✅ Your message has been sent to the clinic admin. They will reply shortly."
-                await update.message.reply_text(bot_reply)
-        except Exception as e:
-            logger.error(f"Error sending general message: {e}")
-            await update.message.reply_text("⚠️ Could not send message to admin at this time.")
+            res = await client.post(f"{API_BASE}/classify-message", json={"text": text}, timeout=30.0)
+            category = res.json().get("category", "other") if res.status_code == 200 else "other"
+        except Exception:
+            category = "other"
+
+    if category == "other":
+        context.user_data['pending_admin_msg'] = text
+        btns = [
+            [InlineKeyboardButton("No, continue the process", callback_data="global_admin_no")],
+            [InlineKeyboardButton("Yes, send this message to clinic admin", callback_data="global_admin_yes")]
+        ]
+        await update.message.reply_text(
+            "Are you sure you want to send this message to the clinic admin? Your current process will not be saved.",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return
+
+    # Booking related message (Create vs Modify/Cancel)
+    current_is_check = context.user_data.get('for_check', False)
+    msg_is_check = category in ['check', 'modify', 'delete']
+
+    if current_is_check == msg_is_check:
+        # Related to current process
+        btns = [
+            [InlineKeyboardButton("Continue current process", callback_data="global_restart_no")],
+            [InlineKeyboardButton("Restart this process", callback_data="global_restart_yes")]
+        ]
+        await update.message.reply_text(
+            "You are already in this process. Do you want to continue where you left off, or restart this process? (Your current progress will not be saved if you restart).",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+    else:
+        # Related to a different process
+        target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+        context.user_data['pending_switch_check'] = msg_is_check
+        btns = [
+            [InlineKeyboardButton("No, continue this process", callback_data="global_switch_no")],
+            [InlineKeyboardButton(f"Yes, start {target_service}", callback_data="global_switch_yes")]
+        ]
+        await update.message.reply_text(
+            f"You are currently in the middle of a process. Do you want to terminate this and start {target_service}? (Your current progress will not be saved).",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pass
 
+async def handle_global_interception_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "global_admin_no":
+        await query.edit_message_text("Resuming your process...")
+        return
+        
+    elif data == "global_admin_yes":
+        text = context.user_data.get('pending_admin_msg', '')
+        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(f"{API_BASE}/ask-admin", json={
+                    "clinic_id": active_cid,
+                    "telegram_id": update.effective_user.id,
+                    "message": text
+                }, timeout=5.0)
+                context.user_data['is_live_chat'] = True
+                bot_reply = "✅ Your message has been sent to the clinic admin. They will reply shortly."
+                await query.edit_message_text(bot_reply)
+            except Exception as e:
+                logger.error(f"Error sending general message: {e}")
+                await query.edit_message_text("⚠️ Could not send message to admin at this time.")
+        return
+
+    elif data == "global_restart_no" or data == "global_switch_no":
+        await query.edit_message_text("Resuming your process...")
+        return
+        
+    elif data == "global_restart_yes":
+        await query.edit_message_text("Restarting process...")
+        current_is_check = context.user_data.get('for_check', False)
+        if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
+            return await ask_reuse_patient(update, context, for_check=current_is_check)
+        else:
+            return await proceed_with_start_patient_details(update, context, query=True, for_check=current_is_check)
+            
+    elif data == "global_switch_yes":
+        msg_is_check = context.user_data.get('pending_switch_check', False)
+        await query.edit_message_text("Switching process...")
+        context.user_data['for_check'] = msg_is_check
+        if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
+            return await ask_reuse_patient(update, context, for_check=msg_is_check)
+        else:
+            return await proceed_with_start_patient_details(update, context, query=True, for_check=msg_is_check)
+        
 if __name__ == '__main__':
     app = (
         ApplicationBuilder()
@@ -3074,7 +3146,11 @@ if __name__ == '__main__':
             MODIFY_ANOTHER: [CallbackQueryHandler(modify_another_choice, pattern="^(modify_another|help_no)")],
             ASK_MANUAL_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_date_input)],
         },
-        fallbacks=[CommandHandler('start', start), CommandHandler('cancel', cancel_command)],
+        fallbacks=[
+            CommandHandler('start', start), 
+            CommandHandler('cancel', cancel_command),
+            CallbackQueryHandler(handle_global_interception_callbacks, pattern="^global_")
+        ],
         allow_reentry=True
     )
     app.add_handler(conv)
