@@ -662,9 +662,7 @@ async def proceed_with_start(update, context, query=False):
     else:
         await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return SERVICE
-def is_booking_related(text):
-    keywords = ["book", "appointment", "reservation", "cancel", "modify", "check"]
-    return any(k in text.lower() for k in keywords)
+
 
 async def ask_reuse_patient(update: Update, context: ContextTypes.DEFAULT_TYPE, for_check=False):
     """Ask user if they want to use the saved patient details or start for another person."""
@@ -1649,15 +1647,16 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
                 await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": active_cid, "telegram_id": update.effective_user.id, "message": text})
             except Exception as e:
                 logger.error(f"Ask Admin Error: {e}")
-        await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
-        # Stay in OTHERS_REASON: if the patient's NEXT message is booking-related,
-        # it will be routed back into the bot instead of the admin again.
+        # Only show the notice the FIRST time; keep forwarding every off-topic
+        # message to admin, but don't repeat the notice until the patient is
+        # routed back to the create/check booking process.
+        if not context.user_data.get('admin_notice_shown'):
+            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
+            context.user_data['admin_notice_shown'] = True
         return OTHERS_REASON
 
-    # Booking-related message: hand off to the normal flow. "check", "modify"
-    # and "delete" all start from the appointment list (for_check=True); "create"
-    # starts the new-booking flow (for_check=False).
     context.user_data.pop('general_question_mode', None)
+    context.user_data.pop('admin_notice_shown', None)
     for_check = category in ('check', 'modify', 'delete')
     context.user_data['for_check'] = for_check
 
@@ -2286,10 +2285,7 @@ async def trigger_datetime_prompt(update: Update, context: ContextTypes.DEFAULT_
         final_markup = InlineKeyboardMarkup(rec_keyboard)
         msg = rec_msg
     else:
-        if service in ['Vaccine', 'Blood Test']:
-            msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
-        else:
-            msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
+        msg = "Please select a Date below."
         final_markup = markup
 
     if update.callback_query: 
@@ -2316,8 +2312,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         elif data == "back_date":
             is_editing = context.user_data.get('is_editing', False)
             markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing, base_date=context.user_data.get('min_allowed_date'))
-            if service in ['Vaccine', 'Blood Test']: msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
-            else: msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
+            msg = "Please select a Date below."
             await query.edit_message_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
 
@@ -2353,15 +2348,33 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         elif data == "show_standard_dates":
             is_editing = context.user_data.get('is_editing', False)
             markup = await generate_date_picker(active_cid, service, doctor_pref, is_editing, base_date=context.user_data.get('min_allowed_date'))
-            if service in ['Vaccine', 'Blood Test']: msg = "Please select a Date below, \nOR type your request (e.g., 'Tomorrow at 10am'):"
-            else: msg = "Please select a Date below, \nOR type your request naturally (e.g., 'Tomorrow at 10am for fever'):"
+            msg = "Please select a Date below."
             await query.edit_message_text(msg, reply_markup=markup)
             return BOOK_DATE_TIME
 
     elif update.message and update.message.text:
         text = clean_bot_username(update.message.text)
         if not text: return BOOK_DATE_TIME 
-        
+
+        # --- Check the message is actually related to create/check/modify booking
+        # before treating it as a date/time entry. Anything unrelated goes to admin.
+        async with httpx.AsyncClient() as client:
+            try:
+                cls_res = await client.post(f"{API_BASE}/classify-message", json={"text": text}, timeout=30.0)
+                category = cls_res.json().get("category", "other") if cls_res.status_code == 200 else "other"
+            except Exception as e:
+                logger.error(f"Message Classification Error: {e}")
+                category = "other"
+
+        if category == "other":
+            async with httpx.AsyncClient() as client:
+                try:
+                    await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": active_cid, "telegram_id": update.effective_user.id, "message": text})
+                except Exception as e:
+                    logger.error(f"Ask Admin Error: {e}")
+            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
+            return BOOK_DATE_TIME
+
         processing_msg = await update.message.reply_text("🤖 AI is reading your request...")
         
         async with httpx.AsyncClient() as client:
