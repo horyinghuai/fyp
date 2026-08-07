@@ -2358,25 +2358,6 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         text = clean_bot_username(update.message.text)
         if not text: return BOOK_DATE_TIME 
 
-        # --- Check the message is actually related to create/check/modify booking
-        # before treating it as a date/time entry. Anything unrelated goes to admin.
-        async with httpx.AsyncClient() as client:
-            try:
-                cls_res = await client.post(f"{API_BASE}/classify-message", json={"text": text}, timeout=30.0)
-                category = cls_res.json().get("category", "other") if cls_res.status_code == 200 else "other"
-            except Exception as e:
-                logger.error(f"Message Classification Error: {e}")
-                category = "other"
-
-        if category == "other":
-            async with httpx.AsyncClient() as client:
-                try:
-                    await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": active_cid, "telegram_id": update.effective_user.id, "message": text})
-                except Exception as e:
-                    logger.error(f"Ask Admin Error: {e}")
-            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
-            return BOOK_DATE_TIME
-
         processing_msg = await update.message.reply_text("🤖 AI is reading your request...")
         
         async with httpx.AsyncClient() as client:
@@ -2397,11 +2378,6 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             return BOOK_DATE_TIME
 
         intent = ext.get('intent', 'booking')
-        if intent == 'question':
-            async with httpx.AsyncClient() as client:
-                await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": active_cid, "telegram_id": update.effective_user.id, "message": text})
-            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
-            return BOOK_DATE_TIME
 
         if intent == 'reschedule':
             await update.message.reply_text("I see you want to reschedule. Let's make a new booking, then you can type /cancel to cancel your old one.")
