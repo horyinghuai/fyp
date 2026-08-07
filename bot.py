@@ -662,7 +662,9 @@ async def proceed_with_start(update, context, query=False):
     else:
         await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return SERVICE
-
+def is_booking_related(text):
+    keywords = ["book", "appointment", "reservation", "cancel", "modify", "check"]
+    return any(k in text.lower() for k in keywords)
 
 async def ask_reuse_patient(update: Update, context: ContextTypes.DEFAULT_TYPE, for_check=False):
     """Ask user if they want to use the saved patient details or start for another person."""
