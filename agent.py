@@ -164,6 +164,40 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
             general_notes=user_text
         )
 
+async def classify_general_message(user_text: str) -> str:
+    """
+    Classifies a free-text message sent from the 'General Question' entry point.
+    Returns one of: "create", "check", "modify", "delete", "other".
+    "other" means the message is NOT related to booking/checking/modifying/
+    cancelling an appointment and should be routed to the clinic admin.
+    """
+    prompt = f"""
+    You are classifying a patient's message sent to a medical clinic chatbot.
+    USER TEXT: "{user_text}"
+
+    Decide which single category the message belongs to:
+    - "create": the patient wants to make/book a NEW appointment/reservation.
+    - "check": the patient wants to check/view/see their existing appointment/reservation.
+    - "modify": the patient wants to change/reschedule/update an existing appointment/reservation.
+    - "delete": the patient wants to cancel an existing appointment/reservation.
+    - "other": anything else, including general questions (e.g. clinic hours, location,
+      pricing, "can I bring my child?"), greetings, or unrelated chit-chat.
+
+    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output <think> tags.
+    {{"category": "other"}}
+    """
+    try:
+        raw_text = await run_llm_race(prompt)
+        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        data = json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
+        category = str(data.get("category", "other")).lower().strip()
+        if category not in ("create", "check", "modify", "delete"):
+            category = "other"
+        return category
+    except Exception as e:
+        print(f"Message Classification Error: {e}")
+        return "other"
+
 async def generate_vaccine_schedule_ai(search_query: str):
     prompt = f"""
     You are a strict Medical Database JSON API. The user entered: "{search_query}".

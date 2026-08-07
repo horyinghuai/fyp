@@ -733,7 +733,8 @@ async def main_menu_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await proceed_with_start_patient_details(update, context, query=True, for_check=True)
             
     elif choice == "main_general":
-        await query.edit_message_text("Please type your general question below.")
+        context.user_data['general_question_mode'] = True
+        await query.edit_message_text("Please type your question below.")
         return OTHERS_REASON
 
 # Helper to start patient details flow
@@ -1598,8 +1599,17 @@ async def service_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Server is currently unreachable. Please try again later.")
             return SERVICE
 
+# NEW:
 async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reason = clean_bot_username(update.message.text)
+    text = clean_bot_username(update.message.text)
+
+    # --- General Question entry point ("main_general" button) ---
+    # This does NOT set a reason-for-visit and must NOT fall through to
+    # show_doctor_preference; it needs its own routing (admin vs. booking flow).
+    if context.user_data.get('general_question_mode'):
+        return await handle_general_question_message(update, context, text)
+
+    reason = text
     if reason:
         # Sentence case (Capitalize first letter, lowercase the rest, remove trailing dots)
         reason = reason.capitalize().rstrip('.')
@@ -1608,6 +1618,53 @@ async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('is_editing'):
         return await show_booking_summary(update, context)
     return await show_doctor_preference(update, context)
+
+async def handle_general_question_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """
+    Handles free text typed after the patient taps 'General Question'.
+    - If unrelated to booking/checking/modifying/cancelling an appointment,
+      forward it to the clinic admin and keep listening (stay in this state)
+      for a follow-up message.
+    - If it IS related, route the patient straight into the correct service
+      (create booking or check/modify/cancel booking) without re-asking
+      which service they want, reusing the same "reuse previous details"
+      flow used by the main menu.
+    """
+    if not text:
+        return OTHERS_REASON
+
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.post(f"{API_BASE}/classify-message", json={"text": text}, timeout=30.0)
+            category = res.json().get("category", "other") if res.status_code == 200 else "other"
+        except Exception as e:
+            logger.error(f"Message Classification Error: {e}")
+            category = "other"
+
+    if category == "other":
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": active_cid, "telegram_id": update.effective_user.id, "message": text})
+            except Exception as e:
+                logger.error(f"Ask Admin Error: {e}")
+        await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
+        # Stay in OTHERS_REASON: if the patient's NEXT message is booking-related,
+        # it will be routed back into the bot instead of the admin again.
+        return OTHERS_REASON
+
+    # Booking-related message: hand off to the normal flow. "check", "modify"
+    # and "delete" all start from the appointment list (for_check=True); "create"
+    # starts the new-booking flow (for_check=False).
+    context.user_data.pop('general_question_mode', None)
+    for_check = category in ('check', 'modify', 'delete')
+    context.user_data['for_check'] = for_check
+
+    if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
+        return await ask_reuse_patient(update, context, for_check=for_check)
+    else:
+        return await proceed_with_start_patient_details(update, context, query=False, for_check=for_check)
 
 async def vaccine_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

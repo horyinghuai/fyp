@@ -9,7 +9,7 @@ from database import get_db
 import models
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
-from agent import extract_appointment_details, generate_vaccine_schedule_ai
+from agent import extract_appointment_details, generate_vaccine_schedule_ai, classify_general_message
 from datetime import datetime, timedelta
 import random
 import re
@@ -3384,6 +3384,11 @@ async def ai_extract(req: TextExtractRequest):
     extracted = await extract_appointment_details(req.text, now_str)
     if isinstance(extracted, dict) and "error" in extracted: return extracted
     return extracted.dict()
+
+@app.post("/classify-message")
+async def classify_message(req: TextExtractRequest):
+    category = await classify_general_message(req.text)
+    return {"category": category}
 
 @app.get("/clinic/{clinic_id}")
 def get_clinic(clinic_id: str, db: Session = Depends(get_db)):
