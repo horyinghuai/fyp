@@ -243,59 +243,55 @@ async def generate_time_picker(active_cid, service, date_str, doctor_pref):
     return InlineKeyboardMarkup(keyboard)
 
 def extract_ic_info(image_path: str):
+    import os
     import re
-    reader = get_ocr_reader()
-    results = reader.readtext(image_path)
-    if not results: return None, None, None, None, None
+    import base64
     
     ic_num, name, address, gender, nationality = None, "UNKNOWN", "UNKNOWN", "MALE", "MALAYSIA"
+    extracted_text = ""
     
-    # A. Penapisan Paksi-X (Potong 40% bahagian kanan)
-    all_x = [p[0] for r in results for p in r[0]]
-    if all_x:
-        min_x, max_x = min(all_x), max(all_x)
-        right_limit = min_x + ((max_x - min_x) * 0.6)
-        filtered = [r for r in results if min(p[0] for p in r[0]) < right_limit]
+    api_key = os.getenv("GOOGLE_VISION_API_KEY")
+    json_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    
+    # Read image from disk
+    with open(image_path, "rb") as image_file:
+        content = image_file.read()
         
-        # B. Gabungkan kotak perkataan menjadi BARISAN (Lines) menggunakan Titik Tengah (Center Y)
-        elements = []
-        for r in filtered:
-            bbox = r[0]
-            center_y = (bbox[0][1] + bbox[2][1]) / 2
-            height = bbox[2][1] - bbox[0][1]
-            elements.append({'bbox': bbox, 'text': r[1], 'center_y': center_y, 'height': height})
+    # 1. Google Cloud Vision API Integration
+    if json_creds or api_key:
+        try:
+            from google.cloud import vision
+            client = vision.ImageAnnotatorClient()
+            image = vision.Image(content=content)
+            response = client.text_detection(image=image)
+            if response.text_annotations:
+                extracted_text = response.text_annotations[0].description
+        except ImportError:
+            import httpx
+            encoded_image = base64.b64encode(content).decode('utf-8')
+            try:
+                # Synchronous request because extract_ic_info runs inside asyncio.to_thread
+                with httpx.Client() as client:
+                    payload = {"requests": [{"image": {"content": encoded_image}, "features": [{"type": "TEXT_DETECTION"}]}]}
+                    res = client.post(f"https://vision.googleapis.com/v1/images:annotate?key={api_key}", json=payload, timeout=15.0)
+                    if res.status_code == 200:
+                        data = res.json()
+                        if data.get("responses") and "textAnnotations" in data["responses"][0]:
+                            extracted_text = data["responses"][0]["textAnnotations"][0]["description"]
+            except Exception as e:
+                logger.error(f"GCP Vision HTTP Error: {e}")
 
-        elements.sort(key=lambda e: e['center_y'])
+    addr_indicators = ["NO ", "NO.", "JALAN", "JLN", "TAMAN", "TMN", "KAMPUNG", "KG ", "LORONG", "PT ", "LOT ", "BLOK", "TINGKAT", "BATU", "BAHAGIAN"]
+    states = ["JOHOR", "KEDAH", "KELANTAN", "MELAKA", "NEGERI SEMBILAN", "PAHANG", "PERAK", "PERLIS", "PULAU PINANG", "SABAH", "SARAWAK", "SELANGOR", "TERENGGANU", "KUALA LUMPUR", "LABUAN", "PUTRAJAYA"]
 
-        lines_grouped = []
-        curr_line = []
-        curr_center_y = None
-        
-        for e in elements:
-            if curr_center_y is None: 
-                curr_center_y = e['center_y']
-                curr_line.append(e)
-            elif abs(e['center_y'] - curr_center_y) <= (e['height'] * 0.4): 
-                curr_line.append(e)
-                curr_center_y = sum(item['center_y'] for item in curr_line) / len(curr_line)
-            else:
-                curr_line.sort(key=lambda x: x['bbox'][0][0])
-                line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
-                lines_grouped.append(line_text)
-                curr_line = [e]
-                curr_center_y = e['center_y']
-                
-        if curr_line:
-            curr_line.sort(key=lambda x: x['bbox'][0][0])
-            line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
-            lines_grouped.append(line_text)
-        
-        # C. Pengekstrakan Maklumat daripada barisan teks
+    # 2. Jika menggunakan GCP (Google Cloud Vision Parsing)
+    if extracted_text:
+        lines = [line.strip() for line in extracted_text.split('\n') if line.strip()]
         ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
         ic_index = -1
         
-        for i, text in enumerate(lines_grouped):
-            match = ic_pattern.search(text)
+        for i, line in enumerate(lines):
+            match = ic_pattern.search(line)
             if match:
                 raw_ic = match.group(0)
                 ic_num = f"{raw_ic[:6]}-{raw_ic[6:8]}-{raw_ic[8:]}" if len(raw_ic) == 12 and "-" not in raw_ic else raw_ic
@@ -304,66 +300,187 @@ def extract_ic_info(image_path: str):
                 break
                 
         if ic_index != -1:
+            potential_name_lines = []
             stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA", "BUDDHA", "HINDU", "KRISTIAN", "MYKAD", "KAD", "PENGENALAN", "IDENTITY", "CARD"]
-            addr_indicators = ["NO ", "NO.", "JALAN", "JLN", "TAMAN", "TMN", "KAMPUNG", "KG ", "LORONG", "PT ", "LOT ", "BLOK", "TINGKAT", "BATU"]
-            states = ["JOHOR", "KEDAH", "KELANTAN", "MELAKA", "NEGERI SEMBILAN", "PAHANG", "PERAK", "PERLIS", "PULAU PINANG", "SABAH", "SARAWAK", "SELANGOR", "TERENGGANU", "KUALA LUMPUR", "LABUAN", "PUTRAJAYA"]
             
-            name_lines = []
-            address_start = ic_index + 1
-            
-            # Cari Nama (Capitalized)
-            for i in range(ic_index + 1, min(ic_index + 6, len(lines_grouped))):
-                text = lines_grouped[i].upper()
+            address_start_idx = ic_index + 1
+            for i in range(ic_index + 1, min(ic_index + 6, len(lines))):
+                text_line = lines[i].upper()
                 
-                if re.match(r'^\d', text) or any(ind in text for ind in addr_indicators):
-                    address_start = i
-                    break
-                    
-                if any(sw in text for sw in stop_words):
+                if re.match(r'^\d', text_line) or any(ind in text_line for ind in addr_indicators):
+                    address_start_idx = i
+                    break 
+                
+                if any(sw in text_line for sw in stop_words):
                     continue
                     
-                clean_name = re.sub(r'[^A-Z\s\@\']', '', text).strip()
+                clean_name = re.sub(r'[^A-Z\s\@\']', '', text_line).strip()
                 if clean_name.startswith('D '):
                     clean_name = clean_name[2:].strip()
                     
                 if clean_name and len(clean_name) > 1: 
-                    name_lines.append(clean_name)
+                    potential_name_lines.append(clean_name)
                     
-                address_start = i + 1
-                
-            name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
+                address_start_idx = i + 1
+                    
+            name = " ".join(potential_name_lines).strip() if potential_name_lines else "UNKNOWN"
             
-            # Cari Alamat (Capitalized and Comma-Separated)
-            addr_lines = []
-            pc_found = False
+            address_lines = []
+            postcode_found = False
             lines_after = 0
             
-            for i in range(address_start, len(lines_grouped)):
-                text = lines_grouped[i].upper()
+            for i in range(address_start_idx, len(lines)):
+                text = lines[i].upper()
                 if any(sw in text for sw in stop_words) or (name and text in name) or re.search(r'\d{4}-\d{2}-\d{4}', text): 
                     continue
                 
                 text = re.sub(r'[^A-Z0-9\s,\.\-\/]', '', text).strip()
-                text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text) 
+                text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text)
                 
                 if not text or len(text) <= 1: 
                     continue
-                    
-                addr_lines.append(text)
                 
-                if pc_found:
+                address_lines.append(text)
+                
+                if postcode_found:
                     lines_after += 1
                     if lines_after == 1:
-                        prev_line = addr_lines[-2] if len(addr_lines) >= 2 else ""
+                        prev_line = address_lines[-2] if len(address_lines) >= 2 else ""
                         if text in prev_line or not any(s in text for s in states):
-                            addr_lines.pop()
+                            address_lines.pop()
                         break 
                         
                 if re.search(r'\b\d{5}\b', text): 
-                    pc_found = True
+                    postcode_found = True
                         
-            address = ", ".join(addr_lines)
+            address = ", ".join(address_lines)
             address = re.sub(r',\s*,', ',', address).strip(', ')
+
+    # 3. EasyOCR Fallback (Jika GCP gagal/tiada)
+    else:
+        reader = get_ocr_reader()
+        results = reader.readtext(image_path)
+        if not results: return None, None, None, None, None
+        
+        # A. Penapisan Paksi-X (Crop left 55% to remove ghost text and photo)
+        all_x = [p[0] for r in results for p in r[0]]
+        if all_x:
+            min_x, max_x = min(all_x), max(all_x)
+            right_limit = min_x + ((max_x - min_x) * 0.55)
+            filtered = [r for r in results if min(p[0] for p in r[0]) < right_limit]
+            
+            # B. Gabungkan kotak perkataan menjadi BARISAN (Lines) menggunakan Titik Tengah (Center Y)
+            elements = []
+            for r in filtered:
+                bbox = r[0]
+                center_y = (bbox[0][1] + bbox[2][1]) / 2
+                height = bbox[2][1] - bbox[0][1]
+                elements.append({'bbox': bbox, 'text': r[1], 'center_y': center_y, 'height': height})
+
+            elements.sort(key=lambda e: e['center_y'])
+
+            lines_grouped = []
+            curr_line = []
+            curr_center_y = None
+            
+            for e in elements:
+                if curr_center_y is None: 
+                    curr_center_y = e['center_y']
+                    curr_line.append(e)
+                elif abs(e['center_y'] - curr_center_y) <= (e['height'] * 0.4): 
+                    curr_line.append(e)
+                    curr_center_y = sum(item['center_y'] for item in curr_line) / len(curr_line)
+                else:
+                    curr_line.sort(key=lambda x: x['bbox'][0][0])
+                    line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
+                    lines_grouped.append(line_text)
+                    curr_line = [e]
+                    curr_center_y = e['center_y']
+                    
+            if curr_line:
+                curr_line.sort(key=lambda x: x['bbox'][0][0])
+                line_text = " ".join([item['text'] for item in curr_line]).upper().strip()
+                lines_grouped.append(line_text)
+            
+            # C. Pengekstrakan Maklumat daripada barisan teks
+            ic_pattern = re.compile(r'\d{6}-\d{2}-\d{4}|\d{12}')
+            ic_index = -1
+            
+            for i, text in enumerate(lines_grouped):
+                match = ic_pattern.search(text)
+                if match:
+                    raw_ic = match.group(0)
+                    ic_num = f"{raw_ic[:6]}-{raw_ic[6:8]}-{raw_ic[8:]}" if len(raw_ic) == 12 and "-" not in raw_ic else raw_ic
+                    ic_index = i
+                    gender = "FEMALE" if int(ic_num[-1]) % 2 == 0 else "MALE"
+                    break
+                    
+            if ic_index != -1:
+                stop_words = ["ISLAM", "LELAKI", "PEREMPUAN", "WARGANEGARA", "MALAYSIA", "BUDDHA", "HINDU", "KRISTIAN", "MYKAD", "KAD", "PENGENALAN", "IDENTITY", "CARD"]
+                
+                name_lines = []
+                address_start = ic_index + 1
+                
+                # Cari Nama (Capitalized)
+                for i in range(ic_index + 1, min(ic_index + 6, len(lines_grouped))):
+                    text = lines_grouped[i].upper()
+                    
+                    if re.match(r'^\d', text) or any(ind in text for ind in addr_indicators):
+                        address_start = i
+                        break
+                        
+                    if any(sw in text for sw in stop_words):
+                        continue
+                        
+                    clean_name = re.sub(r'[^A-Z\s\@\']', '', text).strip()
+                    if clean_name.startswith('D '):
+                        clean_name = clean_name[2:].strip()
+                        
+                    if clean_name and len(clean_name) > 1: 
+                        name_lines.append(clean_name)
+                        
+                    address_start = i + 1
+                    
+                name = " ".join(name_lines).strip() if name_lines else "UNKNOWN"
+                
+                # Cari Alamat (Capitalized and Comma-Separated)
+                addr_lines = []
+                pc_found = False
+                lines_after = 0
+                
+                for i in range(address_start, len(lines_grouped)):
+                    text = lines_grouped[i].upper()
+                    if any(sw in text for sw in stop_words) or (name and text in name) or re.search(r'\d{4}-\d{2}-\d{4}', text): 
+                        continue
+                    
+                    cleaned_words = []
+                    for word in text.split():
+                        if len(word) >= 13 and not re.search(r'\d', word) and word not in states:
+                            continue
+                        cleaned_words.append(word)
+                    text = " ".join(cleaned_words)
+                    
+                    text = re.sub(r'[^A-Z0-9\s,\.\-\/]', '', text).strip()
+                    text = re.sub(r'(\d{5})([A-Z]+)', r'\1 \2', text) 
+                    
+                    if not text or len(text) <= 1: 
+                        continue
+                        
+                    addr_lines.append(text)
+                    
+                    if pc_found:
+                        lines_after += 1
+                        if lines_after == 1:
+                            prev_line = addr_lines[-2] if len(addr_lines) >= 2 else ""
+                            if text in prev_line or not any(s in text for s in states):
+                                addr_lines.pop()
+                            break 
+                            
+                    if re.search(r'\b\d{5}\b', text): 
+                        pc_found = True
+                        
+                address = ", ".join(addr_lines)
+                address = re.sub(r',\s*,', ',', address).strip(', ')
 
     return name, ic_num, address, gender, nationality
 
