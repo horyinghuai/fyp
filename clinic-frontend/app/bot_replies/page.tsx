@@ -236,7 +236,7 @@ export default function BotRepliesPage() {
     <div className="max-w-7xl mx-auto h-[85vh] flex flex-col">
       <div className="mb-6 flex items-center justify-between">
         <div>
-            <h1 className="text-3xl font-bold text-slate-800">🤖 Unified Chat & Bot Replies</h1>
+            <h1 className="text-3xl font-bold text-slate-800">🤖 Chat & Bot Replies</h1>
             <p className="text-slate-500 mt-1">Right-click your replies to Edit or Delete. Clicking a chat marks it as read.</p>
         </div>
         <div className="flex gap-3">
