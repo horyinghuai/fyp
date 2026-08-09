@@ -679,6 +679,17 @@ async def execute_cancellation(message, context, reason):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {update.effective_user.id} triggered /start command.")
     context.user_data['is_editing'] = False 
+    context.user_data['is_live_chat'] = False
+    context.user_data['in_process'] = False   
+    
+    # WIPE ALL ADMIN/INTERCEPTION FLAGS
+    context.user_data.pop('general_question_mode', None)
+    context.user_data.pop('admin_notice_shown', None)
+    context.user_data.pop('pending_from_livechat', None)
+    context.user_data.pop('pending_from_general_question', None)
+    context.user_data.pop('pending_switch_check', None)
+    context.user_data.pop('saved_step_prompt', None)
+
     telegram_id = update.effective_user.id
 
     if not context.args or len(context.args) == 0:
@@ -688,6 +699,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if res.status_code == 200:
                     clinics = res.json()
                     if len(clinics) > 1 and 'active_clinic_id' not in context.user_data:
+                        # FIX: Added 'for c in clinics' back to the list comprehension
                         btns = [[InlineKeyboardButton(c['name'], callback_data=f"startclinic_{c['id']}")] for c in clinics]
                         msg = "Welcome back! You are registered at multiple clinics.\n\nPlease select which clinic you want to book at today:"
                         if update.message: await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
@@ -1700,16 +1712,6 @@ async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await show_doctor_preference(update, context)
 
 async def handle_general_question_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    """
-    Handles free text typed after the patient taps 'General Question'.
-    - If unrelated to booking/checking/modifying/cancelling an appointment,
-      forward it to the clinic admin and keep listening (stay in this state)
-      for a follow-up message.
-    - If it IS related, route the patient straight into the correct service
-      (create booking or check/modify/cancel booking) without re-asking
-      which service they want, reusing the same "reuse previous details"
-      flow used by the main menu.
-    """
     if not text:
         return OTHERS_REASON
 
@@ -1729,23 +1731,28 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
                 await client.post(f"{API_BASE}/ask-admin", json={"clinic_id": active_cid, "telegram_id": update.effective_user.id, "message": text})
             except Exception as e:
                 logger.error(f"Ask Admin Error: {e}")
-        # Only show the notice the FIRST time; keep forwarding every off-topic
-        # message to admin, but don't repeat the notice until the patient is
-        # routed back to the create/check booking process.
         if not context.user_data.get('admin_notice_shown'):
             await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
             context.user_data['admin_notice_shown'] = True
         return OTHERS_REASON
 
-    context.user_data.pop('general_question_mode', None)
-    context.user_data.pop('admin_notice_shown', None)
-    for_check = category in ('check', 'modify', 'delete')
-    context.user_data['for_check'] = for_check
-
-    if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
-        return await ask_reuse_patient(update, context, for_check=for_check)
-    else:
-        return await proceed_with_start_patient_details(update, context, query=False, for_check=for_check)
+    msg_is_check = category in ('check', 'modify', 'delete')
+    target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+    
+    context.user_data['pending_switch_check'] = msg_is_check
+    context.user_data['pending_from_general_question'] = True
+    
+    btns = [
+        [InlineKeyboardButton("Continue with Clinic Admin", callback_data="global_switch_no")],
+        [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
+    ]
+    await update.message.reply_text(
+        "You are currently being handled by the clinic admin.\n\n"
+        f"Would you like to continue being handled by the clinic admin, or terminate this and start {target_service}?\n\n"
+        "Are you sure you want to end the conversation with the clinic admin?",
+        reply_markup=InlineKeyboardMarkup(btns)
+    )
+    return OTHERS_REASON
 
 async def vaccine_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -3054,11 +3061,9 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # If the user is already being handled live by the clinic admin (they previously
     # agreed to hand off an unrelated message), the admin now owns the conversation.
+    # 1. Handle Active Admin Live Chat
     if context.user_data.get('is_live_chat'):
         if category not in ('create', 'check', 'modify', 'delete'):
-            # Still unrelated to booking -> admin already owns this chat, so just
-            # forward it straight through. Do not re-ask for confirmation and do not
-            # re-show the "message sent" notice for every message.
             async with httpx.AsyncClient() as client:
                 try:
                     await client.post(f"{API_BASE}/ask-admin", json={
@@ -3070,14 +3075,12 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
                     logger.error(f"Error forwarding live-chat message to admin: {e}")
             return
         else:
-            # User now wants to create/check/modify/cancel a booking while still being
-            # handled by the admin - confirm before leaving the admin conversation.
             msg_is_check = category in ('check', 'modify', 'delete')
             target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
             context.user_data['pending_switch_check'] = msg_is_check
             context.user_data['pending_from_livechat'] = True
             btns = [
-                [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
+                [InlineKeyboardButton("Continue with Clinic Admin", callback_data="global_switch_no")],
                 [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
             ]
             await update.message.reply_text(
@@ -3161,6 +3164,8 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
 
     if data == "global_admin_no":
         if context.user_data.get('in_process'):
+            # redisplay_current_step uses reply_text, so editing here first is fine
+            await query.edit_message_text("Resuming your process...")
             await redisplay_current_step(update, context)
         else:
             await query.edit_message_text("Okay, message cancelled.")
@@ -3187,11 +3192,19 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
         return ConversationHandler.END
 
     elif data == "global_restart_no" or data == "global_switch_no":
-        if context.user_data.pop('pending_from_livechat', False):
+        from_livechat = context.user_data.pop('pending_from_livechat', False)
+        from_general = context.user_data.pop('pending_from_general_question', False)
+        
+        if from_livechat or from_general:
             await query.edit_message_text(
                 "Okay, you'll continue being handled by the clinic admin. Send your message and they'll get back to you shortly."
             )
+            # Must return the state if they were in the General Question mode so it doesn't break
+            if context.user_data.get('general_question_mode'):
+                return OTHERS_REASON
             return
+            
+        await query.edit_message_text("Resuming your process...")
         await redisplay_current_step(update, context)
         return
 
@@ -3215,15 +3228,18 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
             return await proceed_with_start_patient_details(update, context, query=True, for_check=msg_is_check)
 
     elif data == "global_exit_no":
+        await query.edit_message_text("Resuming your process...")
         await redisplay_current_step(update, context)
         return
 
     elif data == "global_exit_yes":
         context.user_data.pop('saved_step_prompt', None)
         context.user_data['in_process'] = False
-        return await proceed_with_start(update, context, query=True) # Changed to query=True
+        return await proceed_with_start(update, context, query=True)
 
     elif data in ("global_curbook_current", "global_curbook_existing"):
+        action = context.user_data.get('pending_curbook_action', 'modify')  
+        action_word = "modify" if action == "modify" else "cancel"
         if data == "global_curbook_existing":
             context.user_data.pop('saved_step_prompt', None)
             context.user_data['for_check'] = True
@@ -3233,18 +3249,20 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
             else:
                 return await proceed_with_start_patient_details(update, context, query=True, for_check=True)
         else:
+            context.user_data['pending_curbook_action'] = action
             btns = [
                 [InlineKeyboardButton("No, Continue Booking", callback_data="global_curbook_confirm_no")],
                 [InlineKeyboardButton("Yes", callback_data="global_curbook_confirm_yes")]
             ]
             await query.edit_message_text(
-                "Your current booking progress will not be saved.\n"
-                "Are you sure you want to cancel this booking process?",
+                f"Your current booking progress will not be saved.\n"
+                f"Are you sure you want to {action_word} this booking process?",
                 reply_markup=InlineKeyboardMarkup(btns)
             )
             return
 
     elif data == "global_curbook_confirm_no":
+        await query.edit_message_text("Resuming your process...")
         await redisplay_current_step(update, context)
         return
 
@@ -3328,6 +3346,7 @@ if __name__ == '__main__':
             OTHERS_REASON: [
                 CallbackQueryHandler(handle_booking_edit, pattern="^editbook_abort_edit$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
+                CallbackQueryHandler(handle_global_interception_callbacks, pattern="^global_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(others_reason))
             ],
             V_TYPE: [
