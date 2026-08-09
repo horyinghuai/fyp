@@ -41,6 +41,11 @@ from telegram import Message, CallbackQuery
 # Global dictionary to track active clinic ID per user for logging purposes
 ACTIVE_CLINICS = {}
 
+# Global dictionary to remember the last prompt (question/step) shown to each user,
+# so that when a user resumes an interrupted process we can re-display the exact
+# step/question instead of silently restoring state (see Resume Behaviour requirement).
+LAST_PROMPTS = {}
+
 # Monkey-patch reply_text to log all new bot messages
 _original_reply_text = Message.reply_text
 async def _patched_reply_text(self, *args, **kwargs):
@@ -50,8 +55,25 @@ async def _patched_reply_text(self, *args, **kwargs):
         tg_id = self.chat.id
         active_cid = ACTIVE_CLINICS.get(tg_id, DEFAULT_CLINIC_ID)
         await log_chat_to_db(active_cid, tg_id, bot_reply=text, msg_id=msg.message_id if msg else None)
+        LAST_PROMPTS[tg_id] = {"text": text, "reply_markup": kwargs.get('reply_markup')}
     return msg
 Message.reply_text = _patched_reply_text
+
+# Monkey-patch edit_text (used directly on Message objects, e.g. query.message.edit_text)
+# so those prompts are tracked too - otherwise a step that edits query.message directly
+# instead of going through CallbackQuery.edit_message_text/Message.reply_text gets lost
+# from LAST_PROMPTS and can't be re-displayed correctly on resume.
+_original_message_edit_text = Message.edit_text
+async def _patched_message_edit_text(self, *args, **kwargs):
+    msg = await _original_message_edit_text(self, *args, **kwargs)
+    text = kwargs.get('text') or (args[0] if args else "")
+    if text:
+        tg_id = self.chat.id
+        active_cid = ACTIVE_CLINICS.get(tg_id, DEFAULT_CLINIC_ID)
+        await log_chat_to_db(active_cid, tg_id, bot_reply=text)
+        LAST_PROMPTS[tg_id] = {"text": text, "reply_markup": kwargs.get('reply_markup')}
+    return msg
+Message.edit_text = _patched_message_edit_text
 
 # Monkey-patch edit_message_text to log all inline keyboard edits/replies
 _original_edit_message_text = CallbackQuery.edit_message_text
@@ -62,6 +84,7 @@ async def _patched_edit_message_text(self, *args, **kwargs):
         tg_id = self.message.chat.id if self.message else self.from_user.id
         active_cid = ACTIVE_CLINICS.get(tg_id, DEFAULT_CLINIC_ID)
         await log_chat_to_db(active_cid, tg_id, bot_reply=text)
+        LAST_PROMPTS[tg_id] = {"text": text, "reply_markup": kwargs.get('reply_markup')}
     return msg
 CallbackQuery.edit_message_text = _patched_edit_message_text
 
@@ -487,6 +510,61 @@ def extract_ic_info(image_path: str):
 def clean_bot_username(text: str) -> str:
     cleaned = re.sub(r'^(via\s+)?@[A-Za-z0-9_]+\s*', '', text, flags=re.IGNORECASE)
     return cleaned.strip().upper()
+
+# ---------------------------------------------------------------------------
+# Global interruption handling (Exit / Stop / Restart / Switch service / etc.)
+# See conversation-flow requirements: point 6 "Global Exit".
+# ---------------------------------------------------------------------------
+GLOBAL_EXIT_KEYWORDS = {"exit", "stop", "cancel process", "main menu", "start over"}
+
+def is_global_exit_command(raw_text: str) -> bool:
+    if not raw_text:
+        return False
+    return raw_text.strip().lower() in GLOBAL_EXIT_KEYWORDS
+
+def snapshot_current_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remember exactly what the bot last asked, BEFORE we overwrite it with an
+    interception/confirmation message. Used to faithfully re-display the current
+    step/question when the user chooses to resume (Resume Behaviour requirement)."""
+    tg_id = update.effective_user.id
+    context.user_data['saved_step_prompt'] = LAST_PROMPTS.get(tg_id)
+
+async def redisplay_current_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Re-display (resend) the exact step/question the user was on before the
+    interruption, then wait for their response. Never resumes silently."""
+    prompt = context.user_data.pop('saved_step_prompt', None)
+    if not prompt or not prompt.get("text"):
+        return
+    target = update.effective_message
+    await target.reply_text(prompt["text"], reply_markup=prompt.get("reply_markup"))
+
+async def prompt_global_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask for confirmation before exiting the current workflow to the main menu."""
+    snapshot_current_prompt(update, context)
+    btns = [
+        [InlineKeyboardButton("Continue Current Process", callback_data="global_exit_no")],
+        [InlineKeyboardButton("Exit to Main Menu", callback_data="global_exit_yes")]
+    ]
+    await update.message.reply_text(
+        "Your current progress will not be saved.\nAre you sure you want to exit the current process?",
+        reply_markup=InlineKeyboardMarkup(btns)
+    )
+
+def with_global_exit(handler):
+    """Decorator applied to every free-text state handler inside the ConversationHandler.
+    Intercepts the Global Exit keywords (Exit / Stop / Cancel Process / Main Menu / Start Over)
+    at ANY point in ANY workflow before delegating to the wrapped step handler, so that a
+    user typing e.g. their name still gets treated as an answer, but a user typing "exit"
+    is always caught, regardless of which step they are on."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.message and update.message.text:
+            text = clean_bot_username(update.message.text)
+            if is_global_exit_command(text):
+                await prompt_global_exit(update, context)
+                return None  # stay in the same conversation state until confirmed
+        return await handler(update, context)
+    wrapper.__name__ = getattr(handler, "__name__", "wrapped_handler")
+    return wrapper
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     id_label = "IC/Passport Number"
@@ -2371,14 +2449,52 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             except Exception:
                 category = "other"
 
+        if is_global_exit_command(text):
+            await prompt_global_exit(update, context)
+            return BOOK_DATE_TIME
+
+        # If already being handled live by the clinic admin, don't re-ask - just forward,
+        # unless the message is now clearly about creating/checking/modifying a booking.
+        if context.user_data.get('is_live_chat'):
+            if category not in ('create', 'check', 'modify', 'delete'):
+                async with httpx.AsyncClient() as client:
+                    try:
+                        await client.post(f"{API_BASE}/ask-admin", json={
+                            "clinic_id": active_cid,
+                            "telegram_id": update.effective_user.id,
+                            "message": text
+                        }, timeout=5.0)
+                    except Exception as e:
+                        logger.error(f"Error forwarding live-chat message to admin: {e}")
+                return BOOK_DATE_TIME
+            else:
+                msg_is_check = category in ('check', 'modify', 'delete')
+                target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+                context.user_data['pending_switch_check'] = msg_is_check
+                context.user_data['pending_from_livechat'] = True
+                btns = [
+                    [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
+                    [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
+                ]
+                await update.message.reply_text(
+                    "You are currently being handled by the clinic admin.\n\n"
+                    f"Would you like to continue being handled by the clinic admin, or terminate this and start {target_service}?\n\n"
+                    "Are you sure you want to end the conversation with the clinic admin?",
+                    reply_markup=InlineKeyboardMarkup(btns)
+                )
+                return BOOK_DATE_TIME
+
         if category == "other":
+            snapshot_current_prompt(update, context)
             context.user_data['pending_admin_msg'] = text
             btns = [
                 [InlineKeyboardButton("No, continue the process", callback_data="global_admin_no")],
                 [InlineKeyboardButton("Yes, send this message to clinic admin", callback_data="global_admin_yes")]
             ]
             await update.message.reply_text(
-                "Are you sure you want to send this message to the clinic admin? Your current process will not be saved.",
+                "Your message is not related to your current booking process.\n\n"
+                "If you send this message to the clinic admin, your current booking progress will not be saved.\n\n"
+                "Would you like to continue?",
                 reply_markup=InlineKeyboardMarkup(btns)
             )
             return BOOK_DATE_TIME
@@ -2388,20 +2504,24 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         msg_is_check = category in ['check', 'modify', 'delete']
 
         if current_is_check == msg_is_check:
+            snapshot_current_prompt(update, context)
             btns = [
-                [InlineKeyboardButton("Continue current process", callback_data="global_restart_no")],
-                [InlineKeyboardButton("Restart this process", callback_data="global_restart_yes")]
+                [InlineKeyboardButton("Continue Current Process", callback_data="global_restart_no")],
+                [InlineKeyboardButton("Restart Booking", callback_data="global_restart_yes")]
             ]
             await update.message.reply_text(
-                "You are already in this process. Do you want to continue where you left off, or restart this process? (Your current progress will not be saved if you restart).",
+                "It looks like you want to restart your current process.\n\n"
+                "Your current progress will not be saved.\n\n"
+                "Would you like to continue your current process or restart it?",
                 reply_markup=InlineKeyboardMarkup(btns)
             )
         else:
             target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+            snapshot_current_prompt(update, context)
             context.user_data['pending_switch_check'] = msg_is_check
             btns = [
-                [InlineKeyboardButton("No, continue this process", callback_data="global_switch_no")],
-                [InlineKeyboardButton(f"Yes, start {target_service}", callback_data="global_switch_yes")]
+                [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
+                [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
             ]
             await update.message.reply_text(
                 f"You are currently in the middle of a process. Do you want to terminate this and start {target_service}? (Your current progress will not be saved).",
@@ -2926,14 +3046,57 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception:
             category = "other"
 
+    if is_global_exit_command(text):
+        await prompt_global_exit(update, context)
+        return
+
+    # If the user is already being handled live by the clinic admin (they previously
+    # agreed to hand off an unrelated message), the admin now owns the conversation.
+    if context.user_data.get('is_live_chat'):
+        if category not in ('create', 'check', 'modify', 'delete'):
+            # Still unrelated to booking -> admin already owns this chat, so just
+            # forward it straight through. Do not re-ask for confirmation and do not
+            # re-show the "message sent" notice for every message.
+            async with httpx.AsyncClient() as client:
+                try:
+                    await client.post(f"{API_BASE}/ask-admin", json={
+                        "clinic_id": active_cid,
+                        "telegram_id": update.effective_user.id,
+                        "message": text
+                    }, timeout=5.0)
+                except Exception as e:
+                    logger.error(f"Error forwarding live-chat message to admin: {e}")
+            return
+        else:
+            # User now wants to create/check/modify/cancel a booking while still being
+            # handled by the admin - confirm before leaving the admin conversation.
+            msg_is_check = category in ('check', 'modify', 'delete')
+            target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+            context.user_data['pending_switch_check'] = msg_is_check
+            context.user_data['pending_from_livechat'] = True
+            btns = [
+                [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
+                [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
+            ]
+            await update.message.reply_text(
+                "You are currently being handled by the clinic admin.\n\n"
+                f"Would you like to continue being handled by the clinic admin, or terminate this and start {target_service}?\n\n"
+                "Are you sure you want to end the conversation with the clinic admin?",
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
+            return
+
     if category == "other":
+        snapshot_current_prompt(update, context)
         context.user_data['pending_admin_msg'] = text
         btns = [
             [InlineKeyboardButton("No, continue the process", callback_data="global_admin_no")],
             [InlineKeyboardButton("Yes, send this message to clinic admin", callback_data="global_admin_yes")]
         ]
         await update.message.reply_text(
-            "Are you sure you want to send this message to the clinic admin? Your current process will not be saved.",
+            "Your message is not related to your current booking process.\n\n"
+            "If you send this message to the clinic admin, your current booking progress will not be saved.\n\n"
+            "Would you like to continue?",
             reply_markup=InlineKeyboardMarkup(btns)
         )
         return
@@ -2942,26 +3105,49 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     current_is_check = context.user_data.get('for_check', False)
     msg_is_check = category in ['check', 'modify', 'delete']
 
-    if current_is_check == msg_is_check:
-        # Related to current process
+    # Special rule: while inside Create Booking, "cancel"/"modify" is ambiguous -
+    # it could mean the booking currently being created, or an existing appointment.
+    if not current_is_check and category in ('modify', 'delete'):
+        snapshot_current_prompt(update, context)
+        context.user_data['pending_curbook_action'] = category  # 'modify' or 'delete'
+        action_word = "Modify" if category == 'modify' else "Cancel"
         btns = [
-            [InlineKeyboardButton("Continue current process", callback_data="global_restart_no")],
-            [InlineKeyboardButton("Restart this process", callback_data="global_restart_yes")]
+            [InlineKeyboardButton(f"{action_word} Current Booking", callback_data="global_curbook_current")],
+            [InlineKeyboardButton(f"{action_word} Existing Appointment", callback_data="global_curbook_existing")]
         ]
         await update.message.reply_text(
-            "You are already in this process. Do you want to continue where you left off, or restart this process? (Your current progress will not be saved if you restart).",
+            f"Do you want to:\n\n"
+            f"• {action_word} the booking you are currently creating\n"
+            f"• {action_word} an existing appointment",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return
+
+    if current_is_check == msg_is_check:
+        # Related to current process
+        snapshot_current_prompt(update, context)
+        btns = [
+            [InlineKeyboardButton("Continue Current Process", callback_data="global_restart_no")],
+            [InlineKeyboardButton("Restart Booking", callback_data="global_restart_yes")]
+        ]
+        await update.message.reply_text(
+            "It looks like you want to restart your current process.\n\n"
+            "Your current progress will not be saved.\n\n"
+            "Would you like to continue your current process or restart it?",
             reply_markup=InlineKeyboardMarkup(btns)
         )
     else:
         # Related to a different process
         target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+        snapshot_current_prompt(update, context)
         context.user_data['pending_switch_check'] = msg_is_check
         btns = [
-            [InlineKeyboardButton("No, continue this process", callback_data="global_switch_no")],
-            [InlineKeyboardButton(f"Yes, start {target_service}", callback_data="global_switch_yes")]
+            [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
+            [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
         ]
         await update.message.reply_text(
-            f"You are currently in the middle of a process. Do you want to terminate this and start {target_service}? (Your current progress will not be saved).",
+            f"You are currently in the middle of a process. Do you want to terminate this and start {target_service}? "
+            f"(Your current progress will not be saved).",
             reply_markup=InlineKeyboardMarkup(btns)
         )
 
@@ -2975,8 +3161,9 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
 
     if data == "global_admin_no":
         await query.edit_message_text("Resuming your process...")
+        await redisplay_current_step(update, context)
         return
-        
+
     elif data == "global_admin_yes":
         text = context.user_data.get('pending_admin_msg', '')
         active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
@@ -2993,12 +3180,19 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
             except Exception as e:
                 logger.error(f"Error sending general message: {e}")
                 await query.edit_message_text("⚠️ Could not send message to admin at this time.")
-        return
+        context.user_data.pop('saved_step_prompt', None)
+        return ConversationHandler.END
 
     elif data == "global_restart_no" or data == "global_switch_no":
+        if context.user_data.pop('pending_from_livechat', False):
+            await query.edit_message_text(
+                "Okay, you'll continue being handled by the clinic admin. Send your message and they'll get back to you shortly."
+            )
+            return
         await query.edit_message_text("Resuming your process...")
+        await redisplay_current_step(update, context)
         return
-        
+
     elif data == "global_restart_yes":
         await query.edit_message_text("Restarting process...")
         current_is_check = context.user_data.get('for_check', False)
@@ -3009,13 +3203,62 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
             
     elif data == "global_switch_yes":
         msg_is_check = context.user_data.get('pending_switch_check', False)
+        if context.user_data.pop('pending_from_livechat', False):
+            # Leaving the admin conversation to start a booking-related process.
+            context.user_data['is_live_chat'] = False
         await query.edit_message_text("Switching process...")
         context.user_data['for_check'] = msg_is_check
         if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
             return await ask_reuse_patient(update, context, for_check=msg_is_check)
         else:
             return await proceed_with_start_patient_details(update, context, query=True, for_check=msg_is_check)
-        
+
+    elif data == "global_exit_no":
+        await query.edit_message_text("Resuming your process...")
+        await redisplay_current_step(update, context)
+        return
+
+    elif data == "global_exit_yes":
+        context.user_data.pop('saved_step_prompt', None)
+        await query.edit_message_text("Exiting to the main menu...")
+        return await proceed_with_start(update, context, query=False)
+
+    elif data in ("global_curbook_current", "global_curbook_existing"):
+        action = context.user_data.get('pending_curbook_action', 'modify')  # 'modify' or 'delete'
+        action_word = "modify" if action == "modify" else "cancel"
+        if data == "global_curbook_existing":
+            # Terminate the current booking workflow and start Check Booking Details.
+            await query.edit_message_text("Starting Check Booking Details process...")
+            context.user_data.pop('saved_step_prompt', None)
+            context.user_data['for_check'] = True
+            if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
+                return await ask_reuse_patient(update, context, for_check=True)
+            else:
+                return await proceed_with_start_patient_details(update, context, query=True, for_check=True)
+        else:
+            # "Current Booking" selected - confirm before discarding the in-progress booking.
+            context.user_data['pending_curbook_action'] = action
+            btns = [
+                [InlineKeyboardButton("No, Continue Booking", callback_data="global_curbook_confirm_no")],
+                [InlineKeyboardButton("Yes", callback_data="global_curbook_confirm_yes")]
+            ]
+            await query.edit_message_text(
+                f"Your current booking progress will not be saved.\n"
+                f"Are you sure you want to {action_word} this booking process?",
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
+            return
+
+    elif data == "global_curbook_confirm_no":
+        await query.edit_message_text("Resuming your process...")
+        await redisplay_current_step(update, context)
+        return
+
+    elif data == "global_curbook_confirm_yes":
+        context.user_data.pop('saved_step_prompt', None)
+        await query.edit_message_text("Your booking process has been cancelled.")
+        return await proceed_with_start(update, context, query=False)
+
 if __name__ == '__main__':
     app = (
         ApplicationBuilder()
@@ -3046,37 +3289,37 @@ if __name__ == '__main__':
             MY_METHOD_CHOICE: [CallbackQueryHandler(my_method_logic, pattern="^meth_")],
             UPLOAD_IC: [MessageHandler(filters.PHOTO, handle_ic_photo)],
             MAN_ID_CHECK: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, man_id_check),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(man_id_check)),
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
             ],
             BASIC_CONFIRM: [
                 CallbackQueryHandler(basic_confirm_logic, pattern="^basic_")
             ],
             MAN_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, man_name),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(man_name)),
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
             ],
             MAN_GENDER: [
                 CallbackQueryHandler(man_gender, pattern="^gend_"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, man_gender),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(man_gender)),
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
             ],
             MAN_GENDER_CONFIRM: [
                 CallbackQueryHandler(man_gender_confirm, pattern="^gend_conf_")
             ],
             MAN_NAT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, man_nat),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(man_nat)),
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
             ],
             MAN_NAT_CONFIRM: [
                 CallbackQueryHandler(man_nat_confirm, pattern="^nat_conf_")
             ],
             MAN_PHONE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, man_phone),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(man_phone)),
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
             ],
             MAN_ADDRESS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, man_address),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(man_address)),
                 CallbackQueryHandler(confirm_profile_logic, pattern="^prof_edit$")
             ],
             CONFIRM_PROFILE: [
@@ -3091,7 +3334,7 @@ if __name__ == '__main__':
             OTHERS_REASON: [
                 CallbackQueryHandler(handle_booking_edit, pattern="^editbook_abort_edit$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, others_reason)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(others_reason))
             ],
             V_TYPE: [
                 CallbackQueryHandler(vaccine_type_selected, pattern="^vtype_"),
@@ -3118,7 +3361,7 @@ if __name__ == '__main__':
                 CallbackQueryHandler(route_back_service_details, pattern="^back_bt_pkg$"),
                 CallbackQueryHandler(restart_service, pattern="^back_start$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$") ,
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_time_selection)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(handle_date_time_selection))
             ],
             DOC_SELECT: [
                 CallbackQueryHandler(handle_doc_select, pattern="^docname_"),
@@ -3128,23 +3371,23 @@ if __name__ == '__main__':
                 CallbackQueryHandler(show_doctor_preference, pattern="^back_doc_pref$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
                 CallbackQueryHandler(handle_date_time_selection, pattern="^(date_|time_|back_date|sug_|suga_|show_standard_dates)"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_time_selection)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(handle_date_time_selection))
             ],
             CONFIRM_BOOK: [CallbackQueryHandler(confirm_booking_logic, pattern="^conf_")],
             EDIT_BOOKING_MENU: [CallbackQueryHandler(handle_booking_edit, pattern="^editbook_")],
             FINAL_HELP: [CallbackQueryHandler(final_help_logic, pattern="^help_")],
             CANCEL_SELECT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_select_logic)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(cancel_select_logic))
             ],
             CANCEL_REASON: [
                 CallbackQueryHandler(cancel_reason_logic),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_reason_logic)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(cancel_reason_logic))
             ],
             MANUAL_PREV_DOSE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_prev_dose)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(handle_manual_prev_dose))
             ],
             MODIFY_ANOTHER: [CallbackQueryHandler(modify_another_choice, pattern="^(modify_another|help_no)")],
-            ASK_MANUAL_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_date_input)],
+            ASK_MANUAL_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(handle_manual_date_input))],
         },
         fallbacks=[
             CommandHandler('start', start), 
