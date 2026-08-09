@@ -288,7 +288,7 @@ export default function BotRepliesPage() {
                      {/* Pass to bot header if telegram */}
                      {selectedChatKey.startsWith("TG-") && (
                          <div className="px-6 py-3 border-b bg-white flex justify-between items-center z-10">
-                             <span className="font-semibold text-slate-700 text-sm">Telegram Direct Chat</span>
+                             <span></span>
                              <button onClick={handlePassToBot} className="text-sm bg-blue-50 text-blue-700 px-4 py-1.5 rounded-lg font-bold flex items-center gap-2 hover:bg-blue-100 transition-colors border border-blue-200">
                                  <Bot size={16}/> Pass back to Bot
                              </button>
