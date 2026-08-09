@@ -3346,7 +3346,7 @@ if __name__ == '__main__':
             OTHERS_REASON: [
                 CallbackQueryHandler(handle_booking_edit, pattern="^editbook_abort_edit$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
-                CallbackQueryHandler(handle_global_interception_callbacks, pattern="^global_"),
+                CallbackQueryHandler(handle_global_interception_callbacks, pattern="^global_"), # <--- MUST ADD THIS
                 MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(others_reason))
             ],
             V_TYPE: [
