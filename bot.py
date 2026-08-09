@@ -3120,9 +3120,7 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton("Cancel an existing appointment", callback_data="global_curbook_existing")]
         ]
         await update.message.reply_text(
-            "Do you want to:\n\n"
-            "• Cancel the booking you are currently creating\n"
-            "• Cancel an existing appointment",
+            "Do you want to:",
             reply_markup=InlineKeyboardMarkup(btns)
         )
         return
@@ -3285,7 +3283,8 @@ if __name__ == '__main__':
             CommandHandler('start', start),
             CommandHandler('cancel', cancel_command),
             CallbackQueryHandler(final_help_logic, pattern="^help_"),
-            CallbackQueryHandler(handle_reminder_action, pattern="^rem_")
+            CallbackQueryHandler(handle_reminder_action, pattern="^rem_"),
+            CallbackQueryHandler(handle_global_interception_callbacks, pattern="^global_")
         ],
         states={
             REUSE_PATIENT: [CallbackQueryHandler(handle_reuse_choice, pattern="^reuse_")],
