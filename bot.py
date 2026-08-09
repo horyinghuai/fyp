@@ -716,6 +716,7 @@ async def handle_start_clinic_select(update: Update, context: ContextTypes.DEFAU
     return await proceed_with_start(update, context, query=True)
 
 async def proceed_with_start(update, context, query=False):
+    context.user_data['in_process'] = False
     clinic_name = "our Clinic"
     active_cid = context.user_data['active_clinic_id']
     if active_cid:
@@ -740,6 +741,7 @@ async def proceed_with_start(update, context, query=False):
     else:
         await update.callback_query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btns))
     return SERVICE
+
 def is_booking_related(text):
     keywords = ["book", "appointment", "reservation", "cancel", "modify", "check"]
     return any(k in text.lower() for k in keywords)
@@ -3105,26 +3107,25 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     current_is_check = context.user_data.get('for_check', False)
     msg_is_check = category in ['check', 'modify', 'delete']
 
-    # Special rule: while inside Create Booking, "cancel"/"modify" is ambiguous -
-    # it could mean the booking currently being created, or an existing appointment.
-    if not current_is_check and category in ('modify', 'delete'):
+    # ONLY apply the "current vs existing" split for 'delete' (cancel booking)
+    if not current_is_check and category == 'delete':
         snapshot_current_prompt(update, context)
-        context.user_data['pending_curbook_action'] = category  # 'modify' or 'delete'
-        action_word = "Modify" if category == 'modify' else "Cancel"
+        # We hardcode the action to 'cancel' since this block only fires for 'delete'
+        context.user_data['pending_curbook_action'] = 'cancel'
         btns = [
-            [InlineKeyboardButton(f"{action_word} Current Booking", callback_data="global_curbook_current")],
-            [InlineKeyboardButton(f"{action_word} Existing Appointment", callback_data="global_curbook_existing")]
+            [InlineKeyboardButton("Cancel the booking you are currently creating", callback_data="global_curbook_current")],
+            [InlineKeyboardButton("Cancel an existing appointment", callback_data="global_curbook_existing")]
         ]
         await update.message.reply_text(
-            f"Do you want to:\n\n"
-            f"• {action_word} the booking you are currently creating\n"
-            f"• {action_word} an existing appointment",
+            "Do you want to:\n\n"
+            "• Cancel the booking you are currently creating\n"
+            "• Cancel an existing appointment",
             reply_markup=InlineKeyboardMarkup(btns)
         )
         return
 
+    # Standard restart/switch logic handles 'modify' and 'check'
     if current_is_check == msg_is_check:
-        # Related to current process
         snapshot_current_prompt(update, context)
         btns = [
             [InlineKeyboardButton("Continue Current Process", callback_data="global_restart_no")],
@@ -3137,7 +3138,6 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=InlineKeyboardMarkup(btns)
         )
     else:
-        # Related to a different process
         target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
         snapshot_current_prompt(update, context)
         context.user_data['pending_switch_check'] = msg_is_check
@@ -3160,8 +3160,10 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
     data = query.data
 
     if data == "global_admin_no":
-        await query.edit_message_text("Resuming your process...")
-        await redisplay_current_step(update, context)
+        if context.user_data.get('in_process'):
+            await redisplay_current_step(update, context)
+        else:
+            await query.edit_message_text("Okay, message cancelled.")
         return
 
     elif data == "global_admin_yes":
@@ -3175,6 +3177,7 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
                     "message": text
                 }, timeout=5.0)
                 context.user_data['is_live_chat'] = True
+                context.user_data['in_process'] = False # Leaving process
                 bot_reply = "✅ Your message has been sent to the clinic admin. They will reply shortly."
                 await query.edit_message_text(bot_reply)
             except Exception as e:
@@ -3189,13 +3192,12 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
                 "Okay, you'll continue being handled by the clinic admin. Send your message and they'll get back to you shortly."
             )
             return
-        await query.edit_message_text("Resuming your process...")
         await redisplay_current_step(update, context)
         return
 
     elif data == "global_restart_yes":
-        await query.edit_message_text("Restarting process...")
         current_is_check = context.user_data.get('for_check', False)
+        context.user_data['in_process'] = True
         if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
             return await ask_reuse_patient(update, context, for_check=current_is_check)
         else:
@@ -3204,61 +3206,53 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
     elif data == "global_switch_yes":
         msg_is_check = context.user_data.get('pending_switch_check', False)
         if context.user_data.pop('pending_from_livechat', False):
-            # Leaving the admin conversation to start a booking-related process.
             context.user_data['is_live_chat'] = False
-        await query.edit_message_text("Switching process...")
         context.user_data['for_check'] = msg_is_check
+        context.user_data['in_process'] = True
         if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
             return await ask_reuse_patient(update, context, for_check=msg_is_check)
         else:
             return await proceed_with_start_patient_details(update, context, query=True, for_check=msg_is_check)
 
     elif data == "global_exit_no":
-        await query.edit_message_text("Resuming your process...")
         await redisplay_current_step(update, context)
         return
 
     elif data == "global_exit_yes":
         context.user_data.pop('saved_step_prompt', None)
-        await query.edit_message_text("Exiting to the main menu...")
-        return await proceed_with_start(update, context, query=False)
+        context.user_data['in_process'] = False
+        return await proceed_with_start(update, context, query=True) # Changed to query=True
 
     elif data in ("global_curbook_current", "global_curbook_existing"):
-        action = context.user_data.get('pending_curbook_action', 'modify')  # 'modify' or 'delete'
-        action_word = "modify" if action == "modify" else "cancel"
         if data == "global_curbook_existing":
-            # Terminate the current booking workflow and start Check Booking Details.
-            await query.edit_message_text("Starting Check Booking Details process...")
             context.user_data.pop('saved_step_prompt', None)
             context.user_data['for_check'] = True
+            context.user_data['in_process'] = True
             if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
                 return await ask_reuse_patient(update, context, for_check=True)
             else:
                 return await proceed_with_start_patient_details(update, context, query=True, for_check=True)
         else:
-            # "Current Booking" selected - confirm before discarding the in-progress booking.
-            context.user_data['pending_curbook_action'] = action
             btns = [
                 [InlineKeyboardButton("No, Continue Booking", callback_data="global_curbook_confirm_no")],
                 [InlineKeyboardButton("Yes", callback_data="global_curbook_confirm_yes")]
             ]
             await query.edit_message_text(
-                f"Your current booking progress will not be saved.\n"
-                f"Are you sure you want to {action_word} this booking process?",
+                "Your current booking progress will not be saved.\n"
+                "Are you sure you want to cancel this booking process?",
                 reply_markup=InlineKeyboardMarkup(btns)
             )
             return
 
     elif data == "global_curbook_confirm_no":
-        await query.edit_message_text("Resuming your process...")
         await redisplay_current_step(update, context)
         return
 
     elif data == "global_curbook_confirm_yes":
         context.user_data.pop('saved_step_prompt', None)
-        await query.edit_message_text("Your booking process has been cancelled.")
-        return await proceed_with_start(update, context, query=False)
-
+        context.user_data['in_process'] = False
+        return await proceed_with_start(update, context, query=True)
+    
 if __name__ == '__main__':
     app = (
         ApplicationBuilder()
@@ -3351,7 +3345,7 @@ if __name__ == '__main__':
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$")
             ],
             BT_FLOW: [
-                CallbackQueryHandler(bt_logic),
+                CallbackQueryHandler(bt_logic, pattern="^(?!global_).*$"),
                 CallbackQueryHandler(route_back_service_details, pattern="^back_bt_pkg$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$")
             ],
@@ -3380,7 +3374,7 @@ if __name__ == '__main__':
                 MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(cancel_select_logic))
             ],
             CANCEL_REASON: [
-                CallbackQueryHandler(cancel_reason_logic),
+                CallbackQueryHandler(cancel_reason_logic, pattern="^(?!global_).*$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(cancel_reason_logic))
             ],
             MANUAL_PREV_DOSE: [
