@@ -1732,7 +1732,7 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
             except Exception as e:
                 logger.error(f"Ask Admin Error: {e}")
         if not context.user_data.get('admin_notice_shown'):
-            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
+            await update.message.reply_text("✅ Your message has been sent to the clinic admin. They will reply shortly.")
             context.user_data['admin_notice_shown'] = True
         return OTHERS_REASON
 
@@ -3166,7 +3166,7 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
             await query.edit_message_text("Resuming your process...")
             await redisplay_current_step(update, context)
         else:
-            await query.edit_message_text("Okay, message cancelled.")
+            await query.edit_message_text("Message cancelled.")
         return
 
     elif data == "global_admin_yes":
@@ -3195,7 +3195,7 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
         
         if from_livechat or from_general:
             await query.edit_message_text(
-                "Okay, you'll continue being handled by the clinic admin. Send your message and they'll get back to you shortly."
+                "You'll continue being handled by the clinic admin. Send your message and they'll get back to you shortly."
             )
             # Must return the state if they were in the General Question mode so it doesn't break
             if context.user_data.get('general_question_mode'):
