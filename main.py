@@ -17,6 +17,7 @@ import jwt
 import bcrypt
 import uuid
 import asyncio
+from contextlib import asynccontextmanager
 
 async def send_sms_async(to_phone: str, message: str):
     mocean_token = os.getenv("MOCEAN_API_TOKEN")
@@ -155,7 +156,12 @@ def get_current_user(authorization: str = Header(None), db: Session = Depends(ge
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Token expired or invalid")
 
-app = FastAPI(title="Clinic Smart Assistant Backend")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(_reminder_scheduler_loop())
+    yield
+
+app = FastAPI(title="Clinic Smart Assistant Backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
@@ -293,10 +299,6 @@ async def _reminder_scheduler_loop():
     while True:
         await send_appointment_reminders()
         await asyncio.sleep(REMINDER_CHECK_INTERVAL_SECONDS)
-
-@app.on_event("startup")
-async def _start_reminder_scheduler():
-    asyncio.create_task(_reminder_scheduler_loop())
 
 # --- Pydantic Models ---
 class RequestEmailChangeReq(BaseModel):

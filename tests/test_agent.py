@@ -191,29 +191,29 @@ def test_agent3_scheduling_node_sunday_fallback():
 @patch("main.logging_agent")
 def test_agent3_recommend_slots_workload_balancing(mock_logging):
     mock_db = MagicMock()
-
+    
     doc1 = MagicMock()
     doc1.ic_passport_number = "111"
     doc1.name = "DR. TAN"
-
+    
     mock_db.query.return_value.join.return_value.filter.return_value.distinct.return_value.all.return_value = [doc1]
     mock_db.query.return_value.join.return_value.filter.return_value.all.return_value = []
     mock_db.query.return_value.join.return_value.filter.return_value.first.return_value = None
-
+    
     avail = MagicMock()
     avail.start_time = datetime.strptime("09:00", "%H:%M").time()
     avail.end_time = datetime.strptime("17:00", "%H:%M").time()
     avail.day_of_week = "sat"
     
     mock_db.query.return_value.filter.return_value.all.return_value = [avail]
-
+    
     req = RecommendSlotReq(
         clinic_id="c1111111-1111-1111-1111-111111111111",
-        base_date="2026-08-01",
+        base_date="2026-08-15",
         doctor_pref="ANY",
         duration=30
     )
-
+    
     res = recommend_slots(req, db=mock_db)
     assert "recommended_doctor" in res
     assert res["recommended_doctor"] == "DR. TAN"
