@@ -1786,6 +1786,19 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
             logger.error(f"Message Classification Error: {e}")
             category = "other"
 
+    if category == "unrelated":
+        btns = [
+            [InlineKeyboardButton("🔁 Re-enter Question", callback_data="genq_reenter")],
+            [InlineKeyboardButton("🛑 End Session", callback_data="genq_end")]
+        ]
+        await update.message.reply_text(
+            "Sorry, I can only help with enquiries related to this clinic "
+            "(e.g. bookings, appointments, clinic hours, services). "
+            "Your message doesn't seem to be related to the clinic.",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return OTHERS_REASON
+
     if category == "other":
         async with httpx.AsyncClient() as client:
             try:
@@ -1793,27 +1806,43 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
             except Exception as e:
                 logger.error(f"Ask Admin Error: {e}")
         if not context.user_data.get('admin_notice_shown'):
-            await update.message.reply_text("✅ Your message has been sent to the clinic admin. They will reply shortly.")
+            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
             context.user_data['admin_notice_shown'] = True
         return OTHERS_REASON
 
     msg_is_check = category in ('check', 'modify', 'delete')
-    target_service = get_intent_label(category)
+    target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
     
     context.user_data['pending_switch_check'] = msg_is_check
     context.user_data['pending_from_general_question'] = True
     
     btns = [
         [InlineKeyboardButton("Continue with Clinic Admin", callback_data="global_switch_no")],
-        [InlineKeyboardButton(f"Start to {target_service}", callback_data="global_switch_yes")]
+        [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
     ]
     await update.message.reply_text(
         "You are currently being handled by the clinic admin.\n\n"
-        f"Would you like to continue being handled by the clinic admin, or terminate this and start to {target_service}?\n\n"
+        f"Would you like to continue being handled by the clinic admin, or terminate this and start {target_service}?\n\n"
         "Are you sure you want to end the conversation with the clinic admin?",
         reply_markup=InlineKeyboardMarkup(btns)
     )
     return OTHERS_REASON
+
+async def handle_general_question_unrelated(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the 'Re-enter Question' / 'End Session' buttons shown when a
+    General Question message is classified as unrelated to the clinic."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "genq_reenter":
+        context.user_data['general_question_mode'] = True
+        await query.edit_message_text("Please type your question below.")
+        return OTHERS_REASON
+
+    elif query.data == "genq_end":
+        btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+        await query.edit_message_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+        return FINAL_HELP
 
 async def vaccine_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -3416,6 +3445,7 @@ if __name__ == '__main__':
                 CallbackQueryHandler(handle_booking_edit, pattern="^editbook_abort_edit$"),
                 CallbackQueryHandler(handle_edit_menu_routing, pattern="^back_edit_menu$"),
                 CallbackQueryHandler(handle_global_interception_callbacks, pattern="^global_"), # <--- MUST ADD THIS
+                CallbackQueryHandler(handle_general_question_unrelated, pattern="^genq_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(others_reason))
             ],
             V_TYPE: [

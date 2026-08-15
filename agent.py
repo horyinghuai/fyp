@@ -167,21 +167,50 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
 async def classify_general_message(user_text: str) -> str:
     """
     Classifies a free-text message sent from the 'General Question' entry point.
-    Returns one of: "create", "check", "modify", "delete", "other".
-    "other" means the message is NOT related to booking/checking/modifying/
-    cancelling an appointment and should be routed to the clinic admin.
+    Returns one of: "create", "check", "modify", "delete", "other", "unrelated".
+    "other" means the message IS related to the clinic (e.g. a general question
+    about hours, location, pricing, services) but not to booking/checking/
+    modifying/cancelling an appointment, and should be routed to the clinic admin.
+    "unrelated" means the message has NOTHING to do with this medical clinic at
+    all (e.g. "I want to book a car service") and should NOT be routed to the
+    clinic admin.
     """
     prompt = f"""
-    You are classifying a patient's message sent to a medical clinic chatbot.
+    You are classifying a patient's message sent to a MEDICAL CLINIC chatbot.
+    This clinic ONLY handles medical/health services: doctor consultations,
+    vaccinations, and blood tests. It has nothing to do with any other business
+    (cars, food, salons, hotels, etc.).
+
     USER TEXT: "{user_text}"
 
     Decide which single category the message belongs to:
-    - "create": the patient wants to make/book a NEW appointment/reservation.
-    - "check": the patient wants to check/view/see their existing appointment/reservation.
-    - "modify": the patient wants to change/reschedule/update an existing appointment/reservation.
-    - "delete": the patient wants to cancel an existing appointment/reservation.
-    - "other": anything else, including general questions (e.g. clinic hours, location,
-      pricing, "can I bring my child?"), greetings, or unrelated chit-chat.
+    - "create": the patient wants to make/book a NEW medical appointment AT THIS
+      CLINIC (e.g. a vaccination, blood test, or doctor consultation).
+    - "check": the patient wants to check/view/see their existing medical
+      appointment AT THIS CLINIC.
+    - "modify": the patient wants to change/reschedule/update an existing medical
+      appointment AT THIS CLINIC.
+    - "delete": the patient wants to cancel an existing medical appointment AT
+      THIS CLINIC.
+    - "other": a genuine question or message ABOUT THIS CLINIC that is not about
+      booking/checking/modifying/cancelling an appointment (e.g. "What are your
+      operating hours?", clinic location, pricing of clinic services, "can I
+      bring my child?", greetings directed at the clinic).
+    - "unrelated": the message is about booking, buying, checking, modifying,
+      cancelling, or asking the price of ANYTHING that is NOT a medical
+      appointment at this clinic. This includes bookings/reservations/purchases
+      for other businesses or services entirely (e.g. "I want to book a car
+      service", "book a hotel room", "price of cake", "check my flight
+      booking") - these use booking-like words but are NOT about this clinic.
+
+    IMPORTANT: The mere presence of words like "book", "appointment", "check",
+    "cancel", or "price" does NOT automatically mean "create"/"check"/"modify"/
+    "delete"/"other" - only use those categories if the request is clearly about
+    a MEDICAL appointment AT THIS CLINIC. A question clearly about this clinic's
+    own operations (e.g. "What are your operating hours?") is always "other",
+    never "unrelated". If the message is about booking/checking/pricing
+    something that is NOT a medical service at this clinic, or you are unsure
+    whether it relates to this clinic at all, classify it as "unrelated".
 
     CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output <think> tags.
     {{"category": "other"}}
@@ -191,7 +220,7 @@ async def classify_general_message(user_text: str) -> str:
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         data = json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
         category = str(data.get("category", "other")).lower().strip()
-        if category not in ("create", "check", "modify", "delete"):
+        if category not in ("create", "check", "modify", "delete", "unrelated"):
             category = "other"
         return category
     except Exception as e:
