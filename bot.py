@@ -2598,6 +2598,20 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             )
             return BOOK_DATE_TIME
 
+        if category == "unrelated":
+            snapshot_current_prompt(update, context)
+            btns = [
+                [InlineKeyboardButton("🔁 Re-enter Question", callback_data="global_unrelated_reenter")],
+                [InlineKeyboardButton("🛑 End Session", callback_data="global_unrelated_end")]
+            ]
+            await update.message.reply_text(
+                "Sorry, I can only help with enquiries related to this clinic "
+                "(e.g. bookings, appointments, clinic hours, services). "
+                "Your message doesn't seem to be related to the clinic.",
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
+            return BOOK_DATE_TIME
+
         # Check if the text matches the current process
         current_is_check = context.user_data.get('for_check', False)
         msg_is_check = category in ['check', 'modify', 'delete']
@@ -3196,6 +3210,20 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    if category == "unrelated":
+        snapshot_current_prompt(update, context)
+        btns = [
+            [InlineKeyboardButton("🔁 Re-enter Question", callback_data="global_unrelated_reenter")],
+            [InlineKeyboardButton("🛑 End Session", callback_data="global_unrelated_end")]
+        ]
+        await update.message.reply_text(
+            "Sorry, I can only help with enquiries related to this clinic "
+            "(e.g. bookings, appointments, clinic hours, services). "
+            "Your message doesn't seem to be related to the clinic.",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return
+
     # Booking related message (Create vs Modify/Cancel)
     current_is_check = context.user_data.get('for_check', False)
     msg_is_check = category in ['check', 'modify', 'delete']
@@ -3366,6 +3394,18 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
         context.user_data.pop('saved_step_prompt', None)
         context.user_data['in_process'] = False
         return await proceed_with_start(update, context, query=True)
+
+    elif data == "global_unrelated_reenter":
+        await query.edit_message_text("Okay, please continue with your current process below.")
+        await redisplay_current_step(update, context)
+        return
+
+    elif data == "global_unrelated_end":
+        context.user_data.pop('saved_step_prompt', None)
+        context.user_data['in_process'] = False
+        btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+        await query.edit_message_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+        return FINAL_HELP
     
 if __name__ == '__main__':
     app = (
