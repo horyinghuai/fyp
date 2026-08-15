@@ -843,6 +843,45 @@ async def main_menu_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Please type your question below.")
         return OTHERS_REASON
 
+async def handle_service_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lets the user skip the 3 main-menu buttons by typing their need directly
+    (e.g. "i want to book", "check booking", "what are your operating hours").
+    Uses the same semantic /classify-message intent classifier already used
+    elsewhere, then routes to exactly the same code path the corresponding
+    button (main_create / main_check / main_general) already uses."""
+    text = clean_bot_username(update.message.text)
+    if not text:
+        return SERVICE
+
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.post(f"{API_BASE}/classify-message", json={"text": text}, timeout=30.0)
+            category = res.json().get("category", "other") if res.status_code == 200 else "other"
+        except Exception as e:
+            logger.error(f"Message Classification Error: {e}")
+            category = "other"
+
+    if category == "create":
+        # Same routing as the "main_create" button
+        if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
+            return await ask_reuse_patient(update, context, for_check=False)
+        else:
+            return await proceed_with_start_patient_details(update, context, query=False, for_check=False)
+
+    elif category in ("check", "modify", "delete"):
+        # Same routing as the "main_check" button
+        if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
+            return await ask_reuse_patient(update, context, for_check=True)
+        else:
+            return await proceed_with_start_patient_details(update, context, query=False, for_check=True)
+
+    else:
+        # Same routing as the "main_general" button, then immediately process
+        # the text the user already typed as their question (no need to ask
+        # them to type it again).
+        context.user_data['general_question_mode'] = True
+        return await handle_general_question_message(update, context, text)
+
 # Helper to start patient details flow
 async def proceed_with_start_patient_details(update, context, query=False, for_check=False):
     # Clear any stale patient details from previous incomplete registration
@@ -922,7 +961,7 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
 
     keyboard = []
     if future_appts_sorted:
-        keyboard.append([InlineKeyboardButton("⏰ Upcoming Appointments (click to view, modify, or cancel)", callback_data="noop")])
+        keyboard.append([InlineKeyboardButton("⏰ UPCOMING APPOINTMENTS (CLICK TO VIEW, MODIFY, OR CANCEL)", callback_data="noop")])
         for a in future_appts_sorted:
             service = a.get('service', 'Consultation')
             if service == 'Others':
@@ -941,7 +980,7 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
             label = f"{a['date']} {a['time'][:5]} - {detail} ({status})"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"view_appt_{a['stage_id']}")])
     if past_appts_sorted:
-        keyboard.append([InlineKeyboardButton("📅 Past Appointments (view only)", callback_data="noop")])
+        keyboard.append([InlineKeyboardButton("📅 PAST APPOINTMENTS (VIEW ONLY)", callback_data="noop")])
         for a in past_appts_sorted:
             service = a.get('service', 'Consultation')
             if service == 'Others':
@@ -3362,7 +3401,8 @@ if __name__ == '__main__':
             EDIT_PROFILE_MENU: [CallbackQueryHandler(handle_profile_edit_selection, pattern="^edit_")],
             SERVICE: [
                 CallbackQueryHandler(main_menu_logic, pattern="^main_"),
-                CallbackQueryHandler(service_choice, pattern="^svc_")
+                CallbackQueryHandler(service_choice, pattern="^svc_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(handle_service_menu_text))
             ],
             OTHERS_REASON: [
                 CallbackQueryHandler(handle_booking_edit, pattern="^editbook_abort_edit$"),
