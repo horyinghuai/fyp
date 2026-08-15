@@ -1732,7 +1732,7 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
             except Exception as e:
                 logger.error(f"Ask Admin Error: {e}")
         if not context.user_data.get('admin_notice_shown'):
-            await update.message.reply_text("✅ Your message has been sent to the clinic admin. They will reply shortly.")
+            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
             context.user_data['admin_notice_shown'] = True
         return OTHERS_REASON
 
@@ -3166,7 +3166,7 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
             await query.edit_message_text("Resuming your process...")
             await redisplay_current_step(update, context)
         else:
-            await query.edit_message_text("Message cancelled.")
+            await query.edit_message_text("Okay, message cancelled.")
         return
 
     elif data == "global_admin_yes":
@@ -3195,7 +3195,7 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
         
         if from_livechat or from_general:
             await query.edit_message_text(
-                "You'll continue being handled by the clinic admin. Send your message and they'll get back to you shortly."
+                "Okay, you'll continue being handled by the clinic admin. Send your message and they'll get back to you shortly."
             )
             # Must return the state if they were in the General Question mode so it doesn't break
             if context.user_data.get('general_question_mode'):
@@ -3218,6 +3218,14 @@ async def handle_global_interception_callbacks(update: Update, context: ContextT
         msg_is_check = context.user_data.get('pending_switch_check', False)
         if context.user_data.pop('pending_from_livechat', False):
             context.user_data['is_live_chat'] = False
+        # WIPE ALL ADMIN/GENERAL QUESTION FLAGS: without this, a stale
+        # general_question_mode (or pending_from_general_question /
+        # admin_notice_shown) survives the switch into the booking workflow
+        # and causes later booking-flow messages (e.g. the reason-for-visit
+        # step) to be misrouted back into the "handled by clinic admin" branch.
+        context.user_data.pop('pending_from_general_question', None)
+        context.user_data.pop('general_question_mode', None)
+        context.user_data.pop('admin_notice_shown', None)
         context.user_data['for_check'] = msg_is_check
         context.user_data['in_process'] = True
         if context.user_data.get('ic') and context.user_data.get('name') and context.user_data.get('phone'):
