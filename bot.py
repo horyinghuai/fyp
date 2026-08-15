@@ -511,6 +511,20 @@ def clean_bot_username(text: str) -> str:
     cleaned = re.sub(r'^(via\s+)?@[A-Za-z0-9_]+\s*', '', text, flags=re.IGNORECASE)
     return cleaned.strip().upper()
 
+# Display-only label for the semantically-classified intent category. This does NOT
+# affect any booking/business logic (msg_is_check / pending_switch_check / for_check
+# remain unchanged) - it only controls the wording shown in confirmation prompts so
+# the message reflects the user's actual detected intent (Check / Modify / Cancel)
+# instead of a generic "Check/Modify/Cancel Booking" phrase.
+INTENT_DISPLAY_LABELS = {
+    'check': 'Check Booking',
+    'modify': 'Modify Booking',
+    'delete': 'Cancel Booking',
+}
+
+def get_intent_label(category: str) -> str:
+    return INTENT_DISPLAY_LABELS.get(category, 'Create Booking')
+
 # ---------------------------------------------------------------------------
 # Global interruption handling (Exit / Stop / Restart / Switch service / etc.)
 # See conversation-flow requirements: point 6 "Global Exit".
@@ -1737,18 +1751,18 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
         return OTHERS_REASON
 
     msg_is_check = category in ('check', 'modify', 'delete')
-    target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+    target_service = get_intent_label(category)
     
     context.user_data['pending_switch_check'] = msg_is_check
     context.user_data['pending_from_general_question'] = True
     
     btns = [
         [InlineKeyboardButton("Continue with Clinic Admin", callback_data="global_switch_no")],
-        [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
+        [InlineKeyboardButton(f"Start to {target_service}", callback_data="global_switch_yes")]
     ]
     await update.message.reply_text(
         "You are currently being handled by the clinic admin.\n\n"
-        f"Would you like to continue being handled by the clinic admin, or terminate this and start {target_service}?\n\n"
+        f"Would you like to continue being handled by the clinic admin, or terminate this and start to {target_service}?\n\n"
         "Are you sure you want to end the conversation with the clinic admin?",
         reply_markup=InlineKeyboardMarkup(btns)
     )
@@ -2478,16 +2492,16 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
                 return BOOK_DATE_TIME
             else:
                 msg_is_check = category in ('check', 'modify', 'delete')
-                target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+                target_service = get_intent_label(category)
                 context.user_data['pending_switch_check'] = msg_is_check
                 context.user_data['pending_from_livechat'] = True
                 btns = [
                     [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
-                    [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
+                    [InlineKeyboardButton(f"Start to {target_service}", callback_data="global_switch_yes")]
                 ]
                 await update.message.reply_text(
                     "You are currently being handled by the clinic admin.\n\n"
-                    f"Would you like to continue being handled by the clinic admin, or terminate this and start {target_service}?\n\n"
+                    f"Would you like to continue being handled by the clinic admin, or terminate this and start to {target_service}?\n\n"
                     "Are you sure you want to end the conversation with the clinic admin?",
                     reply_markup=InlineKeyboardMarkup(btns)
                 )
@@ -2516,7 +2530,7 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             snapshot_current_prompt(update, context)
             btns = [
                 [InlineKeyboardButton("Continue Current Process", callback_data="global_restart_no")],
-                [InlineKeyboardButton("Restart Booking", callback_data="global_restart_yes")]
+                [InlineKeyboardButton("Restart Process", callback_data="global_restart_yes")]
             ]
             await update.message.reply_text(
                 "It looks like you want to restart your current process.\n\n"
@@ -2525,15 +2539,15 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
                 reply_markup=InlineKeyboardMarkup(btns)
             )
         else:
-            target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+            target_service = get_intent_label(category)
             snapshot_current_prompt(update, context)
             context.user_data['pending_switch_check'] = msg_is_check
             btns = [
                 [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
-                [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
+                [InlineKeyboardButton(f"Start to {target_service}", callback_data="global_switch_yes")]
             ]
             await update.message.reply_text(
-                f"You are currently in the middle of a process. Do you want to terminate this and start {target_service}? (Your current progress will not be saved).",
+                f"You are currently in the middle of a process. Do you want to terminate this and start to {target_service}? (Your current progress will not be saved).",
                 reply_markup=InlineKeyboardMarkup(btns)
             )
             
@@ -3076,16 +3090,16 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         else:
             msg_is_check = category in ('check', 'modify', 'delete')
-            target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+            target_service = get_intent_label(category)
             context.user_data['pending_switch_check'] = msg_is_check
             context.user_data['pending_from_livechat'] = True
             btns = [
                 [InlineKeyboardButton("Continue with Clinic Admin", callback_data="global_switch_no")],
-                [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
+                [InlineKeyboardButton(f"Start to {target_service}", callback_data="global_switch_yes")]
             ]
             await update.message.reply_text(
                 "You are currently being handled by the clinic admin.\n\n"
-                f"Would you like to continue being handled by the clinic admin, or terminate this and start {target_service}?\n\n"
+                f"Would you like to continue being handled by the clinic admin, or terminate this and start to {target_service}?\n\n"
                 "Are you sure you want to end the conversation with the clinic admin?",
                 reply_markup=InlineKeyboardMarkup(btns)
             )
@@ -3130,7 +3144,7 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         snapshot_current_prompt(update, context)
         btns = [
             [InlineKeyboardButton("Continue Current Process", callback_data="global_restart_no")],
-            [InlineKeyboardButton("Restart Booking", callback_data="global_restart_yes")]
+            [InlineKeyboardButton("Restart Process", callback_data="global_restart_yes")]
         ]
         await update.message.reply_text(
             "It looks like you want to restart your current process.\n\n"
@@ -3139,15 +3153,15 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=InlineKeyboardMarkup(btns)
         )
     else:
-        target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+        target_service = get_intent_label(category)
         snapshot_current_prompt(update, context)
         context.user_data['pending_switch_check'] = msg_is_check
         btns = [
             [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
-            [InlineKeyboardButton(f"Start {target_service}", callback_data="global_switch_yes")]
+            [InlineKeyboardButton(f"Start to {target_service}", callback_data="global_switch_yes")]
         ]
         await update.message.reply_text(
-            f"You are currently in the middle of a process. Do you want to terminate this and start {target_service}? "
+            f"You are currently in the middle of a process. Do you want to terminate this and start to {target_service}? "
             f"(Your current progress will not be saved).",
             reply_markup=InlineKeyboardMarkup(btns)
         )
