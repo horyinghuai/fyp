@@ -1806,7 +1806,7 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
             except Exception as e:
                 logger.error(f"Ask Admin Error: {e}")
         if not context.user_data.get('admin_notice_shown'):
-            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
+            await update.message.reply_text("✅ Your message has been sent to the clinic admin. They will reply shortly.")
             context.user_data['admin_notice_shown'] = True
         return OTHERS_REASON
 
