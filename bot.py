@@ -660,22 +660,28 @@ async def execute_cancellation(message, context, reason):
     # Apply sentence case to reason
     reason = reason.capitalize() if reason else reason
 
+    cancel_failed = False
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/cancel-appointment-stage/{stage_id}", json={"cancel_reason": reason}, timeout=5.0)
-            text = "✅ Booking is cancelled successfully"
         except Exception as e:
             logger.error(f"Cancel error: {e}")
-            text = "⚠️ Failed to cancel appointment. Please try again."
+            cancel_failed = True
 
-    # Fix: Safely determine if the message belongs to the bot before attempting an edit
-    try:
-        if getattr(message.from_user, 'is_bot', False):
-            await message.edit_text(text)
-        else:
+    # The backend already sends the patient a detailed cancellation confirmation
+    # (Name/IC/Phone/Date/Time/Service/Doctor/Clinic/Reason) directly on success,
+    # so only show a local message here on failure - a generic success text would
+    # just duplicate that detailed confirmation.
+    if cancel_failed:
+        text = "⚠️ Failed to cancel appointment. Please try again."
+        # Fix: Safely determine if the message belongs to the bot before attempting an edit
+        try:
+            if getattr(message.from_user, 'is_bot', False):
+                await message.edit_text(text)
+            else:
+                await message.reply_text(text)
+        except Exception:
             await message.reply_text(text)
-    except Exception:
-        await message.reply_text(text)
 
     # ONLY trigger modification loop for the Check Appointment flow
     if context.user_data.get('for_check'):
@@ -953,9 +959,11 @@ async def show_patient_appointments(update: Update, context: ContextTypes.DEFAUL
     def sort_key(a):
         dt_str = f"{a['date']} {a['time']}"
         return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+    def is_cancelled(a):
+        return str(a.get('status', '')).strip().lower().startswith('cancel')
     now = datetime.now()
-    future_appts = [a for a in appts if sort_key(a) >= now]
-    past_appts = [a for a in appts if sort_key(a) < now]
+    future_appts = [a for a in appts if sort_key(a) >= now and not is_cancelled(a)]
+    past_appts = [a for a in appts if sort_key(a) < now or is_cancelled(a)]
     future_appts_sorted = sorted(future_appts, key=sort_key)
     past_appts_sorted = sorted(past_appts, key=sort_key, reverse=True)
 
@@ -1785,7 +1793,7 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
             except Exception as e:
                 logger.error(f"Ask Admin Error: {e}")
         if not context.user_data.get('admin_notice_shown'):
-            await update.message.reply_text("This message will be handled by the clinic admin, who will reply as soon as possible.")
+            await update.message.reply_text("✅ Your message has been sent to the clinic admin. They will reply shortly.")
             context.user_data['admin_notice_shown'] = True
         return OTHERS_REASON
 
