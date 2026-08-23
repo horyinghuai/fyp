@@ -2358,9 +2358,14 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pref == "SPECIFIC":
         await query.edit_message_text("You selected: Specific Doctor")
         async with httpx.AsyncClient() as client:
-            res = await client.get(f"{API_BASE}/doctors/{active_cid}")
+            # Use /admin/doctors-all to access the status field
+            res = await client.get(f"{API_BASE}/admin/doctors-all/{active_cid}")
             doctors = res.json()
-        btns = [[InlineKeyboardButton(d['name'], callback_data=f"docname_{d['name']}")] for d in doctors]
+            
+        # Filter to only show active doctors
+        active_doctors = [d for d in doctors if d.get('status') == 'active']
+        
+        btns = [[InlineKeyboardButton(d['name'], callback_data=f"docname_{d['name']}")] for d in active_doctors]
         btns.append([InlineKeyboardButton("🔙 Back to Preferences", callback_data="back_doc_pref")])
         await query.message.reply_text("Please choose a doctor:", reply_markup=InlineKeyboardMarkup(btns))
         return DOC_SELECT
@@ -2368,11 +2373,14 @@ async def handle_doc_pref(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # This single block handles BOTH Male and Female checks
         if pref in ["MALE", "FEMALE"]:
             async with httpx.AsyncClient() as client:
-                res = await client.get(f"{API_BASE}/doctors/{active_cid}")
+                # Use /admin/doctors-all to access the status field
+                res = await client.get(f"{API_BASE}/admin/doctors-all/{active_cid}")
                 doctors = res.json()
-                matching_docs = [d for d in doctors if d.get('gender', '').upper() == pref]
+                
+                # Filter by gender AND active status
+                matching_docs = [d for d in doctors if d.get('gender', '').upper() == pref and d.get('status') == 'active']
                 if not matching_docs:
-                    await query.edit_message_text(f"❌ No {pref.lower()} doctors available in this clinic. Please choose another doctor preference.")
+                    await query.edit_message_text(f"❌ No active {pref.lower()} doctors available in this clinic. Please choose another doctor preference.")
                     return await show_doctor_preference(update, context, force_new=True)
 
         context.user_data['doctor_pref'] = pref
