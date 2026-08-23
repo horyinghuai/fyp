@@ -108,11 +108,29 @@ export default function BloodTestsPage() {
     }
   };
 
-  const handleDelete = async (id: number) => {
+const handleDelete = async (id: number) => {
     if (confirm("Delete this Blood Test? This cannot be undone.")) {
       const token = localStorage.getItem('aicas_token');
-      await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
-      loadData(clinicId);
+      try {
+        const res = await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { 
+            method: 'DELETE', 
+            headers: { 'Authorization': `Bearer ${token}` } 
+        });
+
+        if (res.status === 401) {
+            window.location.href = '/login';
+            return;
+        }
+
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({ detail: 'Failed to delete blood test.' }));
+            throw new Error(errorData.detail);
+        }
+
+        loadData(clinicId);
+      } catch (err: any) {
+        alert(err.message);
+      }
     }
   };
 

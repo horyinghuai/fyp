@@ -3251,6 +3251,18 @@ def update_bt(bt_id: int, data: BloodTestCreate, db: Session = Depends(get_db)):
 
 @app.delete("/admin/blood-tests/{bt_id}")
 def delete_bt(bt_id: int, db: Session = Depends(get_db)):
+    # Check if this single test is a component of any package
+    in_package = db.query(models.BloodTestComponent).filter_by(test_id=bt_id).first()
+    
+    if in_package:
+        # Fetch the package name to give the admin a helpful error message
+        package = db.query(models.BloodTest).filter_by(id=in_package.package_id).first()
+        pkg_name = package.name if package else "an existing package"
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete this test because it is currently included in the '{pkg_name}' package. Please remove it from the package first."
+        )
+
     db.query(models.BloodTest).filter_by(id=bt_id).delete()
     db.commit()
     return {"status": "success"}
