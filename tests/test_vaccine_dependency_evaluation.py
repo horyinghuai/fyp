@@ -59,7 +59,7 @@ def make_schedule(dose_number, interval_days):
 # validate_vaccine_booking() scenarios
 # =====================================================================
 
-def test_A_brand_switch_mid_series_rejected():
+def test_brand_switch_mid_series_rejected():
     brand_b = make_vaccine(2, "Brand B", "Hepatitis B", total_doses=3)
     brand_a = make_vaccine(1, "Brand A", "Hepatitis B", total_doses=3)
     db = FakeSession({
@@ -74,7 +74,7 @@ def test_A_brand_switch_mid_series_rejected():
     assert "Brand A" in res["reason"]
 
 
-def test_B_same_brand_interval_satisfied_accepted():
+def test_same_brand_interval_satisfied_accepted():
     brand_a = make_vaccine(1, "Brand A", "Hepatitis B", total_doses=2)
     db = FakeSession({
         models.Vaccine: [brand_a],
@@ -89,7 +89,7 @@ def test_B_same_brand_interval_satisfied_accepted():
     assert res["target_dose"] == "Dose 2"
 
 
-def test_C_same_brand_interval_too_early_rejected():
+def test_same_brand_interval_too_early_rejected():
     brand_a = make_vaccine(1, "Brand A", "Hepatitis B", total_doses=2)
     db = FakeSession({
         models.Vaccine: [brand_a],
@@ -104,7 +104,7 @@ def test_C_same_brand_interval_too_early_rejected():
     assert "2026-01-31" in res["reason"]  # earliest allowed date, per the 30-day rule
 
 
-def test_D_completed_non_repeatable_series_rejected():
+def test_completed_non_repeatable_series_rejected():
     brand_a = make_vaccine(1, "Brand A", "Flu", total_doses=1, allow_repeat_series=False)
     db = FakeSession({
         models.Vaccine: [brand_a],
@@ -118,7 +118,7 @@ def test_D_completed_non_repeatable_series_rejected():
     assert "cannot be repeated" in res["reason"]
 
 
-def test_E_completed_repeatable_series_after_interval_accepted():
+def test_completed_repeatable_series_after_interval_accepted():
     brand_a = make_vaccine(1, "Brand A", "Flu", total_doses=1,
                             allow_repeat_series=True, repeat_interval_days=365)
     db = FakeSession({
@@ -132,7 +132,7 @@ def test_E_completed_repeatable_series_after_interval_accepted():
     assert res["is_valid"] is True
 
 
-def test_F_interruption_window_expired_flags_restart():
+def test_interruption_window_expired_flags_restart():
     brand_a = make_vaccine(1, "Brand A", "Hepatitis B", total_doses=3,
                             restart_if_interrupted=True, interruption_restart_days=180)
     db = FakeSession({
@@ -152,7 +152,7 @@ def test_F_interruption_window_expired_flags_restart():
 # get_next_vaccine_dose() scenarios
 # =====================================================================
 
-def test_G_no_history_returns_dose_one():
+def test_no_history_returns_dose_one():
     brand_a = make_vaccine(1, "Brand A", "Hepatitis B", total_doses=3)
     db = FakeSession({models.Vaccine: [brand_a]})
     res = get_next_vaccine_dose(ic=IC, vaccine_name="Brand A", clinic_id=None, db=db)
@@ -160,7 +160,7 @@ def test_G_no_history_returns_dose_one():
     assert res["no_history"] is True
 
 
-def test_H_partial_history_same_brand_returns_correct_next_dose():
+def test_partial_history_same_brand_returns_correct_next_dose():
     brand_a = make_vaccine(1, "Brand A", "Hepatitis B", total_doses=3)
     db = FakeSession({
         models.Vaccine: [brand_a],
@@ -172,7 +172,7 @@ def test_H_partial_history_same_brand_returns_correct_next_dose():
     assert res["is_brand_switch"] is False
 
 
-def test_I_partial_history_different_brand_flags_switch():
+def test_partial_history_different_brand_flags_switch():
     brand_b = make_vaccine(2, "Brand B", "Hepatitis B", total_doses=3)
     brand_a = make_vaccine(1, "Brand A", "Hepatitis B", total_doses=3)
     db = FakeSession({
@@ -189,15 +189,15 @@ def test_I_partial_history_different_brand_flags_switch():
 # =====================================================================
 
 ALL_SCENARIOS = [
-    test_A_brand_switch_mid_series_rejected,
-    test_B_same_brand_interval_satisfied_accepted,
-    test_C_same_brand_interval_too_early_rejected,
-    test_D_completed_non_repeatable_series_rejected,
-    test_E_completed_repeatable_series_after_interval_accepted,
-    test_F_interruption_window_expired_flags_restart,
-    test_G_no_history_returns_dose_one,
-    test_H_partial_history_same_brand_returns_correct_next_dose,
-    test_I_partial_history_different_brand_flags_switch,
+    test_brand_switch_mid_series_rejected,
+    test_same_brand_interval_satisfied_accepted,
+    test_same_brand_interval_too_early_rejected,
+    test_completed_non_repeatable_series_rejected,
+    test_completed_repeatable_series_after_interval_accepted,
+    test_interruption_window_expired_flags_restart,
+    test_no_history_returns_dose_one,
+    test_partial_history_same_brand_returns_correct_next_dose,
+    test_partial_history_different_brand_flags_switch,
 ]
 
 

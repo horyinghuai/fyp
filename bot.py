@@ -710,6 +710,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('pending_switch_check', None)
     context.user_data.pop('saved_step_prompt', None)
 
+    # WIPE LEFTOVER MODIFY/EDIT BOOKING STATE
+    context.user_data.pop('original_appt_id', None)
+    context.user_data.pop('edit_appt_id', None)
+    context.user_data.pop('editing_existing', None)
+    context.user_data.pop('abort_appt_details', None)
+
+    telegram_id = update.effective_user.id
+
     telegram_id = update.effective_user.id
 
     if not context.args or len(context.args) == 0:
@@ -1833,7 +1841,7 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
         return OTHERS_REASON
 
     msg_is_check = category in ('check', 'modify', 'delete')
-    target_service = "Check/Modify/Cancel Booking" if msg_is_check else "Create Booking"
+    target_service = get_intent_label(category)
     
     context.user_data['pending_switch_check'] = msg_is_check
     context.user_data['pending_from_general_question'] = True
