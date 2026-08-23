@@ -2969,7 +2969,15 @@ def admin_update_patient(patient_id: str, data: PatientUpdate, db: Session = Dep
     if p:
         try:
             if data.ic_passport_number and data.ic_passport_number.upper() != p.ic_passport_number:
-                p.ic_passport_number = data.ic_passport_number.upper()
+                new_ic = data.ic_passport_number.upper()
+                duplicate = db.query(models.Patient).filter(
+                    models.Patient.clinic_id == p.clinic_id,
+                    models.Patient.ic_passport_number == new_ic,
+                    models.Patient.id != p.id
+                ).first()
+                if duplicate:
+                    raise HTTPException(status_code=409, detail="This IC/Passport number has already been used by another patient.")
+                p.ic_passport_number = new_ic
             
             p.name = data.name.upper()
             p.phone = data.phone
