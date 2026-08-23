@@ -687,7 +687,7 @@ async def execute_cancellation(message, context, reason):
     if context.user_data.get('for_check'):
         btns = [
             [InlineKeyboardButton("Yes, modify another", callback_data="modify_another")],
-            [InlineKeyboardButton("No, I'm done", callback_data="help_no")]
+            [InlineKeyboardButton("No, I'm done", callback_data="modify_done")] # CHANGED THIS LINE
         ]
         await message.reply_text("Do you want to modify another appointment?", reply_markup=InlineKeyboardMarkup(btns))
         return MODIFY_ANOTHER
@@ -3079,7 +3079,7 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
     # Ask if user wants to modify another appointment
     btns = [
         [InlineKeyboardButton("Yes, modify another", callback_data="modify_another")],
-        [InlineKeyboardButton("No, I'm done", callback_data="help_no")]
+        [InlineKeyboardButton("No, I'm done", callback_data="modify_done")] # CHANGED THIS LINE
     ]
     await query.message.reply_text("Do you want to modify another appointment?", reply_markup=InlineKeyboardMarkup(btns))
     return MODIFY_ANOTHER
@@ -3090,7 +3090,10 @@ async def modify_another_choice(update: Update, context: ContextTypes.DEFAULT_TY
     if query.data == "modify_another":
         return await show_patient_appointments(update, context, query=True)
     else:
-        return await final_help_logic(update, context)
+        # Prompt the user for any other assistance instead of immediately ending
+        btns = [[InlineKeyboardButton("Yes", callback_data="help_yes"), InlineKeyboardButton("No, I'm done", callback_data="help_no")]]
+        await query.edit_message_text("Is there anything else I can help you with?", reply_markup=InlineKeyboardMarkup(btns))
+        return FINAL_HELP
     
 async def final_help_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -3568,7 +3571,7 @@ if __name__ == '__main__':
             MANUAL_PREV_DOSE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(handle_manual_prev_dose))
             ],
-            MODIFY_ANOTHER: [CallbackQueryHandler(modify_another_choice, pattern="^(modify_another|help_no)")],
+            MODIFY_ANOTHER: [CallbackQueryHandler(modify_another_choice, pattern="^(modify_another|modify_done)")],
             ASK_MANUAL_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, with_global_exit(handle_manual_date_input))],
         },
         fallbacks=[
