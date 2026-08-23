@@ -3479,6 +3479,15 @@ def get_doctors(clinic_id: str, db: Session = Depends(get_db)):
 @app.post("/admin/doctors")
 def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
     final_name = format_doctor_name(data.name)
+    
+    # Check if the doctor is already registered in THIS clinic
+    existing_link = db.query(models.DoctorClinicAvailability).filter_by(
+        doctor_ic=data.ic, clinic_id=data.clinic_id
+    ).first()
+    
+    if existing_link:
+        raise HTTPException(status_code=409, detail="A doctor with this IC/Passport number already exists in your clinic.")
+        
     existing = db.query(models.Doctor).filter_by(ic_passport_number=data.ic).first()
     if not existing:
         new_doc = models.Doctor(
@@ -3527,9 +3536,17 @@ def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db))
     doc = db.query(models.Doctor).filter_by(ic_passport_number=ic).first()
     if doc:
         doc.name = format_doctor_name(data.name)
+        
+        # Check for duplicates if the admin is modifying the IC/Passport number
         if data.ic and data.ic != ic:
+            conflict = db.query(models.Doctor).filter_by(ic_passport_number=data.ic).first()
+            if conflict:
+                raise HTTPException(status_code=409, detail="This IC/Passport number is already registered to another doctor.")
+                
+            # Safely cascade the primary key update
             db.execute(models.Doctor.__table__.update().where(models.Doctor.ic_passport_number == ic).values(ic_passport_number=data.ic))
             ic = data.ic
+            
         doc.gender = data.gender
         doc.specialization = data.specialization
         
