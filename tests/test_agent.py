@@ -206,10 +206,21 @@ def test_agent3_recommend_slots_workload_balancing(mock_logging):
     avail.day_of_week = "sat"
     
     mock_db.query.return_value.filter.return_value.all.return_value = [avail]
-    
+
+    # recommend_slots() gates candidate slots on `t > datetime.now()` using the
+    # real wall clock (it isn't injected/mocked), so a hardcoded calendar date
+    # eventually lands in the past and every slot gets filtered out. Compute the
+    # next Saturday from today instead, so this test stays valid indefinitely
+    # and still matches avail.day_of_week == "sat".
+    today = datetime.now().date()
+    days_until_saturday = (5 - today.weekday()) % 7  # Monday=0 ... Saturday=5
+    if days_until_saturday == 0:
+        days_until_saturday = 7  # ensure it's strictly in the future, not "today"
+    next_saturday = today + timedelta(days=days_until_saturday)
+
     req = RecommendSlotReq(
         clinic_id="c1111111-1111-1111-1111-111111111111",
-        base_date="2026-08-15",
+        base_date=next_saturday.strftime("%Y-%m-%d"),
         doctor_pref="ANY",
         duration=30
     )
