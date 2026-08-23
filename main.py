@@ -392,6 +392,7 @@ class PatientRegister(BaseModel):
     clinic_id: str
     name: str
     ic_passport_number: str
+    original_ic: Optional[str] = None
     phone: str
     telegram_id: Optional[int] = None
     address: Optional[str] = None
@@ -4083,20 +4084,26 @@ def check_ocr_session(session_id: str):
 def register_patient(data: PatientRegister, db: Session = Depends(get_db)):
     try:
         data_dict = data.dict(exclude_unset=True)
+        # Ensure all personal details are strictly capitalized
         data_dict['name'] = data_dict['name'].upper() 
         data_dict['ic_passport_number'] = data_dict['ic_passport_number'].upper()
         if data_dict.get('address'): data_dict['address'] = data_dict['address'].upper()
         if data_dict.get('gender'): data_dict['gender'] = data_dict['gender'].upper()
         if data_dict.get('nationality'): data_dict['nationality'] = data_dict['nationality'].upper()
         
+        # Pop out original_ic so we don't accidentally pass it into the models.Patient(**data_dict) creation
+        original_ic = data_dict.pop('original_ic', None)
+        lookup_ic = original_ic if original_ic else data_dict['ic_passport_number']
+        
         existing = db.query(models.Patient).filter(
             models.Patient.clinic_id == data.clinic_id, 
-            models.Patient.ic_passport_number == data_dict['ic_passport_number']
+            models.Patient.ic_passport_number == lookup_ic
         ).first()
         
         if existing:
-            # If the Telegram bot is doing this, we silently update their profile
+            # If the Telegram bot is doing this, we update their existing profile
             if data_dict.get('telegram_id'):
+                existing.ic_passport_number = data_dict['ic_passport_number'] # Update IC
                 existing.name = data_dict['name']
                 existing.phone = data_dict['phone']
                 if 'address' in data_dict: existing.address = data_dict['address']

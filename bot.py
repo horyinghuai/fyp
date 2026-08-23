@@ -815,7 +815,7 @@ async def handle_reuse_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             return await show_main_services(query.message, context)
     else:
         # Start fresh – clear only the stored patient fields but keep clinic settings
-        for key in ['ic', 'name', 'phone', 'gender', 'nationality', 'address', 'is_malaysian']:
+        for key in ['ic', 'name', 'phone', 'gender', 'nationality', 'address', 'is_malaysian', 'original_ic']:
             context.user_data.pop(key, None)
         # Re‑enter nationality selection
         msg = "To proceed, please select your nationality:"
@@ -891,7 +891,7 @@ async def handle_service_menu_text(update: Update, context: ContextTypes.DEFAULT
 # Helper to start patient details flow
 async def proceed_with_start_patient_details(update, context, query=False, for_check=False):
     # Clear any stale patient details from previous incomplete registration
-    for key in ['ic', 'name', 'phone', 'gender', 'nationality', 'address', 'is_malaysian']:
+    for key in ['ic', 'name', 'phone', 'gender', 'nationality', 'address', 'is_malaysian', 'original_ic']:
         context.user_data.pop(key, None)
 
     msg = "To proceed, please select your nationality:"
@@ -1278,6 +1278,7 @@ async def handle_existing_patient_basic_confirm(update: Update, context: Context
     context.user_data['gender'] = patient.get('gender', 'UNKNOWN').upper()
     context.user_data['nationality'] = patient.get('nationality', 'UNKNOWN').upper()
     context.user_data['ic'] = patient['ic_passport_number']
+    context.user_data['original_ic'] = patient['ic_passport_number'] # ADD THIS
     
     id_label = "IC Number" if context.user_data.get('is_malaysian') else "Passport Number"
     
@@ -1388,7 +1389,19 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return MAN_ID_CHECK
         context.user_data['ic'] = text.upper()
         
-    if context.user_data.get('edit_mode'): return await show_profile_summary(update, context)
+    if context.user_data.get('edit_mode'): 
+        # Check if the IC/Passport number already exists in the database
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(f"{API_BASE}/patient/{active_cid}/id/{context.user_data['ic']}", timeout=5.0)
+                if res.status_code == 200:
+                    id_label = "IC Number" if is_my else "Passport Number"
+                    await update.message.reply_text(f"⚠️ This {id_label} is already registered in our database. Please enter a unique {id_label}:")
+                    return MAN_ID_CHECK
+            except Exception as e:
+                logger.error(f"Error checking IC uniqueness: {e}")
+                
+        return await show_profile_summary(update, context)
 
     # For check booking details flow, check if IC exists and go directly to appointments
     if for_check:
@@ -1641,10 +1654,19 @@ async def confirm_profile_logic(update: Update, context: ContextTypes.DEFAULT_TY
     async with httpx.AsyncClient() as client:
         try:
             await client.post(f"{API_BASE}/register-patient", json={
-                "clinic_id": active_cid, "name": context.user_data['name'].upper(), "ic_passport_number": context.user_data['ic'].upper(),
-                "phone": context.user_data['phone'], "telegram_id": update.effective_user.id,
-                "address": context.user_data.get('address', '').upper(), "gender": context.user_data.get('gender', '').upper(), "nationality": context.user_data.get('nationality', '').upper()
+                "clinic_id": active_cid, 
+                "name": context.user_data['name'].upper(), 
+                "ic_passport_number": context.user_data['ic'].upper(),
+                "original_ic": context.user_data.get('original_ic'), # ADD THIS
+                "phone": context.user_data['phone'], 
+                "telegram_id": update.effective_user.id,
+                "address": context.user_data.get('address', '').upper(), 
+                "gender": context.user_data.get('gender', '').upper(), 
+                "nationality": context.user_data.get('nationality', '').upper()
             }, timeout=5.0)
+            
+            # Update the original_ic after saving so consecutive edits in the same session work smoothly
+            context.user_data['original_ic'] = context.user_data['ic'].upper()
         except Exception as e:
             logger.error(f"Error registering patient: {e}")
 
