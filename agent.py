@@ -89,6 +89,7 @@ def calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str):
             final_date = f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
         elif "today" in dt_str: final_date = now.strftime("%Y-%m-%d")
         elif "tomorrow" in dt_str: final_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif "yesterday" in dt_str: final_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         elif match := re.search(r'in (\d+) day', dt_str):
             days_ahead = int(match.group(1))
             final_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
@@ -104,6 +105,11 @@ def calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str):
     if raw_time_text and str(raw_time_text).lower() not in ['null', 'none']:
         tt_str = str(raw_time_text).lower().strip().replace('.', ':')
         if re.match(r'\d{2}:\d{2}:\d{2}', tt_str): final_time = tt_str
+        # Vague phrases like "noon", "midnight", "morning", "afternoon", etc.
+        # have no single exact clock time, so they're deliberately left
+        # unmatched here (final_time stays None) rather than guessed at —
+        # the caller treats that as "mentioned a time but couldn't resolve
+        # it" and asks the user to state an exact time instead.
         elif match := re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', tt_str):
             h, m, ampm = int(match.group(1)), int(match.group(2) or 0), match.group(3)
             if ampm == 'pm' and h < 12: h += 12
@@ -117,27 +123,27 @@ class AppointmentExtraction(BaseModel):
     date_preference: Optional[str] = None
     time_preference: Optional[str] = None
     doctor_preference: Optional[str] = None
-    general_notes: Optional[str] = None 
+    general_notes: Optional[str] = None
+    # Raw phrases as the user said them (or as the LLM extracted them), kept
+    # so callers can tell "user didn't mention a date/time at all" apart from
+    # "user mentioned one but it couldn't be parsed into an exact value"
+    # (date_preference/time_preference would be None in both cases otherwise).
+    raw_date_text: Optional[str] = None
+    raw_time_text: Optional[str] = None
 
 async def extract_appointment_details(user_text: str, current_time_str: str):
     prompt = f"""
-    Extract appointment details from the user text. 
+    Extract appointment date/time details from the user text. 
     USER TEXT: "{user_text}"
     
     CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output <think> tags.
+    Fill in the following JSON structure based on the user text:
     {{
-        "status": "exact_match", 
-        "options": ["Brand A", "Brand B"], 
-        "type": "mRNA", 
-        "total_doses": 2, 
-        "has_booster": true, 
-        "allow_new_series": false,
-        "new_series_delay_days": null,
-        "must_restart_after_interruption": true,
-        "interruption_restart_days": 365,
-        "schedules": [
-            {{"dose_number": 2, "interval_days": 30}}
-        ] 
+        "intent": "booking", 
+        "raw_date_text": "the exact date phrase from the user text, e.g. \'tomorrow\', \'next monday\', \'25/12\', \'2026-12-25\', or null if no date was mentioned", 
+        "raw_time_text": "the exact time phrase from the user text, e.g. \'2pm\', \'14:00\', \'9.30am\', or null if no time was mentioned", 
+        "doctor_preference": "doctor name/gender preference mentioned by the user, or null", 
+        "general_notes": "any other relevant free-text notes from the user, or null"
     }}
     Note: If the user is asking a general question not related to booking an appointment (e.g. "Where is the clinic?", "What are your hours?", "Can I bring my child?"), set intent to "question".
     """
@@ -146,13 +152,20 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
         json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         llm_data = json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
         
-        calculated_date, calculated_time = calculate_exact_datetime(llm_data.get("raw_date_text"), llm_data.get("raw_time_text"), current_time_str)
+        raw_date_text = llm_data.get("raw_date_text")
+        raw_time_text = llm_data.get("raw_time_text")
+        if isinstance(raw_date_text, str) and raw_date_text.lower().strip() in ['null', 'none', '']: raw_date_text = None
+        if isinstance(raw_time_text, str) and raw_time_text.lower().strip() in ['null', 'none', '']: raw_time_text = None
+
+        calculated_date, calculated_time = calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str)
         return AppointmentExtraction(
             intent=llm_data.get("intent", "booking"), 
             date_preference=calculated_date, 
             time_preference=calculated_time, 
             doctor_preference=llm_data.get("doctor_preference"), 
-            general_notes=llm_data.get("general_notes")
+            general_notes=llm_data.get("general_notes"),
+            raw_date_text=raw_date_text,
+            raw_time_text=raw_time_text
         )
     except Exception as e:
         # Fallback if both AIs fail: Just capture the whole text as a general booking note
@@ -161,7 +174,9 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
             date_preference=None,
             time_preference=None,
             doctor_preference=None,
-            general_notes=user_text
+            general_notes=user_text,
+            raw_date_text=None,
+            raw_time_text=None
         )
 
 async def classify_general_message(user_text: str) -> str:

@@ -2573,112 +2573,106 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         text = clean_bot_username(update.message.text)
         if not text: return BOOK_DATE_TIME 
 
-        # COMPLETELY REMOVED AI EXTRACTION.
-        # Instead, we pass any typed text directly to your global interception logic
-        # to check if they are trying to start a new process or ask a general question.
-        
-        active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
-
+        # AI INTENT EXTRACTION AGENT (date/time only)
+        # For Create Booking / Check Booking Details -> Modify Booking date & time
+        # selection, the Patient-Admin Communication Agent (classify-message) must
+        # NOT process or take over the user's message. Instead, run the existing AI
+        # Intent Extraction Agent to pull a date and/or time out of the free text,
+        # merge it with whatever was already detected, and keep asking until both
+        # a valid date AND a valid time are known before continuing the booking flow.
         async with httpx.AsyncClient() as client:
             try:
-                res = await client.post(f"{API_BASE}/classify-message", json={"text": text}, timeout=30.0)
-                category = res.json().get("category", "other") if res.status_code == 200 else "other"
-            except Exception:
-                category = "other"
+                res = await client.post(f"{API_BASE}/ai-extract", json={"text": text}, timeout=30.0)
+                extracted = res.json() if res.status_code == 200 else {}
+            except Exception as e:
+                logger.error(f"AI Intent Extraction Error: {e}")
+                extracted = {}
 
-        if is_global_exit_command(text):
-            await prompt_global_exit(update, context)
-            return BOOK_DATE_TIME
+        new_date = extracted.get('date_preference') if isinstance(extracted, dict) else None
+        new_time = extracted.get('time_preference') if isinstance(extracted, dict) else None
+        raw_date_text = extracted.get('raw_date_text') if isinstance(extracted, dict) else None
+        raw_time_text = extracted.get('raw_time_text') if isinstance(extracted, dict) else None
 
-        # If already being handled live by the clinic admin, don't re-ask - just forward,
-        # unless the message is now clearly about creating/checking/modifying a booking.
-        if context.user_data.get('is_live_chat'):
-            if category not in ('create', 'check', 'modify', 'delete'):
-                async with httpx.AsyncClient() as client:
-                    try:
-                        await client.post(f"{API_BASE}/ask-admin", json={
-                            "clinic_id": active_cid,
-                            "telegram_id": update.effective_user.id,
-                            "message": text
-                        }, timeout=5.0)
-                    except Exception as e:
-                        logger.error(f"Error forwarding live-chat message to admin: {e}")
-                return BOOK_DATE_TIME
+        # Always keep the LATEST date/time the user gave. If they mentioned a
+        # date/time phrase but we couldn't turn it into an exact value (e.g.
+        # "noon", "next blah"), don't silently fall back to whatever was
+        # stored from an earlier message — clear it and tell the user plainly
+        # so they don't end up booking a slot they never actually asked for.
+        date_unrecognized = bool(raw_date_text) and not new_date
+        time_unrecognized = bool(raw_time_text) and not new_time
+
+        if new_date:
+            context.user_data['book_date'] = new_date
+        elif date_unrecognized:
+            context.user_data.pop('book_date', None)
+
+        if new_time:
+            context.user_data['ai_pending_time'] = new_time
+        elif time_unrecognized:
+            context.user_data.pop('ai_pending_time', None)
+
+        final_date = context.user_data.get('book_date')
+        final_time = context.user_data.get('ai_pending_time')
+
+        # If the user tried to give a time we couldn't understand, say so
+        # explicitly and offer real, bookable time slots to pick from.
+        if time_unrecognized:
+            active_cid_tp = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+            msg = f"Sorry, I couldn't understand the time \"{raw_time_text}\" — please state an exact time, e.g. 10am, 2pm, or 14:00."
+            if final_date:
+                markup = await generate_time_picker(active_cid_tp, service, final_date, doctor_pref)
+                msg = f"I've got the date as {final_date}, but " + msg[0].lower() + msg[1:] + "\n\nHere are some available times for that date, or just type an exact time:"
+                await update.message.reply_text(msg, reply_markup=markup)
             else:
-                msg_is_check = category in ('check', 'modify', 'delete')
-                target_service = get_intent_label(category)
-                context.user_data['pending_switch_check'] = msg_is_check
-                context.user_data['pending_from_livechat'] = True
-                btns = [
-                    [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
-                    [InlineKeyboardButton(f"Start to {target_service}", callback_data="global_switch_yes")]
-                ]
-                await update.message.reply_text(
-                    "You are currently being handled by the clinic admin.\n\n"
-                    f"Would you like to continue being handled by the clinic admin, or terminate this and start to {target_service}?\n\n"
-                    "Are you sure you want to end the conversation with the clinic admin?",
-                    reply_markup=InlineKeyboardMarkup(btns)
-                )
+                await update.message.reply_text(msg)
+            return BOOK_DATE_TIME
+
+        if date_unrecognized:
+            msg = f"Sorry, I couldn't understand the date \"{raw_date_text}\" — please state an exact date, e.g. tomorrow, next Monday, or 25/12."
+            if final_time:
+                msg += f"\n\n(I've kept your preferred time of {final_time[:5]}.)"
+            await update.message.reply_text(msg)
+            return BOOK_DATE_TIME
+
+        # If the resolved date is already in the past (e.g. the user said
+        # "yesterday" or gave an explicit past date), don't ask for a time or
+        # try to check availability for it — tell them plainly and clear the
+        # stale date so it can't get silently combined with a valid one later.
+        if final_date:
+            try:
+                is_past_date = dt.datetime.strptime(final_date, "%Y-%m-%d").date() < dt.datetime.now().date()
+            except ValueError:
+                is_past_date = False
+            if is_past_date:
+                context.user_data.pop('book_date', None)
+                msg = "Sorry, you cannot book an appointment for a past date. Please provide a valid upcoming date, e.g. tomorrow, next Monday, or 25/12."
+                if final_time:
+                    msg += f"\n\n(I've kept your preferred time of {final_time[:5]}.)"
+                await update.message.reply_text(msg)
                 return BOOK_DATE_TIME
 
-        if category == "other":
-            snapshot_current_prompt(update, context)
-            context.user_data['pending_admin_msg'] = text
-            btns = [
-                [InlineKeyboardButton("No, continue the process", callback_data="global_admin_no")],
-                [InlineKeyboardButton("Yes, send this message to clinic admin", callback_data="global_admin_yes")]
-            ]
+        if final_date and final_time:
+            full_time_str = f"{final_date} {final_time}"
+            return await process_availability(update, context, full_time_str)
+
+        if final_date and not final_time:
             await update.message.reply_text(
-                "Your message is not related to your current booking process.\n\n"
-                "If you send this message to the clinic admin, your current booking progress will not be saved.\n\n"
-                "Would you like to continue?",
-                reply_markup=InlineKeyboardMarkup(btns)
+                f"I understand that you would like to book for {final_date}.\n\n"
+                "What time would you prefer?\nFor example: 10am, 2pm, or 14:00."
             )
             return BOOK_DATE_TIME
 
-        if category == "unrelated":
-            snapshot_current_prompt(update, context)
-            btns = [
-                [InlineKeyboardButton("🔁 Re-enter Question", callback_data="global_unrelated_reenter")],
-                [InlineKeyboardButton("🛑 End Session", callback_data="global_unrelated_end")]
-            ]
+        if final_time and not final_date:
             await update.message.reply_text(
-                "Sorry, I can only help with enquiries related to this clinic "
-                "(e.g. bookings, appointments, clinic hours, services). "
-                "Your message doesn't seem to be related to the clinic.",
-                reply_markup=InlineKeyboardMarkup(btns)
+                f"I understand that you prefer {final_time}.\n\n"
+                "What date would you like to book?\nFor example: tomorrow, next Monday, or 25/12."
             )
             return BOOK_DATE_TIME
 
-        # Check if the text matches the current process
-        current_is_check = context.user_data.get('for_check', False)
-        msg_is_check = category in ['check', 'modify', 'delete']
-
-        if current_is_check == msg_is_check:
-            snapshot_current_prompt(update, context)
-            btns = [
-                [InlineKeyboardButton("Continue Current Process", callback_data="global_restart_no")],
-                [InlineKeyboardButton("Restart Process", callback_data="global_restart_yes")]
-            ]
-            await update.message.reply_text(
-                "It looks like you want to restart your current process.\n\n"
-                "Your current progress will not be saved.\n\n"
-                "Would you like to continue your current process or restart it?",
-                reply_markup=InlineKeyboardMarkup(btns)
-            )
-        else:
-            target_service = get_intent_label(category)
-            snapshot_current_prompt(update, context)
-            context.user_data['pending_switch_check'] = msg_is_check
-            btns = [
-                [InlineKeyboardButton("Continue Current Process", callback_data="global_switch_no")],
-                [InlineKeyboardButton(f"Start to {target_service}", callback_data="global_switch_yes")]
-            ]
-            await update.message.reply_text(
-                f"You are currently in the middle of a process. Do you want to terminate this and start to {target_service}? (Your current progress will not be saved).",
-                reply_markup=InlineKeyboardMarkup(btns)
-            )
-            
+        await update.message.reply_text(
+            "Sorry, I couldn't determine the date and time.\n\n"
+            "Please provide both, for example:\n\"tomorrow at 2pm\"\nor\n\"25/12 at 10am\"."
+        )
         return BOOK_DATE_TIME
 
 async def process_availability(update, context, full_time_str):
@@ -2788,6 +2782,11 @@ async def process_availability(update, context, full_time_str):
     return await show_booking_summary(update, context)
 
 async def show_booking_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, force_new: bool = False):
+    # The free-text date/time extraction draft has already been finalized
+    # into book_date/book_time by this point — release it here so it can
+    # never leak into a later date/time edit within this same booking.
+    context.user_data.pop('ai_pending_time', None)
+
     service = context.user_data['service']
     name = context.user_data['name']
     ic = context.user_data['ic']
@@ -2915,7 +2914,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Only for create booking: discard draft and show confirmation
         context.user_data['is_editing'] = False
         context.user_data['editing_existing'] = False
-        for key in ['service', 'selected_items', 'dose', 'general_notes', 'doctor_pref', 'book_date', 'book_time', 'assigned_doctor_name', 'assigned_doctor_id']:
+        for key in ['service', 'selected_items', 'dose', 'general_notes', 'doctor_pref', 'book_date', 'book_time', 'ai_pending_time', 'assigned_doctor_name', 'assigned_doctor_id']:
             context.user_data.pop(key, None)
         
         # Show booking removed message
@@ -3030,7 +3029,12 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
                              f"Service: {service}\nDetails: {details}{doc_text}\n")
     
     await query.message.reply_text(confirmed_summary, parse_mode="Markdown")
-    
+
+    # Booking is confirmed — drop the temporary date/time draft so a stale
+    # value can never leak into a future booking/modification flow.
+    for key in ['book_date', 'book_time', 'ai_pending_time', 'temp_doctor_pref']:
+        context.user_data.pop(key, None)
+
     # ADD FASTING REMINDER HERE
     if service == 'Blood Test':
         await query.message.reply_text("⚠️ *Important Reminder:*\nKindly ensure that you fast for at least 9 hours before your blood test. You are advised not to consume any food or drinks except plain water during the fasting period.", parse_mode="Markdown")
@@ -3083,6 +3087,11 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Confirmed summary is no longer sent here — the backend's /update-appointment
     # already sends the modification notification to the patient.
+
+    # Modification is confirmed — drop the temporary date/time draft so a
+    # stale value can never leak into a future booking/modification flow.
+    for key in ['book_date', 'book_time', 'ai_pending_time', 'temp_doctor_pref']:
+        context.user_data.pop(key, None)
 
     # Ask if user wants to modify another appointment
     btns = [
