@@ -265,6 +265,28 @@ async def generate_time_picker(active_cid, service, date_str, doctor_pref):
     
     return InlineKeyboardMarkup(keyboard)
 
+def is_valid_mykad_number(ic_digits: str) -> bool:
+    """
+    Validates a 12-digit MyKad number:
+    - Rejects all-zero numbers (e.g. 000000000000 / 000000-00-0000)
+    - Validates that the first 6 digits (YYMMDD) form a real calendar date
+    """
+    if len(ic_digits) != 12 or not ic_digits.isdigit():
+        return False
+
+    if ic_digits == "000000000000":
+        return False
+
+    yy, mm, dd = ic_digits[0:2], ic_digits[2:4], ic_digits[4:6]
+    try:
+        # Anchored to a fixed leap year just to validate the MM/DD combination
+        # (the real birth century/year is ambiguous from the IC alone).
+        dt.date(2000, int(mm), int(dd))
+    except ValueError:
+        return False
+
+    return True
+
 def extract_ic_info(image_path: str):
     import os
     import re
@@ -1385,6 +1407,9 @@ async def man_id_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ic_digits = re.sub(r'\D', '', text)
         if len(ic_digits) != 12:
             await update.message.reply_text("❌ Wrong format! Please enter your IC Number again (must be exactly 12 digits or formatted as XXXXXX-XX-XXXX):")
+            return MAN_ID_CHECK
+        if not is_valid_mykad_number(ic_digits):
+            await update.message.reply_text("❌ Invalid IC Number. Please check the digits and enter your IC Number again (Format: XXXXXXXXXXXX or XXXXXX-XX-XXXX):")
             return MAN_ID_CHECK
         formatted_id = f"{ic_digits[:6]}-{ic_digits[6:8]}-{ic_digits[8:]}"
         context.user_data['ic'] = formatted_id
