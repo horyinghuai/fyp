@@ -24,6 +24,7 @@ def test_main_app_imports_and_boots():
 def test_agent_module_imports():
     import agent
     assert agent.scheduling_agent is not None
+    assert callable(agent.classify_general_message)  # Message-Intent Classification (Agent 1)
 
 
 def test_celery_worker_imports():
@@ -45,9 +46,26 @@ def test_key_routes_are_registered():
         "/classify-message",
         "/available-dates",
         "/available-times",
+        # Patient-Admin Communication Agent (bi-directional relay)
+        "/ask-admin",
+        "/admin/chat-reply",
+        "/admin/chat-reply/{msg_id}",
+        "/admin/chat-pending-count/{clinic_id}",
+        "/admin/chat-history/{clinic_id}",
     ]
     for path in expected:
         assert path in paths, f"Route {path} is missing from main.app"
+
+
+def test_communication_agent_functions_importable():
+    """Catches a broken import in the Patient-Admin Communication Agent's
+    relay endpoints before the slower suites run."""
+    from main import ask_admin, reply_chat, edit_chat_reply, delete_chat_reply, get_pending_chat_count
+    assert callable(ask_admin)
+    assert callable(reply_chat)
+    assert callable(edit_chat_reply)
+    assert callable(delete_chat_reply)
+    assert callable(get_pending_chat_count)
 
 
 def test_scheduling_agent_node_responds():

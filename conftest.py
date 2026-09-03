@@ -55,15 +55,25 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     html_cards = ""
 
     def process_block(title, total_label, total, passed, failed, rate_label, rate, conclusion, test_list):
+        is_monkey = title == "Monkey Testing Summary"
+        # Booking's "failed" count is the 3 intentionally-invalid bookings in
+        # the batch (unknown patient IC) that the endpoint correctly REJECTED
+        # with a 404 - that's the endpoint working as designed, not a defect,
+        # so it gets its own labels/coloring instead of reading as a failure.
+        is_booking = title == "Booking Success Rate Evaluation"
+
         # --- Terminal Output ---
         terminalreporter.write_line("")
         terminalreporter.write_line("=" * 60)
         terminalreporter.write_line(title)
         terminalreporter.write_line("=" * 60)
         terminalreporter.write_line(f"Total {total_label:<11}: {total}")
-        if title == "Monkey Testing Summary":
+        if is_monkey:
             terminalreporter.write_line(f"Successful Inputs : {passed}")
             terminalreporter.write_line(f"Crashes           : {failed}")
+        elif is_booking:
+            terminalreporter.write_line(f"Correctly Accepted (valid)   : {passed}")
+            terminalreporter.write_line(f"Correctly Rejected (invalid) : {failed}")
         else:
             terminalreporter.write_line(f"Passed            : {passed}")
             terminalreporter.write_line(f"Failed            : {failed}")
@@ -74,11 +84,19 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
         # --- HTML Generation ---
         nonlocal html_cards
-        status_color = "text-emerald-600" if failed == 0 else "text-red-600"
-        bg_color = "bg-emerald-50 border-emerald-200" if failed == 0 else "bg-red-50 border-red-200"
-        
-        pass_label = "Successful Inputs" if "Monkey" in title else "Passed"
-        fail_label = "Crashes" if "Monkey" in title else "Failed"
+        # For every OTHER card, a nonzero "failed" count is a genuine problem
+        # and should read red. For Booking, the 3 "failed" are correct
+        # rejections by design, so the card stays green.
+        problem_detected = failed > 0 and not is_booking
+        status_color = "text-red-600" if problem_detected else "text-emerald-600"
+        bg_color = "bg-red-50 border-red-200" if problem_detected else "bg-emerald-50 border-emerald-200"
+
+        if is_monkey:
+            pass_label, fail_label = "Successful Inputs", "Crashes"
+        elif is_booking:
+            pass_label, fail_label = "Correctly Accepted (valid)", "Correctly Rejected (invalid)"
+        else:
+            pass_label, fail_label = "Passed", "Failed"
 
         # Generate the list of individual tests executed
         tests_html = ""
@@ -163,8 +181,14 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         c = st_booking['custom']
         tot, p, f = c.get('custom_total', 8), c.get('custom_passed', 8), c.get('custom_failed', 0)
         rate = (p / tot * 100) if tot > 0 else 0
-        conc = "The appointment booking endpoint processed requests accurately, reflecting a high success rate for valid patients and correctly rejecting invalid ones." if rate >= 50 else "The booking success rate fell below the acceptable threshold."
-        process_block("Booking Success Rate Evaluation", "Requests", tot, p, f, "Success Rate", rate, conc, st_booking.get('tests'))
+        conc = (
+            f"The test passed: all {p} valid bookings succeeded and all {f} intentionally-invalid "
+            f"bookings (unknown patient IC, never seeded) were correctly rejected with a 404 - the "
+            f"endpoint behaved exactly as designed. The {rate:.2f}% figure is the raw ratio of "
+            f"successful vs. total attempts in a batch that deliberately mixes valid and invalid "
+            f"input to verify rejection behavior, not a defect rate."
+        ) if st_booking['failed'] == 0 else "The booking success rate test itself failed - see the test output for details."
+        process_block("Booking Success Rate Evaluation", "Requests", tot, p, f, "Raw Success Rate", rate, conc, st_booking.get('tests'))
 
     # 5. Scheduling Accuracy
     st_sched = get_file_stats('test_scheduling_accuracy')
@@ -200,6 +224,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         rate = (p / tot * 100) if tot > 0 else 0
         conc = "The Vaccine Dependency Agent validated clinical rules perfectly, handling intervals, boosters, and brand restrictions without error." if f == 0 else f"Vaccine clinical rule validation failed in {f} scenarios."
         process_block("Vaccine Validation Evaluation", "Scenarios", tot, p, f, "Accuracy", rate, conc, st_vac.get('tests'))
+
+    # 9. Communication Agent Relay
+    st_comm = get_file_stats('test_communication_agent_accuracy')
+    if st_comm:
+        c = st_comm['custom']
+        tot, p, f = c.get('custom_total', 8), c.get('custom_passed', 8), c.get('custom_failed', 0)
+        rate = (p / tot * 100) if tot > 0 else 0
+        conc = "The Patient-Admin Communication Agent relayed messages between admin and patient correctly across Telegram and SMS channels, including edits and deletions." if f == 0 else f"The Communication Agent relay failed in {f} scenarios."
+        process_block("Communication Agent Relay Evaluation", "Scenarios", tot, p, f, "Accuracy", rate, conc, st_comm.get('tests'))
 
     # Write HTML Report
     html_content = f"""

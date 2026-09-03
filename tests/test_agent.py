@@ -9,14 +9,19 @@ from agent import (
     extract_appointment_details,
     generate_vaccine_schedule_ai,
     scheduling_agent_node,
+    classify_general_message,
     AppointmentExtraction
 )
 from main import (
     recommend_slots,
     validate_vaccine_booking,
     get_next_vaccine_dose,
+    ask_admin,
+    reply_chat,
     ValidateVaccineDateReq,
-    RecommendSlotReq
+    RecommendSlotReq,
+    ChatMessageModel,
+    ChatReplyReq
 )
 from celery_worker import run_reminder_agent
 
@@ -85,6 +90,47 @@ async def test_agent1_intent_extraction_fallback(mock_run_llm_race):
     result = await extract_appointment_details(user_text, "2026-07-25 08:00:00")
     assert result.intent == "booking"
     assert result.general_notes == user_text
+
+
+# --- Message-Intent Classification (classify_general_message) ---
+# Feeds the "General Question" entry point's classifier so callers (bot.py's
+# routing, and Agent 2's off-topic hand-off detection) get one of the 6
+# defined categories every time.
+
+@pytest.mark.asyncio
+@patch("agent.run_llm_race")
+async def test_agent1_classify_message_booking_category(mock_run_llm_race):
+    mock_run_llm_race.return_value = json.dumps({"category": "create"})
+    result = await classify_general_message("I'd like to book a flu jab next week")
+    assert result == "create"
+
+@pytest.mark.asyncio
+@patch("agent.run_llm_race")
+async def test_agent1_classify_message_other_category(mock_run_llm_race):
+    mock_run_llm_race.return_value = json.dumps({"category": "other"})
+    result = await classify_general_message("What are your operating hours?")
+    assert result == "other"
+
+@pytest.mark.asyncio
+@patch("agent.run_llm_race")
+async def test_agent1_classify_message_unrelated_category(mock_run_llm_race):
+    mock_run_llm_race.return_value = json.dumps({"category": "unrelated"})
+    result = await classify_general_message("I want to book a car service")
+    assert result == "unrelated"
+
+@pytest.mark.asyncio
+@patch("agent.run_llm_race")
+async def test_agent1_classify_message_invalid_category_falls_back_to_other(mock_run_llm_race):
+    mock_run_llm_race.return_value = json.dumps({"category": "banana"})
+    result = await classify_general_message("Some message")
+    assert result == "other"
+
+@pytest.mark.asyncio
+@patch("agent.run_llm_race")
+async def test_agent1_classify_message_fallback_on_llm_failure(mock_run_llm_race):
+    mock_run_llm_race.side_effect = Exception("LLM Timeout")
+    result = await classify_general_message("Some message")
+    assert result == "other"
 
 
 # =====================================================================
@@ -262,3 +308,63 @@ def test_agent4_reminder_agent_execution(mock_httpx_post, mock_session_local):
 
     assert mock_httpx_post.called
     assert mock_db.commit.called
+
+
+# =====================================================================
+# AGENT 5: PATIENT-ADMIN COMMUNICATION AGENT (main.py)
+# =====================================================================
+# Off-topic hand-off detection itself is classify_general_message (see the
+# Agent 1 tests above) - these tests cover the other half: the bi-directional
+# relay that moves messages between the patient (Telegram) and the clinic
+# admin dashboard once a hand-off is live.
+
+class _FakeTelegramAsyncClient:
+    """Stand-in for httpx.AsyncClient so reply_chat/ask_admin never hit the
+    real Telegram API during tests."""
+    calls = []
+
+    def __init__(self, *a, **kw): pass
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+    async def post(self, url, json=None, **kw):
+        _FakeTelegramAsyncClient.calls.append((url, json))
+        class _Resp:
+            status_code = 200
+            def json(self_inner): return {"result": {"message_id": 1}}
+        return _Resp()
+
+
+@pytest.mark.asyncio
+async def test_agent5_admin_reply_saved_and_forwarded_to_patient():
+    _FakeTelegramAsyncClient.calls = []
+    mock_db = MagicMock()
+    req = ChatReplyReq(
+        clinic_id="c1111111-1111-1111-1111-111111111111",
+        reply_text="Your appointment is confirmed.",
+        telegram_id=123456789,
+    )
+    with patch("main.httpx.AsyncClient", _FakeTelegramAsyncClient):
+        res = await reply_chat(req, db=mock_db)
+
+    assert res == {"status": "success"}
+    assert mock_db.add.called and mock_db.commit.called
+    assert len(_FakeTelegramAsyncClient.calls) == 1
+    url, payload = _FakeTelegramAsyncClient.calls[0]
+    assert "sendMessage" in url
+    assert payload["chat_id"] == 123456789
+
+
+def test_agent5_ask_admin_is_a_notification_noop():
+    """/ask-admin must NOT write its own chat_messages row - bot.py's
+    log_all_incoming already saved the patient's message via /log-chat, and a
+    regression here would double every hand-off message in the dashboard."""
+    mock_db = MagicMock()
+    msg = ChatMessageModel(
+        clinic_id="c1111111-1111-1111-1111-111111111111",
+        telegram_id=123456789,
+        message="I need help with something else",
+    )
+    res = ask_admin(msg, db=mock_db)
+    assert res == {"status": "success"}
+    assert not mock_db.add.called

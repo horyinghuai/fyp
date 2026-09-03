@@ -20,7 +20,7 @@ import json
 import pytest
 from unittest.mock import patch
 
-from agent import extract_appointment_details
+from agent import extract_appointment_details, classify_general_message
 
 pytestmark = pytest.mark.accuracy
 
@@ -79,11 +79,66 @@ async def test_ai_extraction_individual_case(user_text, mocked_llm_json, expecte
         )
 
 
+# =====================================================================
+# Message-Intent Classification (classify_general_message)
+# ---------------------------------------------------------------------
+# The AI Intent Extraction Agent's second job: routing "General Question"
+# entry-point text into create/check/modify/delete/other/unrelated so
+# bot.py (and Agent 2's off-topic hand-off detection) can route correctly.
+# Each row: (user_text, mocked_llm_category, expected_category)
+# =====================================================================
+CLASSIFY_DATASET = [
+    ("I want to book a flu vaccine next week", "create", "create"),
+    ("Can you check my appointment for tomorrow?", "check", "check"),
+    ("I need to reschedule my Friday appointment", "modify", "modify"),
+    ("Please cancel my appointment", "delete", "delete"),
+    ("What are your operating hours?", "other", "other"),
+    ("Can I bring my child along?", "other", "other"),
+    ("I want to book a car service", "unrelated", "unrelated"),
+    ("What's the price of a cake?", "unrelated", "unrelated"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_text,mocked_category,expected_category", CLASSIFY_DATASET)
+async def test_message_classification_individual_case(user_text, mocked_category, expected_category):
+    with patch("agent.run_llm_race", return_value=json.dumps({"category": mocked_category})):
+        result = await classify_general_message(user_text)
+    assert result == expected_category, (
+        f"classify_general_message mismatch for {user_text!r}: "
+        f"got {result!r}, expected {expected_category!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_message_classification_falls_back_to_other_on_llm_failure():
+    """Agent 2 (the Patient-Admin Communication Agent) relies on this
+    classifier's output to decide whether to hand a conversation off to the
+    clinic admin. If both LLMs fail, it must fail safe to "other" rather
+    than raising and breaking the hand-off flow."""
+    with patch("agent.run_llm_race", side_effect=Exception("LLM Timeout")):
+        result = await classify_general_message("Some message")
+    assert result == "other"
+
+
+@pytest.mark.asyncio
+async def test_message_classification_falls_back_to_other_on_invalid_category():
+    """An out-of-set category from the LLM must normalize to "other" rather
+    than propagating a value bot.py's routing doesn't know how to handle."""
+    with patch("agent.run_llm_race", return_value=json.dumps({"category": "banana"})):
+        result = await classify_general_message("Some message")
+    assert result == "other"
+
+
 @pytest.mark.asyncio
 async def test_ai_extraction_overall_accuracy(record_property):
+    """Combined field-level accuracy for BOTH of Agent 1's jobs: structured
+    date/time/doctor extraction (extract_appointment_details) AND message-intent
+    classification (classify_general_message)."""
     total_fields = 0
     correct_fields = 0
     exact_matches = 0
+    total_cases = len(LABELED_DATASET) + len(CLASSIFY_DATASET)
 
     for user_text, mocked_llm_json, expected_fields in LABELED_DATASET:
         with patch("agent.run_llm_race", return_value=json.dumps(mocked_llm_json)):
@@ -99,11 +154,19 @@ async def test_ai_extraction_overall_accuracy(record_property):
         if row_correct:
             exact_matches += 1
 
+    for user_text, mocked_category, expected_category in CLASSIFY_DATASET:
+        with patch("agent.run_llm_race", return_value=json.dumps({"category": mocked_category})):
+            result = await classify_general_message(user_text)
+        total_fields += 1
+        if result == expected_category:
+            correct_fields += 1
+            exact_matches += 1
+
     field_accuracy = correct_fields / total_fields
-    
+
     # Pass specific internal metrics to conftest.py
-    record_property("custom_total", len(LABELED_DATASET))
+    record_property("custom_total", total_cases)
     record_property("custom_passed", exact_matches)
-    record_property("custom_failed", len(LABELED_DATASET) - exact_matches)
+    record_property("custom_failed", total_cases - exact_matches)
 
     assert field_accuracy == 1.0
