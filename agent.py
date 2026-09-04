@@ -98,7 +98,9 @@ def calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str):
             for i, day in enumerate(days_of_week):
                 if day in dt_str:
                     days_ahead = i - now.weekday()
-                    if days_ahead <= 0 or "next" in dt_str: days_ahead += 7
+                    if "last" in dt_str:
+                        if days_ahead >= 0: days_ahead -= 7
+                    elif days_ahead <= 0 or "next" in dt_str: days_ahead += 7
                     final_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
                     break
 
