@@ -1846,10 +1846,11 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
             [InlineKeyboardButton("🔁 Re-enter Question", callback_data="genq_reenter")],
             [InlineKeyboardButton("🛑 End Session", callback_data="genq_end")]
         ]
+        quoted_text = text if len(text) <= 60 else text[:57] + "..."
         await update.message.reply_text(
             "Sorry, I can only help with enquiries related to this clinic "
             "(e.g. bookings, appointments, clinic hours, services). "
-            "Your message doesn't seem to be related to the clinic.",
+            f"Your message \"{quoted_text}\" doesn't seem to be related to the clinic.",
             reply_markup=InlineKeyboardMarkup(btns)
         )
         return OTHERS_REASON
@@ -3291,10 +3292,11 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton("🔁 Re-enter Question", callback_data="global_unrelated_reenter")],
             [InlineKeyboardButton("🛑 End Session", callback_data="global_unrelated_end")]
         ]
+        quoted_text = text if len(text) <= 60 else text[:57] + "..."
         await update.message.reply_text(
             "Sorry, I can only help with enquiries related to this clinic "
             "(e.g. bookings, appointments, clinic hours, services). "
-            "Your message doesn't seem to be related to the clinic.",
+            f"Your message \"{quoted_text}\" doesn't seem to be related to the clinic.",
             reply_markup=InlineKeyboardMarkup(btns)
         )
         return
