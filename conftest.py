@@ -168,9 +168,14 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     # 3. Monkey Testing Summary
     st_monkey = get_file_stats('test_monkey')
     if st_monkey:
-        tot = 550  # Based on hypothesis max_examples (200 + 200 + 150)
+        # Total must equal passed + failed (i.e. the number of test cases
+        # actually shown in the "View Test Details" list below). Hypothesis
+        # collapses each test function's many random examples into a single
+        # pass/fail result per pytest test item, so this is a count of test
+        # functions, not a count of randomized inputs generated.
+        passed = st_monkey['passed']
         failed = st_monkey['failed']
-        passed = tot - failed
+        tot = passed + failed
         rate = (passed / tot * 100) if tot > 0 else 0
         conc = "The system exhibited high stability under randomized fuzzy inputs, successfully handling edge cases without crashing." if failed == 0 else f"The system encountered {failed} crash(es) during randomized fuzzy testing."
         process_block("Monkey Testing Summary", "Inputs", tot, passed, failed, "Stability Rate", rate, conc, st_monkey.get('tests'))
@@ -193,8 +198,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     # 5. Scheduling Accuracy
     st_sched = get_file_stats('test_scheduling_accuracy')
     if st_sched:
-        c = st_sched['custom']
-        tot, p, f = c.get('custom_total', 8), c.get('custom_passed', 8), c.get('custom_failed', 0)
+        tot = st_sched['passed'] + st_sched['failed']
+        p, f = st_sched['passed'], st_sched['failed']
         rate = (p / tot * 100) if tot > 0 else 0
         conc = "The Scheduling Agent correctly selected appointment slots in the evaluated scheduling scenarios, respecting clinical hours and boundaries." if f == 0 else f"The Scheduling Agent misclassified {f} scenarios."
         process_block("Scheduling Accuracy Evaluation", "Scenarios", tot, p, f, "Accuracy", rate, conc, st_sched.get('tests'))
@@ -210,8 +215,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     # 7. AI Extraction
     st_ai = get_file_stats('test_ai_extraction_accuracy')
     if st_ai:
-        c = st_ai['custom']
-        tot, p, f = c.get('custom_total', 4), c.get('custom_passed', 4), c.get('custom_failed', 0)
+        tot = st_ai['passed'] + st_ai['failed']
+        p, f = st_ai['passed'], st_ai['failed']
         rate = (p / tot * 100) if tot > 0 else 0
         conc = "The AI Intent Extraction Agent parsed user messages accurately, perfectly extracting fields like date, time, and doctor preference." if f == 0 else f"The AI extraction misclassified {f} scenarios."
         process_block("AI Extraction Accuracy Evaluation", "Scenarios", tot, p, f, "Accuracy", rate, conc, st_ai.get('tests'))
@@ -219,8 +224,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     # 8. Vaccine Validation
     st_vac = get_file_stats('test_vaccine_dependency_evaluation')
     if st_vac:
-        c = st_vac['custom']
-        tot, p, f = c.get('custom_total', 9), c.get('custom_passed', 9), c.get('custom_failed', 0)
+        tot = st_vac['passed'] + st_vac['failed']
+        p, f = st_vac['passed'], st_vac['failed']
         rate = (p / tot * 100) if tot > 0 else 0
         conc = "The Vaccine Dependency Agent validated clinical rules perfectly, handling intervals, boosters, and brand restrictions without error." if f == 0 else f"Vaccine clinical rule validation failed in {f} scenarios."
         process_block("Vaccine Validation Evaluation", "Scenarios", tot, p, f, "Accuracy", rate, conc, st_vac.get('tests'))
@@ -228,8 +233,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     # 9. Communication Agent Relay
     st_comm = get_file_stats('test_communication_agent_accuracy')
     if st_comm:
-        c = st_comm['custom']
-        tot, p, f = c.get('custom_total', 8), c.get('custom_passed', 8), c.get('custom_failed', 0)
+        tot = st_comm['passed'] + st_comm['failed']
+        p, f = st_comm['passed'], st_comm['failed']
         rate = (p / tot * 100) if tot > 0 else 0
         conc = "The Patient-Admin Communication Agent relayed messages between admin and patient correctly across Telegram and SMS channels, including edits and deletions." if f == 0 else f"The Communication Agent relay failed in {f} scenarios."
         process_block("Communication Agent Relay Evaluation", "Scenarios", tot, p, f, "Accuracy", rate, conc, st_comm.get('tests'))
