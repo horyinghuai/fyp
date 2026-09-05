@@ -72,6 +72,14 @@ export default function PatientsPage() {
   const [cancelReason, setCancelReason] = useState("Change of schedule");
   const [customCancelReason, setCustomCancelReason] = useState("");
 
+  // --- CASCADE CANCELLATION WARNING STATES (Vaccine only, replicated from Timetable) ---
+  const [cascadeCancelWarning, setCascadeCancelWarning] = useState<{
+    message: string;
+    stagesToCancel: string[];
+  } | null>(null);
+  const [cascadeCancelReason, setCascadeCancelReason] = useState("Change of schedule");
+  const [cascadeCancelCustom, setCascadeCancelCustom] = useState("");
+
   // --- NEW EDIT MODAL STATES (REPLICATED FROM TIMETABLE) ---
   const [doctors, setDoctors] = useState<any[]>([]);
   const [vaccinesList, setVaccinesList] = useState<any[]>([]);
@@ -694,6 +702,66 @@ export default function PatientsPage() {
     }
   };
 
+  // Vaccine bookings show the Cancellation Warning (cascade) modal; Blood Test/Others keep the regular Cancel Booking modal.
+  const handleCancelClick = () => {
+    if (!selectedApptDetail) return;
+    const stageName = selectedApptDetail.details?.dose || '';
+    const dNum = getDoseNum(stageName);
+    const service = selectedApptDetail.service;
+
+    // Non-vaccine or standalone — use regular single-stage cancel modal
+    if (service !== 'Vaccine' || dNum === 0) {
+      setCancelApptModalVisible(true);
+      return;
+    }
+
+    const seriesStages = selectedPatientAppts
+      .filter((e: any) => e.appt_id === selectedApptDetail.appt_id && e.status !== 'canceled' && e.status !== 'no-show')
+      .sort((a: any, b: any) => getDoseNum(a.details?.dose) - getDoseNum(b.details?.dose));
+
+    let warningMsg = '';
+    let stagesToCancel: string[] = [];
+
+    if (dNum === 1) {
+      const names = seriesStages.map((s: any) => s.details?.dose).join(', ');
+      warningMsg = `Cancelling Dose 1 will also cancel ALL future doses in this vaccine series (${names}). This action cannot be undone.`;
+      stagesToCancel = seriesStages.map((s: any) => s.stage_id);
+    } else if (dNum === 9999) {
+      warningMsg = `Cancelling the Booster appointment will remove only the Booster appointment.`;
+      stagesToCancel = [selectedApptDetail.stage_id];
+    } else {
+      const futureDoses = seriesStages.filter((s: any) => getDoseNum(s.details?.dose) >= dNum);
+      const futureNames = futureDoses.map((s: any) => s.details?.dose).join(', ');
+      warningMsg = `Cancelling ${stageName} will also cancel ${futureNames} and leave the vaccine series incomplete.`;
+      stagesToCancel = futureDoses.map((s: any) => s.stage_id);
+    }
+
+    setCascadeCancelReason("Change of schedule");
+    setCascadeCancelCustom("");
+    setCascadeCancelWarning({ message: warningMsg, stagesToCancel });
+  };
+
+  const executeCascadeCancellation = async () => {
+    if (!cascadeCancelWarning || !selectedApptDetail) return;
+    const reason = cascadeCancelReason === 'Other' ? cascadeCancelCustom.trim() : cascadeCancelReason;
+    if (!reason) { alert('Please provide a cancellation reason.'); return; }
+
+    try {
+      for (const stageId of cascadeCancelWarning.stagesToCancel) {
+        await fetch(`http://127.0.0.1:8000/admin/appointment-stages/${stageId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'canceled', cancel_reason: reason })
+        });
+      }
+
+      setCascadeCancelWarning(null);
+      window.location.reload();
+    } catch (err) {
+      alert('Failed to cancel appointment(s). Please try again.');
+    }
+  };
+
   // Filter by search, then sort by name (A-Z or Z-A)
   const visiblePatients = patients
     .filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.ic_passport_number.includes(search))
@@ -912,7 +980,7 @@ export default function PatientsPage() {
       )}
 
       {/* 2. TIMETABLE STYLE BOOKING DETAILS MODAL */}
-      {selectedApptDetail && !cancelApptModalVisible && (
+      {selectedApptDetail && !cancelApptModalVisible && !cascadeCancelWarning && (
           <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-[60] backdrop-blur-sm">
               <div className="bg-white rounded-2xl shadow-2xl w-[500px] overflow-hidden max-h-[90vh] overflow-y-auto">
                   <div className="bg-slate-50 px-6 py-4 border-b flex justify-between items-center">
@@ -1412,7 +1480,7 @@ export default function PatientsPage() {
                           <button onClick={() => setIsEditingAppt(false)} className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg font-medium hover:bg-slate-300">Cancel Modify</button>
                       ) : (
                           <button
-                              onClick={() => setCancelApptModalVisible(true)}
+                              onClick={handleCancelClick}
                               disabled={['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status)}
                               className={`px-4 py-2 rounded-lg font-medium transition-colors ${['completed', 'canceled', 'no-show'].includes(selectedApptDetail.status) ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
                           >
@@ -1480,6 +1548,71 @@ export default function PatientsPage() {
                               Modify Booking
                           </button>
                       )}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Vaccine Cascade Cancellation Warning Modal (Exact match to Timetable) */}
+      {cascadeCancelWarning && (
+          <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-[75] backdrop-blur-sm">
+              <div className="bg-white p-6 rounded-2xl shadow-2xl w-[480px]">
+                  <div className="flex items-start gap-3 mb-5">
+                      <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+                          <span className="text-xl">⚠️</span>
+                      </div>
+                      <div>
+                          <h3 className="font-bold text-lg text-slate-800 mb-1">Cancellation Warning</h3>
+                          <p className="text-sm text-slate-600 leading-relaxed">{cascadeCancelWarning.message}</p>
+                      </div>
+                  </div>
+
+                  <div className="border-t border-slate-100 pt-4 space-y-3">
+                      <div>
+                          <label className="block text-sm font-bold text-slate-700 mb-1">Reason for Cancellation</label>
+                          <select
+                              value={cascadeCancelReason}
+                              onChange={e => setCascadeCancelReason(e.target.value)}
+                              className="w-full p-2 border rounded-lg bg-white outline-none"
+                          >
+                              <option value="Change of schedule">Change of schedule</option>
+                              <option value="Feeling better">Feeling better</option>
+                              <option value="Booked wrong service">Booked wrong service</option>
+                              <option value="Personal reasons">Personal reasons</option>
+                              <option value="Other">Other (Custom)</option>
+                          </select>
+                      </div>
+                      {cascadeCancelReason === 'Other' && (
+                          <input
+                              type="text"
+                              placeholder="Specify reason..."
+                              value={cascadeCancelCustom}
+                              onChange={e => setCascadeCancelCustom(e.target.value)}
+                              className="w-full p-2 border rounded-lg outline-none"
+                          />
+                      )}
+                      <p className="text-xs text-slate-400">
+                          This will cancel <strong className="text-slate-600">{cascadeCancelWarning.stagesToCancel.length}</strong> appointment stage(s). This action cannot be undone.
+                      </p>
+                  </div>
+
+                  <div className="flex justify-end gap-3 mt-5">
+                      <button
+                          onClick={() => {
+                              setCascadeCancelWarning(null);
+                              setCascadeCancelReason("Change of schedule");
+                              setCascadeCancelCustom("");
+                          }}
+                          className="px-4 py-2 bg-slate-100 rounded-lg text-slate-700 font-medium hover:bg-slate-200"
+                      >
+                          Back
+                      </button>
+                      <button
+                          onClick={executeCascadeCancellation}
+                          className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700"
+                      >
+                          Confirm Cancellation
+                      </button>
                   </div>
               </div>
           </div>

@@ -3517,7 +3517,7 @@ def create_doctor(data: DoctorCreateReq, db: Session = Depends(get_db)):
         db.flush()
         
     link = db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=data.ic, clinic_id=data.clinic_id, day_of_week='none').first()
-    db_status = 'inactive' if data.status == 'resigned' else (data.status or 'active')
+    db_status = data.status or 'active'
     db_reason = data.resign_reason if data.status == 'resigned' else None
     
     if not link:
@@ -3562,7 +3562,7 @@ def update_doctor(ic: str, data: DoctorCreateReq, db: Session = Depends(get_db))
         doc.gender = data.gender
         doc.specialization = data.specialization
         
-        db_status = 'inactive' if data.status == 'resigned' else (data.status or 'active')
+        db_status = data.status or 'active'
         db_reason = data.resign_reason if data.status == 'resigned' else None
         
         db.query(models.DoctorClinicAvailability).filter_by(doctor_ic=ic, clinic_id=data.clinic_id).update({
