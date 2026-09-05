@@ -696,6 +696,17 @@ export default function PatientsPage() {
 
         if (!cancelRes.ok) throw new Error('Cancellation failed');
 
+        // Send cancellation notification to patient (Telegram if available, else SMS)
+        await fetch(`http://127.0.0.1:8000/admin/notify-cancellation`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                clinic_id: clinicId,
+                stage_id: selectedApptDetail.stage_id || selectedApptDetail.id,
+                cancel_reason: reason,
+                total_cancelled: 1
+            })
+        }).catch(() => {});
+
         window.location.reload();
     } catch (err: any) {
         alert(`Error: ${err.message}`);
@@ -753,6 +764,20 @@ export default function PatientsPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'canceled', cancel_reason: reason })
         });
+      }
+
+      // Send cancellation notification to patient (Telegram if available, else SMS).
+      // total_cancelled > 1 makes the backend append the "additional dependent dose(s) cancelled" note.
+      if (cascadeCancelWarning.stagesToCancel.length > 0) {
+        await fetch(`http://127.0.0.1:8000/admin/notify-cancellation`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clinic_id: clinicId,
+            stage_id: cascadeCancelWarning.stagesToCancel[0],
+            cancel_reason: reason,
+            total_cancelled: cascadeCancelWarning.stagesToCancel.length
+          })
+        }).catch(() => {});
       }
 
       setCascadeCancelWarning(null);
