@@ -3131,8 +3131,69 @@ def create_vaccine(data: VaccineCreate, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
+async def notify_vaccine_reschedule(db: Session, appt_id, vaccine_name: str):
+    """Sent when an admin edits a vaccine's dose intervals and an existing
+    booked appointment's stage(s) get shifted to match the new schedule."""
+    appt = db.query(models.Appointment).filter_by(id=appt_id).first()
+    if not appt:
+        return
+    patient = db.query(models.Patient).filter_by(id=appt.patient_id).first()
+    if not patient:
+        return
+
+    doc = db.query(models.Doctor).filter_by(ic_passport_number=appt.doctor_ic).first() if appt.doctor_ic else None
+    doctor_str = doc.name if doc else "ANY"
+    clinic_obj = db.query(models.Clinic).filter_by(id=appt.clinic_id).first()
+    clinic_name = clinic_obj.name if clinic_obj else "Unknown Clinic"
+
+    # The "latest full upcoming schedule" — every not-yet-completed/cancelled stage for this appointment
+    upcoming_stages = db.query(models.ApptStage).filter(
+        models.ApptStage.appointment_id == appt_id,
+        models.ApptStage.status == 'scheduled'
+    ).order_by(models.ApptStage.scheduled_time.asc()).all()
+
+    if not upcoming_stages:
+        return
+
+    schedule_lines = "\n".join(
+        f"- {s.stage_name}: {s.scheduled_time.strftime('%Y-%m-%d')} at {s.scheduled_time.strftime('%H:%M')}"
+        for s in upcoming_stages
+    )
+
+    summary = (f"📅 *Vaccine Schedule Updated*\n\n"
+               f"Hello {patient.name}, the dosing intervals for {vaccine_name} have been updated by the clinic, "
+               f"so one or more of your upcoming appointment date(s)/time(s) have changed to match the new schedule.\n\n"
+               f"Doctor: {doctor_str}\n"
+               f"Clinic: {clinic_name}\n\n"
+               f"Your updated upcoming schedule:\n{schedule_lines}\n\n"
+               f"If any of these new timings don't work for you, please contact the clinic to reschedule.")
+
+    try:
+        if patient.telegram_id:
+            token = os.getenv("TELEGRAM_BOT_TOKEN")
+            async with httpx.AsyncClient() as client:
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                  json={"chat_id": patient.telegram_id, "text": summary, "parse_mode": "Markdown"})
+            db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone,
+                                      telegram_id=patient.telegram_id, channel='telegram',
+                                      message=None, reply=summary, status='replied'))
+        else:
+            await send_sms_async(patient.phone, summary.replace("*", ""))
+            db.add(models.ChatMessage(clinic_id=patient.clinic_id, phone=patient.phone,
+                                      telegram_id=None, channel='sms',
+                                      message=None, reply=summary.replace("*", ""), status='replied'))
+        db.add(models.AgentLog(
+            clinic_id=patient.clinic_id,
+            action="Vaccine Interval Updated - Patient Notified",
+            reasoning=f"Notified {patient.ic_passport_number} of updated schedule for appointment {appt_id} after {vaccine_name} interval change."
+        ))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Failed to send vaccine reschedule notification: {e}")
+
 @app.put("/admin/vaccines/{v_id}")
-def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)):
+async def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)):
     try:
         # --- Enforce Dependencies ---
         if not data.allow_repeat_series:
@@ -3165,6 +3226,8 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
         db.flush()
 
         now = datetime.now()
+        vaccine_name = v.name if v else (data.name.title() if data.name else "")
+        affected_appt_ids = set()  # appointments whose scheduled_time actually shifted
         appt_vacs = db.query(models.AppointmentVaccine).filter_by(vaccine_id=v_id).all()
         for av in appt_vacs:
             appt_id = av.appointment_id
@@ -3193,7 +3256,7 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
                 if not stage:
                     continue
                     
-                if stage.status == "completed" or stage.scheduled_time < now:
+                if stage.status != "scheduled" or stage.scheduled_time < now:
                     prev_date = stage.scheduled_time
                     continue
                     
@@ -3203,10 +3266,20 @@ def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(get_db)
                 new_date = prev_date + timedelta(days=interval_days)
                 
                 if new_date:
+                    if stage.scheduled_time != new_date:
+                        affected_appt_ids.add(appt_id)
                     stage.scheduled_time = new_date
                     prev_date = new_date
 
         db.commit()
+
+        # Notify only the patients whose appointment actually moved
+        for appt_id in affected_appt_ids:
+            try:
+                await notify_vaccine_reschedule(db, appt_id, vaccine_name)
+            except Exception as e:
+                print(f"Failed to notify patient for appointment {appt_id}: {e}")
+
         return {"status": "success"}
     except HTTPException:
         db.rollback()
