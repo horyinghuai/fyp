@@ -28,8 +28,8 @@ export default function BloodTestsPage() {
     try {
       const token = localStorage.getItem('aicas_token');
       const [pkgRes, sglRes] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/package`, { headers: { 'Authorization': `Bearer ${token}` } }),
-        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/single`, { headers: { 'Authorization': `Bearer ${token}` } })
+        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/package?include_inactive=true`, { headers: { 'Authorization': `Bearer ${token}` } }),
+        fetch(`http://127.0.0.1:8000/blood-tests/${cid}/single?include_inactive=true`, { headers: { 'Authorization': `Bearer ${token}` } })
       ]);
       
       if (pkgRes.status === 401 || sglRes.status === 401) {
@@ -109,7 +109,7 @@ export default function BloodTestsPage() {
   };
 
 const handleDelete = async (id: number) => {
-    if (confirm("Delete this Blood Test? This cannot be undone.")) {
+    if (confirm("Delete this Blood Test? It will be hidden from new bookings but can be reactivated later.")) {
       const token = localStorage.getItem('aicas_token');
       try {
         const res = await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}`, { 
@@ -131,6 +131,30 @@ const handleDelete = async (id: number) => {
       } catch (err: any) {
         alert(err.message);
       }
+    }
+  };
+
+  const handleReactivate = async (id: number) => {
+    const token = localStorage.getItem('aicas_token');
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/admin/blood-tests/${id}/reactivate`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (res.status === 401) {
+          window.location.href = '/login';
+          return;
+      }
+
+      if (!res.ok) {
+          const errorData = await res.json().catch(() => ({ detail: 'Failed to reactivate blood test.' }));
+          throw new Error(errorData.detail);
+      }
+
+      loadData(clinicId);
+    } catch (err: any) {
+      alert(err.message);
     }
   };
 
@@ -182,6 +206,9 @@ const handleDelete = async (id: number) => {
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase">Package Name</label>
                 <h3 className="font-bold text-lg text-slate-800">{p.name}</h3>
+                {p.is_active === false && (
+                    <span className="text-xs bg-slate-200 text-slate-600 px-2 py-1 rounded-full font-bold inline-block mt-1 mr-1">INACTIVE</span>
+                )}
                 {p.target_gender && p.target_gender !== 'ANY' && (
                     <span className="text-xs bg-pink-100 text-pink-700 px-2 py-1 rounded-full font-bold inline-block mt-1">👩‍⚕️ {p.target_gender} ONLY</span>
                 )}
@@ -210,9 +237,15 @@ const handleDelete = async (id: number) => {
               <button onClick={() => openModal(p)} className="text-sm px-4 py-2 bg-slate-100 rounded-lg font-medium">
                 Edit Package
               </button>
-              <button onClick={() => handleDelete(p.id)} className="text-sm px-4 py-2 bg-red-50 text-red-600 rounded-lg font-medium">
-                Delete
-              </button>
+              {p.is_active === false ? (
+                <button onClick={() => handleReactivate(p.id)} className="text-sm px-4 py-2 bg-emerald-50 text-emerald-600 rounded-lg font-medium">
+                  Reactivate
+                </button>
+              ) : (
+                <button onClick={() => handleDelete(p.id)} className="text-sm px-4 py-2 bg-red-50 text-red-600 rounded-lg font-medium">
+                  Delete
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -236,7 +269,12 @@ const handleDelete = async (id: number) => {
             )}
             {singles.map((s, i) => (
               <tr key={s.id} className={`border-b border-slate-50 hover:bg-slate-50 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
-                <td className="p-4 font-bold text-slate-800">{s.name}</td>
+                <td className="p-4 font-bold text-slate-800">
+                  {s.name}
+                  {s.is_active === false && (
+                    <span className="ml-2 text-xs bg-slate-200 text-slate-600 px-2 py-1 rounded-full font-bold">INACTIVE</span>
+                  )}
+                </td>
                 <td className="p-4 text-sm font-bold text-pink-600">{s.target_gender !== 'ANY' ? s.target_gender : 'ANY'}</td>
                 <td className="p-4 text-sm text-slate-500">{s.description || "N/A"}</td>
                 <td className="p-4 font-bold text-emerald-600">RM {s.price}</td>
@@ -244,9 +282,15 @@ const handleDelete = async (id: number) => {
                   <button onClick={() => openModal(s)} className="text-sm px-3 py-1 bg-slate-100 text-slate-600 rounded font-medium">
                     Edit
                   </button>
-                  <button onClick={() => handleDelete(s.id)} className="text-sm px-3 py-1 bg-red-50 text-red-600 rounded font-medium">
-                    Delete
-                  </button>
+                  {s.is_active === false ? (
+                    <button onClick={() => handleReactivate(s.id)} className="text-sm px-3 py-1 bg-emerald-50 text-emerald-600 rounded font-medium">
+                      Reactivate
+                    </button>
+                  ) : (
+                    <button onClick={() => handleDelete(s.id)} className="text-sm px-3 py-1 bg-red-50 text-red-600 rounded font-medium">
+                      Delete
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

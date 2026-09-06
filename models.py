@@ -114,6 +114,10 @@ class BloodTest(Base):
     description = Column(String)
     test_type = Column(String(20), nullable=False) 
     target_gender = Column(String(10), default="ANY")
+    # Soft-delete flag. False = removed from the catalogue (not selectable for
+    # new bookings) but the row is kept so existing AppointmentBloodTest
+    # records still resolve to a real test with its original name/price.
+    is_active = Column(Boolean, default=True, nullable=False, server_default="true")
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"

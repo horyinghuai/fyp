@@ -1896,7 +1896,7 @@ async def book_appointment(booking: Booking, db: Session = Depends(get_db)):
                     ))
             elif booking.service_type == 'Blood Test' and items_list:
                 for t_name in items_list:
-                    bt = db.query(models.BloodTest).filter_by(name=t_name).first()
+                    bt = db.query(models.BloodTest).filter_by(name=t_name, is_active=True).first()
                     if bt:
                         existing_abt = db.query(models.AppointmentBloodTest).filter_by(
                             appointment_id=new_appt.id, blood_test_id=bt.id
@@ -2562,7 +2562,7 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                 db.add(models.AppointmentVaccine(appointment_id=appt.id, vaccine_id=v_model.id, dose_number=dose_val))
             elif service == 'Blood Test' and items_list:
                 for t_name in items_list:
-                    bt = db.query(models.BloodTest).filter_by(name=t_name).first()
+                    bt = db.query(models.BloodTest).filter_by(name=t_name, is_active=True).first()
                     if bt: db.add(models.AppointmentBloodTest(appointment_id=appt.id, blood_test_id=bt.id))
                     
             new_stage = models.ApptStage(
@@ -3370,6 +3370,14 @@ def update_bt(bt_id: int, data: BloodTestCreate, db: Session = Depends(get_db)):
 
 @app.delete("/admin/blood-tests/{bt_id}")
 def delete_bt(bt_id: int, db: Session = Depends(get_db)):
+    bt = db.query(models.BloodTest).filter_by(id=bt_id).first()
+    if not bt:
+        raise HTTPException(status_code=404, detail="Blood test not found.")
+
+    if not bt.is_active:
+        # Already inactive; nothing more to do.
+        return {"status": "success"}
+
     # Check if this single test is a component of any package
     in_package = db.query(models.BloodTestComponent).filter_by(test_id=bt_id).first()
     
@@ -3382,13 +3390,32 @@ def delete_bt(bt_id: int, db: Session = Depends(get_db)):
             detail=f"Cannot delete this test because it is currently included in the '{pkg_name}' package. Please remove it from the package first."
         )
 
-    db.query(models.BloodTest).filter_by(id=bt_id).delete()
+    # Soft-delete: keep the row (so existing AppointmentBloodTest records
+    # still resolve to a real test with its original name/price), but mark
+    # it inactive so it's no longer offered for new bookings.
+    bt.is_active = False
+    db.commit()
+    return {"status": "success"}
+
+@app.post("/admin/blood-tests/{bt_id}/reactivate")
+def reactivate_bt(bt_id: int, db: Session = Depends(get_db)):
+    bt = db.query(models.BloodTest).filter_by(id=bt_id).first()
+    if not bt:
+        raise HTTPException(status_code=404, detail="Blood test not found.")
+
+    bt.is_active = True
     db.commit()
     return {"status": "success"}
 
 @app.get("/blood-tests/{clinic_id}/{t_type}")
-def get_blood_tests_by_type(clinic_id: str, t_type: str, db: Session = Depends(get_db)):
-    tests = db.query(models.BloodTest).filter(models.BloodTest.clinic_id == clinic_id, models.BloodTest.test_type == t_type).all()
+def get_blood_tests_by_type(clinic_id: str, t_type: str, include_inactive: bool = False, db: Session = Depends(get_db)):
+    query = db.query(models.BloodTest).filter(
+        models.BloodTest.clinic_id == clinic_id,
+        models.BloodTest.test_type == t_type,
+    )
+    if not include_inactive:
+        query = query.filter(models.BloodTest.is_active == True)
+    tests = query.all()
     res = []
     for t in tests:
         test_dict = {
@@ -3398,6 +3425,7 @@ def get_blood_tests_by_type(clinic_id: str, t_type: str, db: Session = Depends(g
             "price": float(t.price), 
             "target_gender": t.target_gender, 
             "test_type": t.test_type,
+            "is_active": t.is_active,
             "component_ids": []
         }
         if t_type == "package":
