@@ -197,10 +197,14 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                     base_date: (isEditingEvent && minEditDateRef.current > moment().format("YYYY-MM-DD"))
                         ? minEditDateRef.current
                         : moment().format("YYYY-MM-DD"),
-                    // Always evaluate ALL doctors so the backend picks the lowest future workload.
-                    // (Sending editForm.doctor_ic passed an IC where the backend expects a NAME,
-                    //  which returned "no doctors found" and hid the suggestion box.)
-                    doctor_pref: 'ANY',
+                    // For a system-generated dose 2+ reschedule, the doctor is locked to
+                    // whichever doctor the series is already with — scope AI suggestions to
+                    // that doctor only. Otherwise (new bookings / dose 1), evaluate ALL doctors
+                    // so the backend picks the lowest future workload.
+                    // (The backend's doctor_pref match expects a NAME, not an IC.)
+                    doctor_pref: isSystemGenerated
+                        ? (doctors.find((d: any) => d.ic_passport_number === editForm.doctor_ic)?.name || 'ANY')
+                        : 'ANY',
                     duration: editForm.service === 'Vaccine' ? 15 : 30,
                     service_type: editForm.service,
                     vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
@@ -808,7 +812,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
       patient_ic: event.patient_ic || '',
       service: event.service || 'Others',
       items: event.items || [],
-      dose: event.dose || 'Single Dose',
+      dose: event.stage_name || event.dose || 'Single Dose',
       reason: event.reason || ''
     });
     setPatientSearchText(`${event.patient_name} (${event.patient_ic})`);
@@ -840,15 +844,15 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
           calcMin = moment(prevStage.start).add(sched.interval_days, 'days').format("YYYY-MM-DD");
         }
       }
-      // Auto-navigate calendar to the earliest valid month
-      if (calcMin > moment().format("YYYY-MM-DD")) {
-        const m = moment(calcMin);
-        setViewMonth(m.month());
-        setViewYear(m.year());
-      }
     }
     setMinEditDate(calcMin);
     minEditDateRef.current = calcMin;
+
+    // Default: always show the month containing the ORIGINAL scheduled date first,
+    // so Modify Booking opens with the current booking's date already visible/selected.
+    const eventMonth = moment(event.start);
+    setViewMonth(eventMonth.month());
+    setViewYear(eventMonth.year());
   };
 
   const openNewBookingModal = () => {
@@ -1608,6 +1612,9 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                   setEditForm(prev => ({...prev, doctor_ic: docObj ? docObj.ic_passport_number : ''}));
                                   setEditDate(aiRec.raw_date);
                                   setEditTime(aiRec.raw_time.substring(0,5));
+                                  const recMoment = moment(aiRec.raw_date);
+                                  setViewMonth(recMoment.month());
+                                  setViewYear(recMoment.year());
                               }} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 rounded-lg transition-colors text-sm shadow-sm">
                                   Use AI Recommendation
                               </button>
@@ -1617,20 +1624,31 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                       {/* --- 5. ASSIGNED DOCTOR --- */}
                       <div className="col-span-2">
                         <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Assigned Doctor <span className="text-red-500">*</span></label>
-                        <select value={editForm.doctor_ic} onChange={(e) => {
-                            setEditForm({...editForm, doctor_ic: e.target.value});
-                            setEditDate(""); setEditTime("");
-                        }} className="w-full p-2 border rounded-lg bg-white outline-none">
-                          <option value="">-- Select a Doctor --</option>
-                          {doctors.map((doc: any) => {
-                              const aiLabel = agentContext?.doctors?.find((d: any) => d.ic === doc.ic_passport_number)?.label;
-                              return (
-                                  <option key={doc.ic_passport_number} value={doc.ic_passport_number}>
-                                      {doc.name} {aiLabel ? `${aiLabel}` : ""}
-                                  </option>
-                              );
-                          })}
-                        </select>
+                        {isSystemGenerated ? (
+                            <div>
+                                <select value={editForm.doctor_ic} disabled className="w-full p-2 border rounded-lg bg-slate-100 outline-none text-slate-500 cursor-not-allowed">
+                                    <option value={editForm.doctor_ic}>
+                                        {doctors.find((d: any) => d.ic_passport_number === editForm.doctor_ic)?.name || 'Assigned Doctor'}
+                                    </option>
+                                </select>
+                                <p className="text-xs text-slate-400 mt-1">Doctor is locked to match the earlier dose(s) in this vaccine series and can't be changed here.</p>
+                            </div>
+                        ) : (
+                            <select value={editForm.doctor_ic} onChange={(e) => {
+                                setEditForm({...editForm, doctor_ic: e.target.value});
+                                setEditDate(""); setEditTime("");
+                            }} className="w-full p-2 border rounded-lg bg-white outline-none">
+                              <option value="">-- Select a Doctor --</option>
+                              {doctors.map((doc: any) => {
+                                  const aiLabel = agentContext?.doctors?.find((d: any) => d.ic === doc.ic_passport_number)?.label;
+                                  return (
+                                      <option key={doc.ic_passport_number} value={doc.ic_passport_number}>
+                                          {doc.name} {aiLabel ? `${aiLabel}` : ""}
+                                      </option>
+                                  );
+                              })}
+                            </select>
+                        )}
                       </div>
 
                       {/* --- 6. CUSTOM COLOR-CODED DATE PICKER --- */}
