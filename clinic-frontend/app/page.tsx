@@ -140,10 +140,24 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
     .map(([k, v]) => `${k}:${v}`)
     .join('|');
 
+  // The IC to use for AI context/recommendations: the selected existing patient's IC,
+  // or — when registering a brand new patient inline — their in-progress IC, formatted
+  // the same way it is at submission time (see handleUpdateOrAddEvent), so the AI box
+  // works identically whether the patient is new or existing.
+  const effectivePatientIc = (isNewBooking && isCreatingNewPatient)
+      ? (() => {
+          const rawIc = (newPatientForm.ic_passport_number || '').replace(/[\s-]/g, '');
+          if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
+              return `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
+          }
+          return rawIc;
+        })()
+      : editForm.patient_ic;
+
   useEffect(() => {
     let ignore = false; // guards against out-of-order async responses (race condition)
 
-    if ((isNewBooking || isEditingEvent) && editForm.patient_ic && editForm.service) {
+    if ((isNewBooking || isEditingEvent) && effectivePatientIc && editForm.service) {
         if (editForm.service === 'Vaccine' && (!editForm.items || editForm.items.length === 0)) {
             return () => { ignore = true; };
         }
@@ -166,7 +180,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 clinic_id: activeClinicId,
-                ic: editForm.patient_ic,
+                ic: effectivePatientIc,
                 service_type: editForm.service,
                 vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
                 target_dose: editForm.dose,
@@ -209,7 +223,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                     service_type: editForm.service,
                     vaccine_name: editForm.service === 'Vaccine' ? editForm.items[0] : null,
                     dose: editForm.dose,
-                    ic: editForm.patient_ic,
+                    ic: effectivePatientIc,
                     manual_dates: manualDates  // pass external clinic dates
                 })
             }).then(r => r.json()).then(data => {
@@ -231,7 +245,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
         setAgentContext(null); setAiRec(null); setIsLoadingContext(false);
         return () => { ignore = true; };
     }
-  }, [isNewBooking, isEditingEvent, isSystemGenerated, activeClinicId, editForm.patient_ic, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear, minEditDate, manualDatesKey]);
+  }, [isNewBooking, isEditingEvent, isSystemGenerated, activeClinicId, effectivePatientIc, editForm.service, editForm.items, editForm.dose, editForm.doctor_ic, viewMonth, viewYear, minEditDate, manualDatesKey]);
 
   const loadDoctors = async (cid: string) => {
       try {
@@ -452,7 +466,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
         if (editForm.service === "Vaccine" && editForm.items.length > 0 && !isDateTimeUnchanged && !restartSeries) {
             let tempIc = editForm.patient_ic;
             if (isNewBooking && isCreatingNewPatient) {
-                let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
+                let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '').toUpperCase();
                 if (newPatientForm.nationality.toUpperCase() === 'MALAYSIA' && rawIc.length === 12) {
                     tempIc = `${rawIc.substring(0,6)}-${rawIc.substring(6,8)}-${rawIc.substring(8,12)}`;
                 } else {
@@ -561,7 +575,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                 const isMY = newPatientForm.nationality.toUpperCase() === 'MALAYSIA';
                 
                 // 1. Strict IC Formatting
-                let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '');
+                let rawIc = newPatientForm.ic_passport_number.replace(/[\s-]/g, '').toUpperCase();
                 let finalFormattedIc = rawIc;
                 
                 if (isMY) {
