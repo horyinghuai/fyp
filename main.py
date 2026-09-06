@@ -2244,6 +2244,53 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                     assigned_doc_ic = appt.doctor_ic
                     found_edited = False
 
+                    def _find_earliest_slot_for_doctor(doctor_ic, min_dt, duration_minutes=15, exclude_stage_id=None, horizon_days=180):
+                        """Earliest bookable datetime (>= min_dt) for doctor_ic at this
+                        clinic, based on their weekly availability + existing scheduled
+                        appointments. Returns None if nothing is found within horizon_days
+                        or the doctor has no availability rows at all."""
+                        if not doctor_ic:
+                            return None
+                        avail_rows = db.query(models.DoctorClinicAvailability).filter(
+                            models.DoctorClinicAvailability.clinic_id == appt.clinic_id,
+                            models.DoctorClinicAvailability.doctor_ic == doctor_ic,
+                            models.DoctorClinicAvailability.status == 'active'
+                        ).all()
+                        if not avail_rows:
+                            return None
+
+                        by_day: dict = {}
+                        for row in avail_rows:
+                            if row.day_of_week:
+                                by_day.setdefault(row.day_of_week.lower(), []).append(row)
+
+                        now = datetime.now()
+                        start_date = max(min_dt.date(), now.date())
+
+                        for offset in range(0, horizon_days + 1):
+                            day = start_date + timedelta(days=offset)
+                            windows = by_day.get(day.strftime("%a").lower(), [])
+                            for win in sorted(windows, key=lambda w: w.start_time):
+                                curr = datetime.combine(day, win.start_time)
+                                end = datetime.combine(day, win.end_time)
+                                while curr + timedelta(minutes=duration_minutes) <= end:
+                                    if curr >= min_dt and curr >= now:
+                                        conflict_q = (
+                                            db.query(models.ApptStage)
+                                            .join(models.Appointment)
+                                            .filter(
+                                                models.Appointment.doctor_ic == doctor_ic,
+                                                models.ApptStage.scheduled_time == curr,
+                                                models.ApptStage.status == 'scheduled',
+                                            )
+                                        )
+                                        if exclude_stage_id:
+                                            conflict_q = conflict_q.filter(models.ApptStage.id != exclude_stage_id)
+                                        if not conflict_q.first():
+                                            return curr
+                                    curr += timedelta(minutes=duration_minutes)
+                        return None
+
                     for s in all_stages:
                         if s.id == stage.id:
                             found_edited = True
@@ -2258,53 +2305,52 @@ async def update_appointment(booking: UpdateBooking, db: Session = Depends(get_d
                         raw_new_dt = s.scheduled_time + time_delta
                         target_date = raw_new_dt.date()
 
-                        # ── Find nearest slot: prefer exact date, then ±7 days ──
+                        # ── 1. Try to preserve the exact shifted date/time, if the
+                        #      (possibly new) doctor is actually free at that moment ──
                         found_slot = False
-                        for raw_off in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7]:
-                            search_dt = target_date + timedelta(days=raw_off)
-                            if search_dt < datetime.now().date():
-                                continue
-                            day_key = search_dt.strftime("%a").lower()
-
-                            avail_q = db.query(models.DoctorClinicAvailability).filter(
+                        if assigned_doc_ic:
+                            day_key = target_date.strftime("%a").lower()
+                            avail_row = db.query(models.DoctorClinicAvailability).filter(
                                 models.DoctorClinicAvailability.clinic_id == appt.clinic_id,
+                                models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic,
                                 models.DoctorClinicAvailability.day_of_week == day_key,
-                                models.DoctorClinicAvailability.status == 'active'
-                            )
-                            if assigned_doc_ic:
-                                avail_q = avail_q.filter(
-                                    models.DoctorClinicAvailability.doctor_ic == assigned_doc_ic
+                                models.DoctorClinicAvailability.status == 'active',
+                                models.DoctorClinicAvailability.start_time <= raw_new_dt.time(),
+                                models.DoctorClinicAvailability.end_time >= (raw_new_dt + timedelta(minutes=15)).time(),
+                            ).first()
+                            if avail_row and target_date >= datetime.now().date():
+                                conflict = (
+                                    db.query(models.ApptStage)
+                                    .join(models.Appointment)
+                                    .filter(
+                                        models.Appointment.doctor_ic == assigned_doc_ic,
+                                        models.ApptStage.scheduled_time == raw_new_dt,
+                                        models.ApptStage.status == 'scheduled',
+                                        models.ApptStage.id != s.id,
+                                    )
+                                    .first()
                                 )
-                            avail_row = avail_q.first()
+                                if not conflict:
+                                    s.scheduled_time = raw_new_dt
+                                    found_slot = True
 
-                            if avail_row and avail_row.day_of_week != 'none':
-                                try:
-                                    # Try to keep same time-of-day; fallback to avail start
-                                    for cand_time in [raw_new_dt.time(), avail_row.start_time]:
-                                        cand_dt = datetime.combine(search_dt, cand_time)
-                                        check_ic = assigned_doc_ic or avail_row.doctor_ic
-                                        conflict = (
-                                            db.query(models.ApptStage)
-                                            .join(models.Appointment)
-                                            .filter(
-                                                models.Appointment.doctor_ic == check_ic,
-                                                models.ApptStage.scheduled_time == cand_dt,
-                                                models.ApptStage.status == 'scheduled',
-                                                models.ApptStage.id != s.id,
-                                            )
-                                            .first()
-                                        ) if check_ic else None
-                                        if not conflict:
-                                            s.scheduled_time = cand_dt
-                                            found_slot = True
-                                            break
-                                    if found_slot:
-                                        break
-                                except Exception:
-                                    pass
+                        # ── 2. Ideal slot unavailable (doctor off that day, already
+                        #      booked, etc.) → fall back to that doctor's earliest
+                        #      actually-available date/time from the target date
+                        #      onward. This guarantees the new booking always lands
+                        #      on a slot the (new) doctor can genuinely take. ──
+                        if not found_slot and assigned_doc_ic:
+                            earliest = _find_earliest_slot_for_doctor(
+                                assigned_doc_ic, target_date and datetime.combine(target_date, datetime.min.time()),
+                                duration_minutes=15, exclude_stage_id=s.id
+                            )
+                            if earliest:
+                                s.scheduled_time = earliest
+                                found_slot = True
 
                         if not found_slot:
-                            # No doctor slot nearby — keep mathematically shifted date
+                            # No doctor assigned (ANY) or no availability at all found —
+                            # keep the mathematically shifted date as last resort.
                             s.scheduled_time = raw_new_dt
 
                     db.flush()
@@ -4779,10 +4825,30 @@ def validate_vaccine_booking(req: ValidateVaccineDateReq, db: Session = Depends(
     except:
         return {"is_valid": False, "reason": "Invalid requested time format."}
 
-    # Auto-Determine Target Dose (Using highest overall, not just completed)
-    target_num = highest_overall['num'] + 1 if highest_overall else 1
-    if target_num > vaccine.total_doses + (1 if vaccine.has_booster else 0): target_num = 1
-    target_name = get_dose_name(target_num)
+    # Auto-Determine Target Dose (Using highest overall, not just completed).
+    #
+    # This auto-detection is only meaningful for a brand-new booking, where we
+    # don't yet know which dose the patient should receive next. When we're
+    # instead MODIFYING an existing, already-identified dose (exclude_stage_id
+    # + target_dose supplied), trust that directly — recomputing from history
+    # is unreliable here: if any LATER dose in the series has since been
+    # cancelled/no-show, it silently drops out of the history query, so
+    # "highest remaining dose + 1" can land on the wrong dose number entirely
+    # (e.g. editing Dose 1 gets mistaken for "Dose 3"), triggering irrelevant
+    # interval-dependency validation against doses that aren't actually
+    # involved in this edit at all.
+    if req.exclude_stage_id and req.target_dose:
+        target_name = req.target_dose
+        target_num = get_dose_num(target_name)
+        if target_num == 0:
+            # Unrecognised dose label — fall back to auto-detection below.
+            target_num = highest_overall['num'] + 1 if highest_overall else 1
+            if target_num > vaccine.total_doses + (1 if vaccine.has_booster else 0): target_num = 1
+            target_name = get_dose_name(target_num)
+    else:
+        target_num = highest_overall['num'] + 1 if highest_overall else 1
+        if target_num > vaccine.total_doses + (1 if vaccine.has_booster else 0): target_num = 1
+        target_name = get_dose_name(target_num)
 
     # 2. Cancelled/No-Show Handling (External Request)
     if target_num in missed_doses and target_name not in all_dates:

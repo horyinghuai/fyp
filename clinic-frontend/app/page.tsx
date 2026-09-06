@@ -458,7 +458,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                 clinic_id: activeClinicId, ic: tempIc,
                                 vaccine_name: editForm.items[0], target_dose: editForm.dose,
                                 requested_time: scheduled_time, manual_dates: currentManualDates,
-                                exclude_stage_id: (isEditingEvent && selectedEvent) ? selectedEvent.extendedProps.stage_id : null,
+                                exclude_stage_id: (isEditingEvent && selectedEvent) ? selectedEvent.id : null,
                                 restart_series: restartSeries   
                             })
                         });
@@ -1367,7 +1367,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                       {!isNewBooking && isSystemGenerated && isEditingEvent && (
                         <div className="col-span-2 flex items-center gap-2 px-3 py-2 bg-purple-50 border border-purple-200 rounded-xl text-xs text-purple-700 font-medium">
                             <span>🔒</span>
-                            <span>System-generated appointment: only <strong>Date</strong>, <strong>Time</strong>, and <strong>Doctor</strong> can be modified.</span>
+                            <span>System-generated appointment: only <strong>Date</strong> and <strong>Time</strong> can be modified.</span>
                         </div>
                       )}
 
