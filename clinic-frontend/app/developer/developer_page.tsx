@@ -49,6 +49,42 @@ export default function DeveloperPage() {
       return clinics.some(c => (c.id !== excludeClinicId && (c.registration_number || '').toUpperCase() === trimmedRegNum));
   };
 
+  const normalizeIC = (ic: string) => (ic || '').replace(/[-\s]/g, '').toUpperCase();
+
+  // Looks across every clinic's Primary and Temp Admin for a matching IC/Passport
+  // number. Returns the conflicting name if the same IC/Passport is already on
+  // file under a DIFFERENT name (i.e. a likely typo or identity mismatch).
+  // The slot currently being edited (its own clinic + role) is excluded so a
+  // record doesn't conflict with itself while editing.
+  const findAdminICConflict = (
+      ic: string,
+      name: string,
+      excludeClinicId: string | undefined,
+      excludeRole: 'admin' | 'temp_admin'
+  ) => {
+      const targetIC = normalizeIC(ic);
+      const targetName = (name || '').trim().toUpperCase();
+      if (!targetIC) return null;
+
+      for (const c of clinics) {
+          const isSelfClinic = !!excludeClinicId && c.id === excludeClinicId;
+
+          if (c.admin?.ic && normalizeIC(c.admin.ic) === targetIC) {
+              const isSelf = isSelfClinic && excludeRole === 'admin';
+              if (!isSelf && (c.admin.name || '').trim().toUpperCase() !== targetName) {
+                  return c.admin.name;
+              }
+          }
+          if (c.temp_admin?.ic && normalizeIC(c.temp_admin.ic) === targetIC) {
+              const isSelf = isSelfClinic && excludeRole === 'temp_admin';
+              if (!isSelf && (c.temp_admin.name || '').trim().toUpperCase() !== targetName) {
+                  return c.temp_admin.name;
+              }
+          }
+      }
+      return null;
+  };
+
   const formatAndValidatePhone = (phone: string) => {
       if (!phone) return null;
       let cleaned = phone.replace(/[\s-]/g, '');
@@ -161,6 +197,30 @@ export default function DeveloperPage() {
           newErrors.push('temp_admin_ic'); errorMessage = errorMessage || 'Temp Admin ID is required.';
       } else if (!/^[a-zA-Z0-9]+$/.test(devForm.temp_admin_ic)) {
           newErrors.push('temp_admin_ic'); errorMessage = errorMessage || 'Temp Admin Passport Number cannot contain symbols.';
+      }
+
+      // Primary and Temp Admin must be two different people.
+      if (!newErrors.includes('admin_ic') && !newErrors.includes('temp_admin_ic')
+          && normalizeIC(finalAdminIC) && normalizeIC(finalAdminIC) === normalizeIC(finalTempAdminIC)) {
+          newErrors.push('admin_ic', 'temp_admin_ic');
+          errorMessage = errorMessage || 'Primary Administrator and Temporary Administrator cannot be the same person (same IC/Passport Number).';
+      }
+
+      // An IC/Passport Number already on file elsewhere must match the same name.
+      const editingClinicId = (isEditing && isEditing !== 'new') ? isEditing : undefined;
+      if (!newErrors.includes('admin_ic')) {
+          const conflictName = findAdminICConflict(finalAdminIC, devForm.admin_name, editingClinicId, 'admin');
+          if (conflictName) {
+              newErrors.push('admin_ic');
+              errorMessage = errorMessage || `IC/Passport Number '${finalAdminIC}' already exists in the system under a different name ('${conflictName}').`;
+          }
+      }
+      if (!newErrors.includes('temp_admin_ic')) {
+          const conflictName = findAdminICConflict(finalTempAdminIC, devForm.temp_admin_name, editingClinicId, 'temp_admin');
+          if (conflictName) {
+              newErrors.push('temp_admin_ic');
+              errorMessage = errorMessage || `IC/Passport Number '${finalTempAdminIC}' already exists in the system under a different name ('${conflictName}').`;
+          }
       }
 
       if (newErrors.length > 0) {
