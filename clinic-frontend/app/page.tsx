@@ -429,6 +429,20 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
             if (sp) currentPatientGender = sp.gender.toUpperCase();
         }
 
+        // --- GENDER RESTRICTION GUARD (safety net in case a stale selection slips through) ---
+        if (editForm.service === "Vaccine" && editForm.items.length > 0) {
+            const vac = vaccinesList.find((v: any) => v.name === editForm.items[0]);
+            if (vac && vac.target_gender && vac.target_gender !== 'ANY' && vac.target_gender !== currentPatientGender) {
+                return alert(`⚠️ ${editForm.items[0]} is only available for ${vac.target_gender} patients.`);
+            }
+        }
+        if (editForm.service === "Blood Test" && editForm.items.length > 0) {
+            const mismatched = bloodTestsList.find((b: any) => editForm.items.includes(b.name) && b.target_gender && b.target_gender !== 'ANY' && b.target_gender !== currentPatientGender);
+            if (mismatched) {
+                return alert(`⚠️ ${mismatched.name} is only available for ${mismatched.target_gender} patients.`);
+            }
+        }
+
         // --- UPGRADED: Vaccine Agent Validation ---
         const isDateTimeUnchanged = isEditingEvent && selectedEvent &&
               editDate === moment(selectedEvent.start).format("YYYY-MM-DD") && 
@@ -898,7 +912,13 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
 
   const pkgs = bloodTestsList.filter((b: any) => b.test_type === 'package');
   const sgls = bloodTestsList.filter((b: any) => b.test_type === 'single');
-  
+
+  // --- GENDER RESTRICTION: which gender the currently selected/new patient is, for filtering item lists ---
+  const currentPatientGenderForFilter = (isNewBooking && isCreatingNewPatient)
+      ? (newPatientForm.gender || 'ANY').toUpperCase()
+      : (patients.find((p: any) => p.ic_passport_number === editForm.patient_ic)?.gender || 'ANY').toUpperCase();
+  const isGenderMatch = (targetGender?: string) => !targetGender || targetGender === 'ANY' || targetGender === currentPatientGenderForFilter;
+
   const selectedPkgs = pkgs.filter((p: any) => editForm.items.includes(p.name));
   const includedTestNames = new Set<string>();
   selectedPkgs.forEach((p: any) => {
@@ -1442,7 +1462,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                                   <option value="">Select Vaccine</option>
                                   {Object.keys(groupedVaccines).map(type => (
                                       <optgroup key={type} label={type}>
-                                          {groupedVaccines[type].filter((v:any) => !v.is_low_stock).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
+                                          {groupedVaccines[type].filter((v:any) => !v.is_low_stock && (isGenderMatch(v.target_gender) || v.name === editForm.items[0])).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
                                       </optgroup>
                                   ))}
                                 </select>
@@ -1548,7 +1568,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                             <div>
                               <label className="block text-xs font-bold text-slate-500 mb-2">1. Packages (Max 1)</label>
                               <div className="grid grid-cols-2 gap-2 mb-4">
-                                 {pkgs.map((bt: any) => {
+                                 {pkgs.filter((bt: any) => isGenderMatch(bt.target_gender) || editForm.items.includes(bt.name)).map((bt: any) => {
                                     const isChecked = editForm.items.includes(bt.name);
                                     const disabled = hasOnePackageSelected && !isChecked;
                                     return (
@@ -1566,7 +1586,7 @@ const [selectedDoctorFilter, setSelectedDoctorFilter] = useState("ALL");
                               </div>
                               <label className="block text-xs font-bold text-slate-500 mb-2">2. Single Tests</label>
                               <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
-                                 {sgls.map((bt: any) => {
+                                 {sgls.filter((bt: any) => isGenderMatch(bt.target_gender) || editForm.items.includes(bt.name)).map((bt: any) => {
                                     const isIncluded = includedTestNames.has(bt.name);
                                     return (
                                         <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${isIncluded ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>

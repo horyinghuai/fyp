@@ -116,7 +116,8 @@ export default function PatientsPage() {
             const enrichedData = data.map((d: any) => ({
                 ...d,
                 patient_name: patient.name,
-                patient_ic: patient.ic_passport_number
+                patient_ic: patient.ic_passport_number,
+                patient_gender: patient.gender
             }));
             // Sort by latest date first
             const sorted = enrichedData.sort((a: any, b: any) => 
@@ -304,6 +305,20 @@ export default function PatientsPage() {
   const handleUpdateEvent = async () => {
     try {
         if (!editDate || !editTime || !editForm.doctor_ic) return alert("Please select Date, Time, and Doctor.");
+
+        // --- GENDER RESTRICTION GUARD (safety net in case a stale selection slips through) ---
+        if (editForm.service === "Vaccine" && editForm.items?.length > 0) {
+            const vac = vaccinesList.find((v: any) => v.name === editForm.items[0]);
+            if (vac && vac.target_gender && vac.target_gender !== 'ANY' && vac.target_gender !== currentPatientGenderForFilter) {
+                return alert(`⚠️ ${editForm.items[0]} is only available for ${vac.target_gender} patients.`);
+            }
+        }
+        if (editForm.service === "Blood Test" && editForm.items?.length > 0) {
+            const mismatched = bloodTestsList.find((b: any) => editForm.items.includes(b.name) && b.target_gender && b.target_gender !== 'ANY' && b.target_gender !== currentPatientGenderForFilter);
+            if (mismatched) {
+                return alert(`⚠️ ${mismatched.name} is only available for ${mismatched.target_gender} patients.`);
+            }
+        }
 
         const scheduled_time = `${editDate} ${editTime}:00`;
 
@@ -679,7 +694,11 @@ export default function PatientsPage() {
       if (p.included_tests) p.included_tests.forEach((t: string) => includedTestNames.add(t));
   });
   const hasOnePackageSelected = selectedPkgs.length > 0;
-  
+
+  // --- GENDER RESTRICTION: patient's gender, for filtering item lists ---
+  const currentPatientGenderForFilter = (selectedApptDetail?.patient_gender || 'ANY').toUpperCase();
+  const isGenderMatch = (targetGender?: string) => !targetGender || targetGender === 'ANY' || targetGender === currentPatientGenderForFilter;
+
   const { times: availableTimes, docsForTime } = getAvailableSlots();
 
   if (isLoading) return <div className="animate-pulse h-64 bg-slate-200 rounded-2xl"></div>;
@@ -1113,7 +1132,7 @@ export default function PatientsPage() {
                                           <option value="">Select Vaccine</option>
                                           {Object.keys(groupedVaccines).map(type => (
                                               <optgroup key={type} label={type}>
-                                                  {groupedVaccines[type].filter((v:any) => !v.is_low_stock || v.name === editForm.items[0]).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
+                                                  {groupedVaccines[type].filter((v:any) => (!v.is_low_stock || v.name === editForm.items[0]) && (isGenderMatch(v.target_gender) || v.name === editForm.items[0])).map((v: any) => <option key={v.id} value={v.name}>{v.name}</option>)}
                                               </optgroup>
                                           ))}
                                         </select>
@@ -1194,7 +1213,7 @@ export default function PatientsPage() {
                                     <div>
                                       <label className="block text-xs font-bold text-slate-500 mb-2">1. Packages (Max 1)</label>
                                       <div className="grid grid-cols-2 gap-2 mb-4">
-                                         {pkgs.map((bt: any) => {
+                                         {pkgs.filter((bt: any) => isGenderMatch(bt.target_gender) || editForm.items?.includes(bt.name)).map((bt: any) => {
                                             const isChecked = editForm.items?.includes(bt.name);
                                             const disabled = hasOnePackageSelected && !isChecked;
                                             return (
@@ -1212,7 +1231,7 @@ export default function PatientsPage() {
                                       </div>
                                       <label className="block text-xs font-bold text-slate-500 mb-2">2. Single Tests</label>
                                       <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
-                                         {sgls.map((bt: any) => {
+                                         {sgls.filter((bt: any) => isGenderMatch(bt.target_gender) || editForm.items?.includes(bt.name)).map((bt: any) => {
                                             const isIncluded = includedTestNames.has(bt.name);
                                             return (
                                                 <label key={bt.id} className={`flex items-center gap-2 bg-white p-2 rounded border text-sm ${isIncluded ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
