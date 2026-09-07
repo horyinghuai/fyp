@@ -3588,7 +3588,11 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
     start_of_day = datetime.combine(date_obj, datetime.min.time())
     end_of_day = datetime.combine(date_obj, datetime.max.time())
     
-    clashes = db.query(models.ApptStage.scheduled_time, models.Appointment.doctor_ic).join(models.Appointment).join(models.Patient, models.Appointment.patient_id == models.Patient.id).filter(models.Patient.clinic_id == clinic_id, models.ApptStage.scheduled_time >= start_of_day, models.ApptStage.scheduled_time <= end_of_day).all()
+    # Only 'scheduled' (and other active) stages actually occupy a slot — canceled and
+    # no-show stages must NOT keep blocking their old time, otherwise a slot that was
+    # freed by a cancellation stays permanently unavailable for rebooking even though
+    # /recommend-slots (which does exclude these statuses) offers it to other patients.
+    clashes = db.query(models.ApptStage.scheduled_time, models.Appointment.doctor_ic).join(models.Appointment).join(models.Patient, models.Appointment.patient_id == models.Patient.id).filter(models.Patient.clinic_id == clinic_id, models.ApptStage.scheduled_time >= start_of_day, models.ApptStage.scheduled_time <= end_of_day, models.ApptStage.status.notin_(['canceled', 'no-show'])).all()
     clash_dict = {}
     for c_time, d_ic in clashes:
         if d_ic not in clash_dict: clash_dict[d_ic] = []

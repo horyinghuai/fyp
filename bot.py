@@ -1179,6 +1179,19 @@ async def appointment_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         context.user_data['original_appt_id'] = appt['appt_id']
                         context.user_data['assigned_doctor_name'] = appt['details'].get('assigned_doctor_name', 'ANY')
                         context.user_data['assigned_doctor_id'] = appt['details'].get('assigned_doctor_id')
+
+                        # Lock the "Change Doctor Preference" option when this is a
+                        # Dose 2+/Booster follow-up and an earlier dose on record was
+                        # booked with a specific doctor — consistent with the auto-assign
+                        # behaviour used when the booking was first created.
+                        context.user_data.pop('doctor_locked', None)
+                        if context.user_data['service'] == 'Vaccine' and context.user_data.get('selected_items'):
+                            prev_doctor = await get_previous_dose_doctor(
+                                context, context.user_data['selected_items'][0], context.user_data.get('dose')
+                            )
+                            if prev_doctor:
+                                context.user_data['doctor_locked'] = True
+
                         # Show the edit menu (will use handle_edit_menu_routing)
                         return await handle_edit_menu_routing(update, context)
             except Exception:
@@ -2055,6 +2068,73 @@ async def vaccine_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dose = query.data.replace("dose_", "")
     return await proceed_with_dose(update, context, dose)
 
+def _dose_number(dose_name: str, total_doses: int) -> int:
+    """Parse a dose label like 'Dose 2', 'Single Dose', 'Booster' into a comparable number."""
+    if not dose_name:
+        return 0
+    n = dose_name.lower()
+    if 'single' in n:
+        return 1
+    if 'booster' in n:
+        return total_doses + 1
+    if n.startswith('dose '):
+        try:
+            return int(n.split(" ")[1])
+        except Exception:
+            return 0
+    return 0
+
+async def get_previous_dose_doctor(context: ContextTypes.DEFAULT_TYPE, vaccine_name: str, dose: str):
+    """
+    For Dose 2+ (or Booster) bookings, look up this patient's own appointment history
+    at this clinic for the same vaccine. If an earlier dose was booked with a specific
+    (non-ANY) doctor and is not canceled/no-show, return that doctor's name so the
+    current dose can be auto-assigned to them. Returns None if no such record exists.
+    """
+    ic = context.user_data.get('ic')
+    if not ic or not vaccine_name:
+        return None
+
+    vac = next((v for v in context.user_data.get('vaccines_list', []) if v['name'] == vaccine_name), None)
+    total_doses = vac.get('total_doses', 1) if vac else 1
+
+    current_num = _dose_number(dose, total_doses)
+    if current_num < 2:
+        return None
+
+    active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(f"{API_BASE}/patient/{active_cid}/appointments/{ic}?include_canceled=true", timeout=5.0)
+            if res.status_code != 200:
+                return None
+            appts = res.json()
+    except Exception as e:
+        logger.error(f"get_previous_dose_doctor lookup failed: {e}")
+        return None
+
+    candidates = []
+    for a in appts:
+        if a.get('service') != 'Vaccine':
+            continue
+        items = a.get('details', {}).get('items', [])
+        if vaccine_name not in items:
+            continue
+        status = str(a.get('status', '')).strip().lower()
+        if status.startswith('cancel') or status == 'no-show':
+            continue
+        prev_num = _dose_number(a.get('details', {}).get('dose', ''), total_doses)
+        if 0 < prev_num < current_num:
+            doc_name = a.get('doctor_name')
+            if doc_name and str(doc_name).strip().upper() != 'ANY':
+                candidates.append((a.get('date', ''), a.get('time', ''), doc_name))
+
+    if not candidates:
+        return None
+    # Most recent qualifying prior dose wins
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    return candidates[-1][2]
+
 async def proceed_with_dose(update: Update, context: ContextTypes.DEFAULT_TYPE, dose: str, announce: bool = False):
     context.user_data['dose'] = dose
 
@@ -2066,6 +2146,23 @@ async def proceed_with_dose(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await update.callback_query.edit_message_text(note, parse_mode="Markdown")
         elif update.message:
             await update.message.reply_text(note, parse_mode="Markdown")
+
+    # --- Auto-assign doctor for Dose 2+/Booster bookings based on this patient's own
+    # previous-dose history (only when such a record exists). Skips the doctor
+    # preference menu and locks doctor_pref to the doctor from the earlier dose so
+    # date/time recommendations only consider that doctor's availability. ---
+    context.user_data.pop('doctor_locked', None)
+    if dose not in ['Single Dose', 'Dose 1']:
+        vac_name_for_lookup = context.user_data.get('selected_items', [None])[0]
+        prev_doctor = await get_previous_dose_doctor(context, vac_name_for_lookup, dose)
+        if prev_doctor:
+            context.user_data['doctor_pref'] = prev_doctor
+            context.user_data['doctor_locked'] = True
+            lock_msg = f"👨‍⚕️ Based on your previous dose, you are assigned to *{prev_doctor}* for this appointment."
+            if update.callback_query:
+                await update.callback_query.message.reply_text(lock_msg, parse_mode="Markdown")
+            elif update.message:
+                await update.message.reply_text(lock_msg, parse_mode="Markdown")
 
     # --- Missing Dose Check: only request info when a required prior record is absent ---
     if dose not in ['Single Dose', 'Dose 1']:
@@ -2108,6 +2205,11 @@ async def proceed_with_dose(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await trigger_datetime_prompt(update, context)
             return BOOK_DATE_TIME
         return await show_booking_summary(update, context, force_new=announce)
+    if context.user_data.get('doctor_locked'):
+        # Doctor already auto-assigned from a previous dose record — skip the
+        # doctor preference menu and go straight to date/time selection.
+        await trigger_datetime_prompt(update, context)
+        return BOOK_DATE_TIME
     return await show_doctor_preference(update, context, force_new=announce)
 
 async def handle_manual_prev_dose(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2764,7 +2866,7 @@ async def process_availability(update, context, full_time_str):
                 if row: btns.append(row)
             except: pass
 
-        if "Multiple doctors match" in data.get('reason', '') or "No doctor matching" in data.get('reason', ''):
+        if not context.user_data.get('doctor_locked') and ("Multiple doctors match" in data.get('reason', '') or "No doctor matching" in data.get('reason', '')):
              btns.append([InlineKeyboardButton("👩‍⚕️ Reselect Doctor Preference", callback_data="back_doc_pref")])
         else:
              btns.append([InlineKeyboardButton("📅 Fully Reselect Date & Time", callback_data="back_date")])
@@ -2870,21 +2972,28 @@ async def handle_edit_menu_routing(update: Update, context: ContextTypes.DEFAULT
     
     # If it is a follow up dose, lock the service and details options
     is_follow_up_dose = context.user_data.get('editing_existing') and service == 'Vaccine' and dose not in ['Dose 1', 'Single Dose', None, '']
-    
+
+    # Doctor was auto-assigned from this patient's previous dose record (Dose 2+/Booster
+    # with a matching prior-dose doctor) — hide the "Change Doctor Preference" option
+    # for both the create-booking flow and the modify-existing-booking flow.
+    doctor_locked = bool(context.user_data.get('doctor_locked'))
+
     if is_follow_up_dose:
         base_btns = [
-            [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
             [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
             [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")],
         ]
+        if not doctor_locked:
+            base_btns.insert(0, [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")])
     else:
         base_btns = [
             [InlineKeyboardButton("Change Service", callback_data="editbook_service")],
             [InlineKeyboardButton("Change Vaccine/Test Details", callback_data="editbook_details")],
-            [InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")],
-            [InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")],
-            [InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")],
         ]
+        if not doctor_locked:
+            base_btns.append([InlineKeyboardButton("Change Doctor Preference", callback_data="editbook_doctor")])
+        base_btns.append([InlineKeyboardButton("Change Date or Time", callback_data="editbook_time")])
+        base_btns.append([InlineKeyboardButton("🔙 Cancel Modify", callback_data="editbook_abort_edit")])
 
     if not context.user_data.get('editing_existing'):
         # In create booking flow, show Cancel Draft Booking button
@@ -2958,7 +3067,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Only for create booking: discard draft and show confirmation
         context.user_data['is_editing'] = False
         context.user_data['editing_existing'] = False
-        for key in ['service', 'selected_items', 'dose', 'general_notes', 'doctor_pref', 'book_date', 'book_time', 'ai_pending_time', 'assigned_doctor_name', 'assigned_doctor_id']:
+        for key in ['service', 'selected_items', 'dose', 'general_notes', 'doctor_pref', 'book_date', 'book_time', 'ai_pending_time', 'assigned_doctor_name', 'assigned_doctor_id', 'doctor_locked']:
             context.user_data.pop(key, None)
         
         # Show booking removed message
