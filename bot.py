@@ -2888,7 +2888,15 @@ async def process_availability(update, context, full_time_str):
             "target_dose": context.user_data.get('dose'),
             "requested_time": full_time_str,
             "manual_dates": context.user_data.get('manual_doses', {}),
-            "restart_series": context.user_data.get('restart_series', False)
+            "restart_series": context.user_data.get('restart_series', False),
+            # When rescheduling an existing booking, tell the backend which
+            # stage is being edited so it trusts target_dose directly instead
+            # of re-deriving it from history. Without this, a cancelled LATER
+            # dose (e.g. Dose 3) silently drops out of the history query and
+            # the backend miscalculates the dose being edited as "next dose"
+            # (e.g. Dose 1/2 edits get mistaken for Dose 3), triggering
+            # irrelevant interval validation against unrelated doses.
+            "exclude_stage_id": context.user_data.get('edit_appt_id') if context.user_data.get('is_editing') else None
         }
         async with httpx.AsyncClient() as client:
             try:
