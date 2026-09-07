@@ -1823,12 +1823,7 @@ async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reason = reason.capitalize().rstrip('.')
     context.user_data['general_notes'] = reason
     
-    # Only jump straight to the booking summary if this is genuinely an
-    # edit of an already-complete booking (i.e. date/time was already
-    # chosen, so book_time exists). If is_editing was left set from a
-    # stale/resumed state without a book_time, fall through to the normal
-    # next step instead of crashing in show_booking_summary.
-    if context.user_data.get('is_editing') and context.user_data.get('book_time'):
+    if context.user_data.get('is_editing'):
         return await show_booking_summary(update, context)
     return await show_doctor_preference(update, context)
 
@@ -2687,10 +2682,28 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
             return await process_availability(update, context, full_time_str)
 
         if final_date and not final_time:
-            await update.message.reply_text(
-                f"I understand that you would like to book for {final_date}.\n\n"
-                "What time would you prefer?\nFor example: 10am, 2pm, or 14:00."
+            # If the user's last reply was actually meant to answer a
+            # "what time?" prompt (either the initial ask or a previous
+            # retry after an unparsed time) but still couldn't be parsed
+            # into any time at all (e.g. a bare "4" or "four"), don't just
+            # silently repeat the same question - tell them plainly what we
+            # did understand (the date) and what we didn't (their exact text).
+            prev_prompt = LAST_PROMPTS.get(update.effective_user.id, {}).get('text', '') or ''
+            was_awaiting_time = (
+                "What time would you prefer" in prev_prompt
+                or "Please re-enter your preferred time" in prev_prompt
             )
+            if was_awaiting_time:
+                await update.message.reply_text(
+                    f"I understand that the date you want is {final_date}, "
+                    f"but I didn't understand \"{text}\" as a time.\n\n"
+                    "Please re-enter your preferred time, e.g. 10am, 2pm, or 14:00."
+                )
+            else:
+                await update.message.reply_text(
+                    f"I understand that you would like to book for {final_date}.\n\n"
+                    "What time would you prefer?\nFor example: 10am, 2pm, or 14:00."
+                )
             return BOOK_DATE_TIME
 
         if final_time and not final_date:
