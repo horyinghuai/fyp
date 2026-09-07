@@ -615,13 +615,20 @@ export default function ReportsPage() {
       Foreigners: patients.filter((p) => (p.nationality || "").toUpperCase() !== "MALAYSIA").length,
     };
 
+    // Matches the AI agent's "future workload" definition (main.py's
+    // /appointment-agent doctor recommendation): count individual future
+    // appointment STAGES that aren't canceled/no-show, not collapsed
+    // all-time appointments. This keeps the dashboard consistent with the
+    // number the agent actually reasons about when picking a doctor.
+    const workloadNow = new Date();
     const doctorCounts = new Map<string, number>();
-    appointmentGroups.forEach((a) => {
-      // Only calculate workload for scheduled or completed appointments
-      if (a.latestStatus === "scheduled" || a.latestStatus === "completed") {
-        const name = a.doctor || "Unassigned";
-        doctorCounts.set(name, (doctorCounts.get(name) || 0) + 1);
-      }
+    appointmentsRaw.forEach((row) => {
+      const start = new Date(row.start);
+      if (Number.isNaN(start.getTime()) || start < workloadNow) return;
+      const status = normalizeStatus(row.status);
+      if (status === "canceled" || status === "no-show") return;
+      const name = row.doctor || "Unassigned";
+      doctorCounts.set(name, (doctorCounts.get(name) || 0) + 1);
     });
 
     const doctorWorkload: ChartItem[] = [...doctorCounts.entries()]
@@ -691,7 +698,7 @@ export default function ReportsPage() {
       vaccineStock,
       agentActionChart,
     };
-  }, [appointmentGroups, patients, doctors, vaccines, bloodTests, agentLogs]);
+  }, [appointmentGroups, appointmentsRaw, patients, doctors, vaccines, bloodTests, agentLogs]);
 
   if (loading) {
     return (
@@ -889,7 +896,7 @@ export default function ReportsPage() {
 
           <SectionCard
             title="Doctor Workload Analysis"
-            subtitle="Number of appointments per doctor."
+            subtitle="Number of upcoming appointment stages per doctor."
             icon={<Stethoscope className="h-5 w-5" />}
           >
             <HorizontalBarChart data={report.doctorWorkload} barColor={COLORS.cyan} />
