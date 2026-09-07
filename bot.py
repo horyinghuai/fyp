@@ -1823,7 +1823,12 @@ async def others_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reason = reason.capitalize().rstrip('.')
     context.user_data['general_notes'] = reason
     
-    if context.user_data.get('is_editing'):
+    # Only jump straight to the booking summary if this is genuinely an
+    # edit of an already-complete booking (i.e. date/time was already
+    # chosen, so book_time exists). If is_editing was left set from a
+    # stale/resumed state without a book_time, fall through to the normal
+    # next step instead of crashing in show_booking_summary.
+    if context.user_data.get('is_editing') and context.user_data.get('book_time'):
         return await show_booking_summary(update, context)
     return await show_doctor_preference(update, context)
 
