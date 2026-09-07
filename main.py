@@ -9,7 +9,7 @@ from database import get_db
 import models
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
-from agent import extract_appointment_details, generate_vaccine_schedule_ai, classify_general_message
+from agent import extract_appointment_details, generate_vaccine_schedule_ai, classify_general_message, classify_admin_context_message
 from datetime import datetime, timedelta
 import random
 import re
@@ -486,6 +486,12 @@ class AdminReplyReq(BaseModel):
 
 class TextExtractRequest(BaseModel):
     text: str
+
+class AdminContextClassifyRequest(BaseModel):
+    text: str
+    clinic_id: str
+    telegram_id: Optional[int] = None
+    phone: Optional[str] = None
 
 class DateRequest(BaseModel):
     clinic_id: str
@@ -3558,6 +3564,31 @@ async def ai_extract(req: TextExtractRequest):
 @app.post("/classify-message")
 async def classify_message(req: TextExtractRequest):
     category = await classify_general_message(req.text)
+    return {"category": category}
+
+@app.post("/classify-admin-context")
+async def classify_admin_context(req: AdminContextClassifyRequest, db: Session = Depends(get_db)):
+    """
+    Context-aware validation for a patient's message sent WHILE they are
+    already in an ongoing conversation with the clinic admin (i.e. an earlier
+    message in this conversation was already routed to the admin). Looks up
+    the most recent message sent to this patient (the clinic admin's latest
+    message/question) and uses it as context, instead of classifying the
+    patient's new message in isolation.
+    """
+    query = db.query(models.ChatMessage).filter(
+        models.ChatMessage.clinic_id == req.clinic_id,
+        models.ChatMessage.reply.isnot(None)
+    )
+    if req.telegram_id:
+        query = query.filter(models.ChatMessage.telegram_id == req.telegram_id)
+    elif req.phone:
+        query = query.filter(models.ChatMessage.phone == req.phone)
+
+    last_msg = query.order_by(models.ChatMessage.created_at.desc()).first()
+    last_admin_message = last_msg.reply if last_msg else None
+
+    category = await classify_admin_context_message(req.text, last_admin_message)
     return {"category": category}
 
 @app.get("/clinic/{clinic_id}")

@@ -244,6 +244,78 @@ async def classify_general_message(user_text: str) -> str:
         print(f"Message Classification Error: {e}")
         return "other"
 
+async def classify_admin_context_message(user_text: str, last_admin_message: Optional[str] = None) -> str:
+    """
+    Context-aware validation for a patient's message that arrives AFTER a
+    previous message has already been routed to the clinic admin (i.e. the
+    patient is already in an ongoing conversation with the clinic admin).
+
+    Unlike classify_general_message (which classifies a message in total
+    isolation), this considers:
+      1. Whether the message is related to the clinic.
+      2. Whether the message is an appropriate answer to the clinic admin's
+         latest message/question (last_admin_message), even if the answer
+         itself isn't obviously clinic-related on its own (e.g. "John" in
+         reply to "May I have the patient's name?").
+      3. Whether the message is a normal greeting or polite conversational
+         response (e.g. "Hi", "Thanks", "Good morning").
+
+    Returns "allow" if any of the above hold, otherwise "unrelated".
+    """
+    admin_context = (
+        f'The clinic admin\'s most recent message/question to the patient was: "{last_admin_message}"'
+        if last_admin_message else
+        "There is no prior message from the clinic admin yet in this conversation."
+    )
+
+    prompt = f"""
+    You are validating a patient's message inside an ONGOING conversation with a
+    MEDICAL CLINIC's admin/staff. The patient has already been connected to the
+    clinic admin (an earlier message in this conversation was already routed to
+    them). This clinic ONLY handles medical/health services: doctor
+    consultations, vaccinations, and blood tests.
+
+    {admin_context}
+
+    PATIENT'S LATEST MESSAGE: "{user_text}"
+
+    Decide whether the patient's latest message should be ALLOWED to reach the
+    clinic admin (category "allow"), or should be blocked as "unrelated".
+
+    Classify as "allow" if ANY of the following is true:
+    1. The message is related to the clinic (bookings, appointments, clinic
+       services, hours, pricing, medical questions, etc.).
+    2. The message is a plausible/appropriate answer to the clinic admin's
+       latest message/question above (e.g. a name, IC number, date, time,
+       yes/no, or other short direct answer), even if that answer is not by
+       itself obviously clinic-related.
+    3. The message is a normal greeting or polite conversational remark, such
+       as "Hi", "Hello", "Hey", "Hi there", "Good morning", "Good afternoon",
+       "Good evening", "Thank you", "Thanks", "TQ", "Thanks you", "Welcome",
+       or "You're welcome".
+
+    Only classify as "unrelated" if the message is NOT clinic-related, does NOT
+    reasonably answer the clinic admin's latest message/question, and is NOT a
+    greeting or polite remark (e.g. "What is the weather today?", "I want to
+    know about the weather.").
+
+    CRITICAL INSTRUCTION: Output ONLY raw valid JSON. DO NOT output conversational text. DO NOT output <think> tags.
+    {{"category": "allow"}}
+    """
+    try:
+        raw_text = await run_llm_race(prompt)
+        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        data = json.loads(json_match.group(0)) if json_match else json.loads(raw_text)
+        category = str(data.get("category", "allow")).lower().strip()
+        if category not in ("allow", "unrelated"):
+            category = "allow"
+        return category
+    except Exception as e:
+        print(f"Admin Context Classification Error: {e}")
+        # Fail open: a classification failure shouldn't block a patient who is
+        # already mid-conversation with the clinic admin.
+        return "allow"
+
 async def generate_vaccine_schedule_ai(search_query: str):
     prompt = f"""
     You are a strict Medical Database JSON API. The user entered: "{search_query}".

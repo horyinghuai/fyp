@@ -1854,6 +1854,30 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
             logger.error(f"Message Classification Error: {e}")
             category = "other"
 
+    # Once a previous message in this General Question session has already
+    # been routed to the clinic admin (admin_notice_shown), don't validate
+    # this new message independently/in isolation - use the context-aware
+    # admin-conversation check instead. That check also allows messages that
+    # answer the clinic admin's latest question, or that are plain greetings
+    # / polite responses, even when they aren't obviously clinic-related.
+    if category == "unrelated" and context.user_data.get('admin_notice_shown'):
+        allow = True
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.post(f"{API_BASE}/classify-admin-context", json={
+                    "text": text,
+                    "clinic_id": active_cid,
+                    "telegram_id": update.effective_user.id
+                }, timeout=30.0)
+                allow = (res.json().get("category", "allow") != "unrelated") if res.status_code == 200 else True
+            except Exception as e:
+                logger.error(f"Admin Context Classification Error: {e}")
+                allow = True  # fail open - don't block an ongoing admin conversation
+
+        if allow:
+            # Treat like a clinic-related "other" message: forward it silently.
+            category = "other"
+
     if category == "unrelated":
         btns = [
             [InlineKeyboardButton("🔁 Re-enter Question", callback_data="genq_reenter")],
@@ -3379,6 +3403,36 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 1. Handle Active Admin Live Chat
     if context.user_data.get('is_live_chat'):
         if category not in ('create', 'check', 'modify', 'delete'):
+            # The patient's message has already been (or is about to be)
+            # forwarded to the clinic admin as part of this ongoing
+            # conversation - don't classify it independently/in isolation.
+            # Instead, check it against the conversation context: it's
+            # allowed through if it's clinic-related, if it appropriately
+            # answers the clinic admin's latest message/question, or if it's
+            # a normal greeting/polite response. Only a genuinely unrelated
+            # message (none of the above) shows the existing error.
+            allow = True
+            async with httpx.AsyncClient() as client:
+                try:
+                    res = await client.post(f"{API_BASE}/classify-admin-context", json={
+                        "text": text,
+                        "clinic_id": active_cid,
+                        "telegram_id": update.effective_user.id
+                    }, timeout=30.0)
+                    allow = (res.json().get("category", "allow") != "unrelated") if res.status_code == 200 else True
+                except Exception as e:
+                    logger.error(f"Admin Context Classification Error: {e}")
+                    allow = True  # fail open - don't block an ongoing admin conversation
+
+            if not allow:
+                quoted_text = text if len(text) <= 60 else text[:57] + "..."
+                await update.message.reply_text(
+                    "Sorry, I can only help with enquiries related to this clinic "
+                    "(e.g. bookings, appointments, clinic hours, services). "
+                    f"Your message \"{quoted_text}\" doesn't seem to be related to the clinic."
+                )
+                return
+
             async with httpx.AsyncClient() as client:
                 try:
                     await client.post(f"{API_BASE}/ask-admin", json={
