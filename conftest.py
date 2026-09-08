@@ -54,12 +54,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
     html_cards = ""
 
-    def process_block(title, total_label, total, passed, failed, rate_label, rate, conclusion, test_list):
+    def process_block(title, total_label, total, passed, failed, rate_label, rate, conclusion, test_list, extra_inputs=None):
         is_monkey = title == "Monkey Testing Summary"
-        # Booking's "failed" count is the 3 intentionally-invalid bookings in
-        # the batch (unknown patient IC) that the endpoint correctly REJECTED
-        # with a 404 - that's the endpoint working as designed, not a defect,
-        # so it gets its own labels/coloring instead of reading as a failure.
+        # Booking's "failed" count is the 3 intentionally-invalid bookings...
         is_booking = title == "Booking Success Rate Evaluation"
 
         # --- Terminal Output ---
@@ -69,7 +66,9 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         terminalreporter.write_line("=" * 60)
         terminalreporter.write_line(f"Total {total_label:<11}: {total}")
         if is_monkey:
-            terminalreporter.write_line(f"Successful Inputs : {passed}")
+            terminalreporter.write_line(f"Successful Funcs  : {passed}")
+            terminalreporter.write_line(f"Failed Funcs      : {failed}")
+            terminalreporter.write_line(f"Successful Inputs : {extra_inputs}")
             terminalreporter.write_line(f"Crashes           : {failed}")
         elif is_booking:
             terminalreporter.write_line(f"Correctly Accepted (valid)   : {passed}")
@@ -84,19 +83,34 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
         # --- HTML Generation ---
         nonlocal html_cards
-        # For every OTHER card, a nonzero "failed" count is a genuine problem
-        # and should read red. For Booking, the 3 "failed" are correct
-        # rejections by design, so the card stays green.
         problem_detected = failed > 0 and not is_booking
         status_color = "text-red-600" if problem_detected else "text-emerald-600"
         bg_color = "bg-red-50 border-red-200" if problem_detected else "bg-emerald-50 border-emerald-200"
 
-        if is_monkey:
-            pass_label, fail_label = "Successful Inputs", "Crashes"
-        elif is_booking:
+        if is_booking:
             pass_label, fail_label = "Correctly Accepted (valid)", "Correctly Rejected (invalid)"
         else:
             pass_label, fail_label = "Passed", "Failed"
+
+        # Dynamically build the statistics rows depending on whether it's a monkey test
+        if is_monkey:
+            stats_html = f"""
+            <div class="flex justify-between text-sm font-medium text-slate-600 mb-2 px-1">
+                <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>Successful Functions: {passed}</span>
+                <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>Failed Functions: {failed}</span>
+            </div>
+            <div class="flex justify-between text-sm font-medium text-slate-600 mb-6 px-1">
+                <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>Successful Inputs: {extra_inputs}</span>
+                <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>Crashes: {failed}</span>
+            </div>
+            """
+        else:
+            stats_html = f"""
+            <div class="flex justify-between text-sm font-medium text-slate-600 mb-6 px-1">
+                <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>{pass_label}: {passed}</span>
+                <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>{fail_label}: {failed}</span>
+            </div>
+            """
 
         # Generate the list of individual tests executed
         tests_html = ""
@@ -122,23 +136,33 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         </details>
         """ if tests_html else ""
 
+        # Dynamically inject the inputs block if it's the Monkey test
+        inputs_block = ""
+        grid_cols = "grid-cols-2"
+        if extra_inputs is not None:
+            grid_cols = "grid-cols-3"
+            inputs_block = f"""
+                <div class="p-4 bg-slate-50 rounded-xl border border-slate-100 text-center">
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Inputs</p>
+                    <p class="text-2xl font-black text-slate-700">{extra_inputs}</p>
+                </div>
+            """
+
         html_cards += f"""
         <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col h-full hover:shadow-md transition duration-300">
             <h3 class="text-lg font-black text-slate-800 mb-5">{title}</h3>
-            <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="grid {grid_cols} gap-4 mb-6">
                 <div class="p-4 bg-slate-50 rounded-xl border border-slate-100 text-center">
                     <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{total_label}</p>
                     <p class="text-2xl font-black text-slate-700">{total}</p>
                 </div>
+                {inputs_block}
                 <div class="p-4 {bg_color} rounded-xl border text-center">
                     <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1" style="opacity: 0.8;">{rate_label}</p>
                     <p class="text-2xl font-black {status_color}">{rate:.2f}%</p>
                 </div>
             </div>
-            <div class="flex justify-between text-sm font-medium text-slate-600 mb-6 px-1">
-                <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>{pass_label}: {passed}</span>
-                <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>{fail_label}: {failed}</span>
-            </div>
+            {stats_html}
             <div>
                 <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Conclusion</p>
                 <p class="text-sm text-slate-700 leading-relaxed bg-slate-50 p-4 rounded-xl border border-slate-100">{conclusion}</p>
@@ -168,17 +192,29 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     # 3. Monkey Testing Summary
     st_monkey = get_file_stats('test_monkey')
     if st_monkey:
-        # Total must equal passed + failed (i.e. the number of test cases
-        # actually shown in the "View Test Details" list below). Hypothesis
-        # collapses each test function's many random examples into a single
-        # pass/fail result per pytest test item, so this is a count of test
-        # functions, not a count of randomized inputs generated.
         passed = st_monkey['passed']
         failed = st_monkey['failed']
         tot = passed + failed
+        
+        # Dynamically calculate total inputs by parsing test_monkey.py
+        total_inputs = 0
+        try:
+            import os
+            import re
+            # Locate the test_monkey.py file relative to the pytest execution root
+            monkey_path = os.path.join(str(config.rootdir), "tests", "test_monkey.py")
+            if os.path.exists(monkey_path):
+                with open(monkey_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    # Find all occurrences of max_examples=XXX in the settings decorators
+                    matches = re.findall(r'max_examples\s*=\s*(\d+)', content)
+                    total_inputs = sum(int(m) for m in matches)
+        except Exception:
+            total_inputs = "N/A"
+
         rate = (passed / tot * 100) if tot > 0 else 0
         conc = "The system exhibited high stability under randomized fuzzy inputs, successfully handling edge cases without crashing." if failed == 0 else f"The system encountered {failed} crash(es) during randomized fuzzy testing."
-        process_block("Monkey Testing Summary", "Inputs", tot, passed, failed, "Stability Rate", rate, conc, st_monkey.get('tests'))
+        process_block("Monkey Testing Summary", "Functions", tot, passed, failed, "Stability Rate", rate, conc, st_monkey.get('tests'), extra_inputs=total_inputs)
 
     # 4. Booking Success Rate
     st_booking = get_file_stats('test_booking_success_rate')
@@ -266,7 +302,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
                 </div>
             </header>
             
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
                 {html_cards}
             </div>
         </div>
