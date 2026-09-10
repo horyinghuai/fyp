@@ -31,21 +31,24 @@ from celery_worker import run_reminder_agent
 
 def test_datetime_calculator_relative_parsing():
     current_time = "2026-07-25 13:00:00"
-    date_out, time_out = calculate_exact_datetime("tomorrow", "3pm", current_time)
+    date_out, time_out, time_period_out = calculate_exact_datetime("tomorrow", "3pm", current_time)
     assert date_out == "2026-07-26"
     assert time_out == "15:00:00"
+    assert time_period_out is None
 
 def test_datetime_calculator_in_days_parsing():
     current_time = "2026-07-25 13:00:00"
-    date_out, time_out = calculate_exact_datetime("in 3 days", "10:30am", current_time)
+    date_out, time_out, time_period_out = calculate_exact_datetime("in 3 days", "10:30am", current_time)
     assert date_out == "2026-07-28"
     assert time_out == "10:30:00"
+    assert time_period_out is None
 
 def test_datetime_calculator_null_handling():
     current_time = "2026-07-25 13:00:00"
-    date_out, time_out = calculate_exact_datetime("null", "none", current_time)
+    date_out, time_out, time_period_out = calculate_exact_datetime("null", "none", current_time)
     assert date_out is None
     assert time_out is None
+    assert time_period_out is None
 
 @pytest.mark.asyncio
 @patch("agent.run_llm_race")

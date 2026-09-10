@@ -32,9 +32,10 @@ def test_calculate_exact_datetime_never_crashes_on_garbage(raw_date, raw_time):
     """calculate_exact_datetime is fed whatever the LLM decides 'raw_date_text'
     and 'raw_time_text' are. It must degrade gracefully (return None), never
     raise, no matter how malformed the string is."""
-    date_out, time_out = calculate_exact_datetime(raw_date, raw_time, "2026-07-25 13:00:00")
+    date_out, time_out, time_period_out = calculate_exact_datetime(raw_date, raw_time, "2026-07-25 13:00:00")
     assert date_out is None or isinstance(date_out, str)
     assert time_out is None or isinstance(time_out, str)
+    assert time_period_out is None or isinstance(time_period_out, str)
 
 
 @settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])

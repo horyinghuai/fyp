@@ -53,7 +53,10 @@ CLINIC_ID = "c1111111-1111-1111-1111-111111111111"
 class FakeTelegramResponse:
     def __init__(self, status_code=200, payload=None):
         self.status_code = status_code
-        self._payload = payload or {"result": {"message_id": 999}}
+        # Mirror real Telegram Bot API responses, which always include "ok".
+        # main.py's delete_chat_reply specifically checks tg_data["ok"] before
+        # trusting the deletion, so the fake must include it too.
+        self._payload = payload or {"ok": True, "result": {"message_id": 999}}
 
     def json(self):
         return self._payload
