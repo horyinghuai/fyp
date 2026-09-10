@@ -1914,6 +1914,32 @@ async def handle_general_question_message(update: Update, context: ContextTypes.
 
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
 
+    # --- Doctor-name validation ---
+    # If the message names a specific doctor (e.g. "Dr Suhail") who isn't
+    # actually a doctor at this clinic, catch it here before it ever reaches
+    # the classifier/clinic-admin hand-off, and let the patient retype their
+    # question or end the session instead. A bare "dr" with no name attached
+    # comes back as "no_mention" and is treated as a normal clinic question.
+    async with httpx.AsyncClient() as client:
+        try:
+            doc_res = await client.post(f"{API_BASE}/verify-doctor-mention", json={"text": text, "clinic_id": active_cid}, timeout=10.0)
+            doc_check = doc_res.json() if doc_res.status_code == 200 else {"status": "no_mention"}
+        except Exception as e:
+            logger.error(f"Doctor Mention Verification Error: {e}")
+            doc_check = {"status": "no_mention"}  # fail open - don't block the message on a network hiccup
+
+    if doc_check.get("status") == "invalid":
+        btns = [
+            [InlineKeyboardButton("🔁 Re-enter Question", callback_data="genq_reenter")],
+            [InlineKeyboardButton("🛑 End Session", callback_data="genq_end")]
+        ]
+        await update.message.reply_text(
+            f"⚠️ Sorry, \"Dr {doc_check.get('mentioned_name')}\" is not a doctor at this clinic. "
+            "Please retype your question or end the session.",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return OTHERS_REASON
+
     async with httpx.AsyncClient() as client:
         try:
             res = await client.post(f"{API_BASE}/classify-message", json={"text": text}, timeout=30.0)
@@ -3493,6 +3519,41 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     active_cid = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
 
+    if is_global_exit_command(text):
+        await prompt_global_exit(update, context)
+        return
+
+    # --- Doctor-name validation ---
+    # Same check as handle_general_question_message: if the message names a
+    # specific doctor (e.g. "Dr Shale") who isn't actually a doctor at this
+    # clinic, catch it here before it ever reaches the classifier/hand-off
+    # logic, and let the patient retype their question or end the session.
+    # This must run for every free-text message the bot receives outside of
+    # a state-specific handler - including mid-process messages sent while
+    # a Create/Modify/Cancel Booking flow is in progress - not just the
+    # General Question entry point. A bare "dr" with no name attached comes
+    # back as "no_mention" and falls through to normal classification.
+    async with httpx.AsyncClient() as client:
+        try:
+            doc_res = await client.post(f"{API_BASE}/verify-doctor-mention", json={"text": text, "clinic_id": active_cid}, timeout=10.0)
+            doc_check = doc_res.json() if doc_res.status_code == 200 else {"status": "no_mention"}
+        except Exception as e:
+            logger.error(f"Doctor Mention Verification Error: {e}")
+            doc_check = {"status": "no_mention"}  # fail open - don't block the message on a network hiccup
+
+    if doc_check.get("status") == "invalid":
+        snapshot_current_prompt(update, context)
+        btns = [
+            [InlineKeyboardButton("🔁 Re-enter Question", callback_data="global_unrelated_reenter")],
+            [InlineKeyboardButton("🛑 End Session", callback_data="global_unrelated_end")]
+        ]
+        await update.message.reply_text(
+            f"⚠️ Sorry, \"Dr {doc_check.get('mentioned_name')}\" is not a doctor at this clinic. "
+            "Please retype your question or end the session.",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+        return
+
     # Check category of message
     async with httpx.AsyncClient() as client:
         try:
@@ -3500,10 +3561,6 @@ async def handle_general_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             category = res.json().get("category", "other") if res.status_code == 200 else "other"
         except Exception:
             category = "other"
-
-    if is_global_exit_command(text):
-        await prompt_global_exit(update, context)
-        return
 
     # If the user is already being handled live by the clinic admin (they previously
     # agreed to hand off an unrelated message), the admin now owns the conversation.

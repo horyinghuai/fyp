@@ -205,6 +205,50 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
             time_period=None
         )
 
+# --- "DR <NAME>" MENTION DETECTION ---
+# Words that commonly follow "dr"/"doctor" WITHOUT the user actually naming a
+# specific doctor (e.g. "is the dr available today?"). If the word(s)
+# immediately after "dr" are all in this list, treat it as a bare "dr"
+# mention (no specific name given) rather than an unmatched doctor name.
+DR_MENTION_STOPWORDS = {
+    "is", "are", "am", "can", "could", "will", "would", "available", "free",
+    "around", "here", "there", "please", "yet", "still", "currently", "on",
+    "duty", "working", "present", "see", "meet", "talk", "speak", "the", "a",
+    "an", "and", "or", "for", "with", "who", "what", "when", "where", "why",
+    "how", "do", "does", "did", "in", "at", "today", "tomorrow", "now", "soon",
+}
+
+def extract_doctor_name_mention(text: str) -> Optional[str]:
+    """
+    Looks for a "dr"/"doctor" mention in free text and returns the name
+    portion that follows it, IF it looks like the user actually named someone
+    (e.g. "dr suhail", "dr tan ah kow"). Returns None when:
+      - there's no "dr"/"doctor" mention at all, or
+      - "dr"/"doctor" is used on its own with no name attached (e.g. "is the
+        dr available?") - callers should treat this as a normal clinic
+        question, NOT as an unmatched doctor.
+    """
+    match = re.search(
+        r'\b(?:dr|doctor)\.?\s*([a-zA-Z][a-zA-Z\'\-]*(?:\s+[a-zA-Z][a-zA-Z\'\-]*){0,3})?',
+        text,
+        re.IGNORECASE
+    )
+    if not match:
+        return None
+    raw = match.group(1)
+    if not raw:
+        return None
+
+    name_words = []
+    for w in raw.split():
+        if w.lower() in DR_MENTION_STOPWORDS:
+            break
+        name_words.append(w)
+
+    if not name_words:
+        return None
+    return " ".join(name_words)
+
 async def classify_general_message(user_text: str) -> str:
     """
     Classifies a free-text message sent from the 'General Question' entry point.

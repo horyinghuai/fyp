@@ -9,7 +9,7 @@ from database import get_db
 import models
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
-from agent import extract_appointment_details, generate_vaccine_schedule_ai, classify_general_message, classify_admin_context_message, TIME_PERIOD_RANGES
+from agent import extract_appointment_details, generate_vaccine_schedule_ai, classify_general_message, classify_admin_context_message, extract_doctor_name_mention, TIME_PERIOD_RANGES
 from datetime import datetime, timedelta
 import random
 import re
@@ -492,6 +492,10 @@ class AdminContextClassifyRequest(BaseModel):
     clinic_id: str
     telegram_id: Optional[int] = None
     phone: Optional[str] = None
+
+class DoctorMentionRequest(BaseModel):
+    text: str
+    clinic_id: str
 
 class DateRequest(BaseModel):
     clinic_id: str
@@ -3660,6 +3664,41 @@ async def classify_admin_context(req: AdminContextClassifyRequest, db: Session =
 
     category = await classify_admin_context_message(req.text, last_admin_message)
     return {"category": category}
+
+@app.post("/verify-doctor-mention")
+def verify_doctor_mention(req: DoctorMentionRequest, db: Session = Depends(get_db)):
+    """
+    Checks whether a "dr <name>"/"doctor <name>" mention in a General
+    Question message refers to an actual doctor at this clinic, so the bot
+    can catch it before it's ever classified/forwarded to the clinic admin.
+
+    Returns:
+      - {"status": "no_mention"} - no "dr"/"doctor" mention, or a bare
+        "dr"/"doctor" with no name attached (e.g. "is the dr available?").
+        The caller should treat the message as a normal clinic question.
+      - {"status": "valid", "doctor_name": ...} - the named doctor matches
+        one actually assigned to this clinic.
+      - {"status": "invalid", "mentioned_name": ...} - a name was given but
+        no doctor at this clinic matches it.
+    """
+    mentioned = extract_doctor_name_mention(req.text)
+    if not mentioned:
+        return {"status": "no_mention"}
+
+    doctors = db.query(models.Doctor).join(
+        models.DoctorClinicAvailability, models.Doctor.ic_passport_number == models.DoctorClinicAvailability.doctor_ic
+    ).filter(models.DoctorClinicAvailability.clinic_id == req.clinic_id).distinct().all()
+
+    # Word-overlap match (not a plain substring match) so that "dr tan",
+    # "dr tan ah kow" and "dr ah kow" all correctly match a doctor named
+    # "Tan Ah Kow", regardless of which part of the name the patient used.
+    mentioned_words = {w.lower() for w in re.findall(r"[a-zA-Z']+", mentioned)}
+    for doc in doctors:
+        doc_words = {w.lower() for w in re.findall(r"[a-zA-Z']+", doc.name or "")}
+        if mentioned_words & doc_words:
+            return {"status": "valid", "doctor_name": doc.name}
+
+    return {"status": "invalid", "mentioned_name": mentioned}
 
 @app.get("/clinic/{clinic_id}")
 def get_clinic(clinic_id: str, db: Session = Depends(get_db)):
