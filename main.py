@@ -3662,7 +3662,12 @@ def get_doctors_and_slots_for_date(db: Session, clinic_id: str, date_obj: dateti
         elif pref_upper == "FEMALE": 
             doc_query = doc_query.filter(models.Doctor.gender.ilike("FEMALE"))
         elif pref_upper not in ["ANY", "NONE"]: 
-            doc_query = doc_query.filter(models.Doctor.name.ilike(f"%{doctor_pref}%"))
+            # Exact (case-insensitive) match only — a %...% substring match here would
+            # also pull in an unrelated doctor whose name merely contains doctor_pref
+            # (e.g. locking to "Dr Tan" would incorrectly also match "Dr Tan Wei Ming"),
+            # leaking other doctors' slots into the "Change Date or Time" picker during
+            # booking modification.
+            doc_query = doc_query.filter(models.Doctor.name.ilike(doctor_pref))
             
     valid_docs = doc_query.distinct().all()
     if not valid_docs: return []
