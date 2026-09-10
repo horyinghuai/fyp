@@ -208,7 +208,16 @@ export default function BotRepliesPage() {
       if (!window.confirm("Are you sure you want to delete this message?")) return;
       const token = localStorage.getItem('aicas_token');
       try {
-          await fetch(`http://127.0.0.1:8000/admin/chat-reply/${msgId}`, { method: "DELETE", headers: { 'Authorization': `Bearer ${token}` } });
+          const res = await fetch(`http://127.0.0.1:8000/admin/chat-reply/${msgId}`, { method: "DELETE", headers: { 'Authorization': `Bearer ${token}` } });
+          if (!res.ok) {
+              let reason = "Failed to delete";
+              try {
+                  const data = await res.json();
+                  if (data?.detail) reason = data.detail;
+              } catch {}
+              alert(reason);
+              return;
+          }
           fetchHistory(clinicId);
       } catch (e) { alert("Failed to delete"); }
   };

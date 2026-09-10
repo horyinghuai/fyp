@@ -3602,7 +3602,24 @@ async def delete_chat_reply(msg_id: int, db: Session = Depends(get_db)):
     if msg.channel == 'telegram' and msg.telegram_message_id:
         token = os.getenv("TELEGRAM_BOT_TOKEN")
         async with httpx.AsyncClient() as client:
-            await client.post(f"https://api.telegram.org/bot{token}/deleteMessage", json={"chat_id": msg.telegram_id, "message_id": msg.telegram_message_id})
+            tg_res = await client.post(f"https://api.telegram.org/bot{token}/deleteMessage", json={"chat_id": msg.telegram_id, "message_id": msg.telegram_message_id})
+
+        # Verify Telegram actually deleted the message before touching the local
+        # record. Telegram rejects deletion for messages outside its 48-hour
+        # window (and for a few other reasons) — if we blindly deleted the local
+        # row anyway, the DB and Telegram would go out of sync.
+        tg_ok = False
+        tg_reason = f"Telegram API returned status {tg_res.status_code}"
+        try:
+            tg_data = tg_res.json()
+            tg_ok = tg_res.status_code == 200 and tg_data.get("ok", False)
+            if not tg_ok:
+                tg_reason = tg_data.get("description", tg_reason)
+        except Exception:
+            pass
+
+        if not tg_ok:
+            raise HTTPException(status_code=502, detail=f"Could not delete the Telegram message: {tg_reason}")
     db.delete(msg)
     db.commit()
     return {"status": "success"}
