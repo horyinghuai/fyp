@@ -25,6 +25,7 @@ The AI Agent-Based Multi-Stage Appointment Scheduling System for Clinics is deve
 | **Database** | PostgreSQL |
 | **ORM** | SQLAlchemy |
 | **Background Task Queue** | Celery |
+| **Containerization (Celery Worker)** | Docker |
 | **Message Broker** | Redis |
 | **Telegram Framework** | python-telegram-bot |
 | **AI Framework** | LangChain, LangGraph |
@@ -84,6 +85,7 @@ python bot.py
 | **Item** | **Value** |
 | --------------- | ------------------ |
 | **Worker File** | `celery_worker.py` |
+| **Execution Mode** | Docker Container |
 | **Pool** | solo |
 | **Log Level** | info |
 
@@ -92,6 +94,8 @@ python bot.py
 ```bash
 celery -A celery_worker worker --pool=solo --loglevel=info
 ```
+
+*Note: The Celery worker runs inside a Docker container. The command above is executed inside the container (e.g. set as the container's entrypoint/CMD, or run via `docker exec -it <container_name> celery -A celery_worker worker --pool=solo --loglevel=info`). Ensure the container has network access to the Redis broker.*
 
 ### Frontend Server
 
@@ -193,11 +197,13 @@ The services must be started in the following order.
    python bot.py
    ```
 
-5. **Start Celery Worker:**
+5. **Start Celery Worker (Docker):**
 
    ```bash
    celery -A celery_worker worker --pool=solo --loglevel=info
    ```
+
+   *(Run inside the Docker container.)*
 
 6. **Start React Frontend:**
 
@@ -227,7 +233,7 @@ The generated testing report is stored as `report.html` in the root directory.
 
 ## 10. Deployment Notes
 
-The system is designed using a modular architecture. Each service operates independently and communicates through REST APIs or asynchronous task queues. The frontend, backend, database, Telegram bot and Celery worker can be deployed on the same server or distributed across multiple servers depending on deployment requirements.
+The system is designed using a modular architecture. Each service operates independently and communicates through REST APIs or asynchronous task queues. The frontend, backend, database, Telegram bot and Celery worker can be deployed on the same server or distributed across multiple servers depending on deployment requirements. The Celery worker is containerized with Docker to isolate its runtime environment and dependencies from the other services.
 
 ---
 
@@ -242,6 +248,8 @@ Project Root/
 ├── celery_worker.py
 ├── conftest.py
 ├── database.py
+├── docker-compose.yml
+├── Dockerfile
 ├── main.py
 ├── models.py
 ├── pytest.ini
