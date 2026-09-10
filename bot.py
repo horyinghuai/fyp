@@ -265,6 +265,74 @@ async def generate_time_picker(active_cid, service, date_str, doctor_pref):
     
     return InlineKeyboardMarkup(keyboard)
 
+# Human-readable labels for word-based time-of-day requests, shown back to
+# the patient so they can see exactly which window was searched.
+PERIOD_LABELS = {
+    "midnight": "midnight (12:00 AM – 1:59 AM)",
+    "morning": "morning (5:00 AM – 11:59 AM)",
+    "noon": "noon (12:00 PM – 1:59 PM)",
+    "evening": "evening (5:00 PM – 8:59 PM)",
+}
+
+async def fetch_period_slots(active_cid, service, date_str, doctor_pref, period):
+    """Calls /available-times-by-period and returns its JSON (times + nearest fallback)."""
+    duration = 15 if service == 'Vaccine' else 30
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.post(
+                f"{API_BASE}/available-times-by-period",
+                json={"clinic_id": active_cid, "date": date_str, "duration": duration, "doctor_pref": doctor_pref, "period": period},
+                timeout=10.0
+            )
+            return res.json() if res.status_code == 200 else {}
+        except Exception as e:
+            logger.error(f"Error fetching available times for period '{period}': {e}")
+            return {}
+
+async def send_period_slot_options(reply_target, active_cid, service, date_str, doctor_pref, period):
+    """
+    Looks up slots for a word-based period ("morning", "noon", "evening",
+    "midnight") on date_str and replies (via reply_target.reply_text — works
+    for both update.message and callback_query.message) with either:
+      - buttons for every slot inside that period's window, or
+      - if there are none, a message saying so plus the 3 nearest bookable
+        slots (any time) as buttons to choose from.
+    """
+    label = PERIOD_LABELS.get(period, period)
+    data = await fetch_period_slots(active_cid, service, date_str, doctor_pref, period)
+    times = data.get("times", [])
+
+    if times:
+        keyboard = []
+        row = []
+        for t_str in times:
+            row.append(InlineKeyboardButton(t_str[:5], callback_data=f"time_{t_str}"))
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        if row: keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("🔙 Back to Date Selection", callback_data="back_date")])
+        await reply_target.reply_text(
+            f"Here are the available slots for {date_str} in the {label}:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    nearest = data.get("nearest", [])
+    if nearest:
+        keyboard = [[InlineKeyboardButton(t, callback_data=f"sug_{t}")] for t in nearest]
+        keyboard.append([InlineKeyboardButton("🔙 Back to Date Selection", callback_data="back_date")])
+        await reply_target.reply_text(
+            f"Sorry, there are no available slots for {date_str} in the {label}.\n\n"
+            "Here are the 3 nearest available slots instead:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await reply_target.reply_text(
+            f"Sorry, there are no available slots for {date_str} in the {label}, "
+            "and no other slots could be found in the near future. Please try a different date."
+        )
+
 def is_valid_mykad_number(ic_digits: str) -> bool:
     """
     Validates a 12-digit MyKad number:
@@ -2674,6 +2742,15 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
 
         if data.startswith("date_"):
             context.user_data['book_date'] = data.replace("date_", "")
+            pending_period = context.user_data.get('ai_pending_period')
+            if pending_period:
+                # The patient earlier asked for a word-based period (e.g.
+                # "morning") before a date was known; now that we have a
+                # date, show slots within that period instead of the
+                # generic time picker.
+                await query.edit_message_text(f"You selected: {context.user_data['book_date']}")
+                await send_period_slot_options(query.message, active_cid, service, context.user_data['book_date'], doctor_pref, pending_period)
+                return BOOK_DATE_TIME
             markup = await generate_time_picker(active_cid, service, context.user_data['book_date'], doctor_pref)
             await query.edit_message_text(f"You selected: {context.user_data['book_date']}\n\nNow, please select your preferred Time:", reply_markup=markup)
             return BOOK_DATE_TIME
@@ -2744,27 +2821,39 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
         new_time = extracted.get('time_preference') if isinstance(extracted, dict) else None
         raw_date_text = extracted.get('raw_date_text') if isinstance(extracted, dict) else None
         raw_time_text = extracted.get('raw_time_text') if isinstance(extracted, dict) else None
+        # Word-based time-of-day phrase ("morning", "noon", "evening",
+        # "midnight"), if that's what the user said instead of an exact time.
+        new_period = extracted.get('time_period') if isinstance(extracted, dict) else None
 
         # Always keep the LATEST date/time the user gave. If they mentioned a
         # date/time phrase but we couldn't turn it into an exact value (e.g.
-        # "noon", "next blah"), don't silently fall back to whatever was
-        # stored from an earlier message — clear it and tell the user plainly
-        # so they don't end up booking a slot they never actually asked for.
+        # "next blah"), don't silently fall back to whatever was stored from
+        # an earlier message — clear it and tell the user plainly so they
+        # don't end up booking a slot they never actually asked for. A
+        # word-based period (new_period) is NOT an error case — it's handled
+        # separately below by listing/suggesting slots within that period.
         date_unrecognized = bool(raw_date_text) and not new_date
-        time_unrecognized = bool(raw_time_text) and not new_time
+        time_unrecognized = bool(raw_time_text) and not new_time and not new_period
 
         if new_date:
             context.user_data['book_date'] = new_date
         elif date_unrecognized:
             context.user_data.pop('book_date', None)
 
-        if new_time:
+        if new_period:
+            # A period replaces any exact-time expectation we were waiting on.
+            context.user_data['ai_pending_period'] = new_period
+            context.user_data.pop('ai_pending_time', None)
+        elif new_time:
             context.user_data['ai_pending_time'] = new_time
+            context.user_data.pop('ai_pending_period', None)
         elif time_unrecognized:
             context.user_data.pop('ai_pending_time', None)
+            context.user_data.pop('ai_pending_period', None)
 
         final_date = context.user_data.get('book_date')
         final_time = context.user_data.get('ai_pending_time')
+        pending_period = context.user_data.get('ai_pending_period')
 
         # If the user tried to give a time we couldn't understand, say so
         # explicitly and offer real, bookable time slots to pick from.
@@ -2802,6 +2891,23 @@ async def handle_date_time_selection(update: Update, context: ContextTypes.DEFAU
                     msg += f"\n\n(I've kept your preferred time of {final_time[:5]}.)"
                 await update.message.reply_text(msg)
                 return BOOK_DATE_TIME
+
+        # The user asked for a word-based time-of-day period ("morning",
+        # "noon", "evening", "midnight") rather than an exact time. If we
+        # already know the date, list every available slot inside that
+        # period's window (or the 3 nearest slots if there are none). If we
+        # don't have a date yet, ask for it first before searching.
+        if pending_period:
+            label = PERIOD_LABELS.get(pending_period, pending_period)
+            if final_date:
+                active_cid_pp = context.user_data.get('active_clinic_id', DEFAULT_CLINIC_ID)
+                await send_period_slot_options(update.message, active_cid_pp, service, final_date, doctor_pref, pending_period)
+            else:
+                await update.message.reply_text(
+                    f"Got it — you'd like a {label} appointment.\n\n"
+                    "What date would you like to book?\nFor example: tomorrow, next Monday, or 25/12."
+                )
+            return BOOK_DATE_TIME
 
         if final_date and final_time:
             full_time_str = f"{final_date} {final_time}"
@@ -2964,6 +3070,7 @@ async def show_booking_summary(update: Update, context: ContextTypes.DEFAULT_TYP
     # into book_date/book_time by this point — release it here so it can
     # never leak into a later date/time edit within this same booking.
     context.user_data.pop('ai_pending_time', None)
+    context.user_data.pop('ai_pending_period', None)
 
     service = context.user_data['service']
     name = context.user_data['name']
@@ -3099,7 +3206,7 @@ async def handle_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Only for create booking: discard draft and show confirmation
         context.user_data['is_editing'] = False
         context.user_data['editing_existing'] = False
-        for key in ['service', 'selected_items', 'dose', 'general_notes', 'doctor_pref', 'book_date', 'book_time', 'ai_pending_time', 'assigned_doctor_name', 'assigned_doctor_id', 'doctor_locked']:
+        for key in ['service', 'selected_items', 'dose', 'general_notes', 'doctor_pref', 'book_date', 'book_time', 'ai_pending_time', 'ai_pending_period', 'assigned_doctor_name', 'assigned_doctor_id', 'doctor_locked']:
             context.user_data.pop(key, None)
         
         # Show booking removed message
@@ -3217,7 +3324,7 @@ async def confirm_booking_logic(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Booking is confirmed — drop the temporary date/time draft so a stale
     # value can never leak into a future booking/modification flow.
-    for key in ['book_date', 'book_time', 'ai_pending_time', 'temp_doctor_pref']:
+    for key in ['book_date', 'book_time', 'ai_pending_time', 'ai_pending_period', 'temp_doctor_pref']:
         context.user_data.pop(key, None)
 
     # ADD FASTING REMINDER HERE
@@ -3275,7 +3382,7 @@ async def confirm_booking_edit(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Modification is confirmed — drop the temporary date/time draft so a
     # stale value can never leak into a future booking/modification flow.
-    for key in ['book_date', 'book_time', 'ai_pending_time', 'temp_doctor_pref']:
+    for key in ['book_date', 'book_time', 'ai_pending_time', 'ai_pending_period', 'temp_doctor_pref']:
         context.user_data.pop(key, None)
 
     # Ask if user wants to modify another appointment

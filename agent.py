@@ -71,6 +71,19 @@ async def run_llm_race(prompt: str) -> str:
 
     raise Exception("All LLM tasks failed unexpectedly.")
 
+# --- WORD-BASED TIME-OF-DAY PERIODS ---
+# Vague phrases like "noon", "midnight", "morning", "evening" don't map to a
+# single exact clock time, so calculate_exact_datetime() doesn't resolve them
+# into final_time. Instead they're recognised as a *period* with a clock-time
+# window, so the caller can list every available slot inside that window
+# rather than just failing with "couldn't understand the time".
+TIME_PERIOD_RANGES = {
+    "midnight": ("00:00:00", "01:59:59"),
+    "morning":  ("05:00:00", "11:59:59"),
+    "noon":     ("12:00:00", "13:59:59"),
+    "evening":  ("17:00:00", "20:59:59"),
+}
+
 # --- DATE CALCULATOR ---
 def calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str):
     now = datetime.strptime(current_time_str, "%Y-%m-%d %H:%M:%S")
@@ -104,21 +117,25 @@ def calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str):
                     final_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
                     break
 
+    time_period = None
     if raw_time_text and str(raw_time_text).lower() not in ['null', 'none']:
         tt_str = str(raw_time_text).lower().strip().replace('.', ':')
         if re.match(r'\d{2}:\d{2}:\d{2}', tt_str): final_time = tt_str
-        # Vague phrases like "noon", "midnight", "morning", "afternoon", etc.
-        # have no single exact clock time, so they're deliberately left
-        # unmatched here (final_time stays None) rather than guessed at —
-        # the caller treats that as "mentioned a time but couldn't resolve
-        # it" and asks the user to state an exact time instead.
+        # Word-based time-of-day phrases ("noon", "midnight", "morning",
+        # "evening") have no single exact clock time, so final_time is
+        # deliberately left None — but they DO map to a known window
+        # (TIME_PERIOD_RANGES), so record which one was said. The caller
+        # uses this to list every available slot inside that window instead
+        # of just asking the user to restate an exact time.
+        elif matched_period := next((p for p in TIME_PERIOD_RANGES if re.search(rf'\b{p}\b', tt_str)), None):
+            time_period = matched_period
         elif match := re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', tt_str):
             h, m, ampm = int(match.group(1)), int(match.group(2) or 0), match.group(3)
             if ampm == 'pm' and h < 12: h += 12
             elif ampm == 'am' and h == 12: h = 0
             final_time = f"{h:02d}:{m:02d}:00"
 
-    return final_date, final_time
+    return final_date, final_time, time_period
 
 class AppointmentExtraction(BaseModel):
     intent: str
@@ -132,6 +149,11 @@ class AppointmentExtraction(BaseModel):
     # (date_preference/time_preference would be None in both cases otherwise).
     raw_date_text: Optional[str] = None
     raw_time_text: Optional[str] = None
+    # Set when raw_time_text was a word-based time-of-day phrase ("morning",
+    # "noon", "evening", "midnight") instead of an exact time. time_preference
+    # stays None in that case — the caller should list available slots within
+    # TIME_PERIOD_RANGES[time_period] rather than treat this as unparseable.
+    time_period: Optional[str] = None
 
 async def extract_appointment_details(user_text: str, current_time_str: str):
     prompt = f"""
@@ -159,7 +181,7 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
         if isinstance(raw_date_text, str) and raw_date_text.lower().strip() in ['null', 'none', '']: raw_date_text = None
         if isinstance(raw_time_text, str) and raw_time_text.lower().strip() in ['null', 'none', '']: raw_time_text = None
 
-        calculated_date, calculated_time = calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str)
+        calculated_date, calculated_time, time_period = calculate_exact_datetime(raw_date_text, raw_time_text, current_time_str)
         return AppointmentExtraction(
             intent=llm_data.get("intent", "booking"), 
             date_preference=calculated_date, 
@@ -167,7 +189,8 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
             doctor_preference=llm_data.get("doctor_preference"), 
             general_notes=llm_data.get("general_notes"),
             raw_date_text=raw_date_text,
-            raw_time_text=raw_time_text
+            raw_time_text=raw_time_text,
+            time_period=time_period
         )
     except Exception as e:
         # Fallback if both AIs fail: Just capture the whole text as a general booking note
@@ -178,7 +201,8 @@ async def extract_appointment_details(user_text: str, current_time_str: str):
             doctor_preference=None,
             general_notes=user_text,
             raw_date_text=None,
-            raw_time_text=None
+            raw_time_text=None,
+            time_period=None
         )
 
 async def classify_general_message(user_text: str) -> str:

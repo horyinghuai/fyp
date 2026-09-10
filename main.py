@@ -9,7 +9,7 @@ from database import get_db
 import models
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
-from agent import extract_appointment_details, generate_vaccine_schedule_ai, classify_general_message, classify_admin_context_message
+from agent import extract_appointment_details, generate_vaccine_schedule_ai, classify_general_message, classify_admin_context_message, TIME_PERIOD_RANGES
 from datetime import datetime, timedelta
 import random
 import re
@@ -504,6 +504,13 @@ class TimeRequest(BaseModel):
     date: str
     duration: int
     doctor_pref: Optional[str] = None
+
+class PeriodTimeRequest(BaseModel):
+    clinic_id: str
+    date: str
+    duration: int
+    doctor_pref: Optional[str] = None
+    period: str  # one of TIME_PERIOD_RANGES keys, e.g. "morning", "noon", "evening", "midnight"
 
 class AvailabilityRequest(BaseModel):
     clinic_id: str
@@ -1493,6 +1500,52 @@ def get_available_times(req: TimeRequest, db: Session = Depends(get_db)):
         for s in ds['slots']: all_times.add(s.strftime("%H:%M:%S"))
     sorted_times = sorted(list(all_times))
     return {"times": sorted_times, "doctor_name": "Pending Selection"}
+
+@app.post("/available-times-by-period")
+def get_available_times_by_period(req: PeriodTimeRequest, db: Session = Depends(get_db)):
+    """
+    Supports word-based time-of-day requests ("morning", "noon", "evening",
+    "midnight"). Lists every bookable slot on req.date that falls inside that
+    period's clock-time window (TIME_PERIOD_RANGES). If none exist, falls
+    back to the 3 nearest bookable slots overall (any time, searching forward
+    from req.date) so the patient always has concrete options to choose from.
+    """
+    period = (req.period or "").lower().strip()
+    if period not in TIME_PERIOD_RANGES:
+        return {"error": f"Unknown time period '{req.period}'"}
+    range_start, range_end = TIME_PERIOD_RANGES[period]
+
+    d_obj = datetime.strptime(req.date, "%Y-%m-%d").date()
+    doc_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d_obj, req.duration, req.doctor_pref)
+
+    period_times = set()
+    for ds in doc_slots:
+        for s in ds['slots']:
+            t_str = s.strftime("%H:%M:%S")
+            if range_start <= t_str <= range_end:
+                period_times.add(t_str)
+    sorted_times = sorted(period_times)
+
+    if sorted_times:
+        return {"period": period, "range_start": range_start, "range_end": range_end, "times": sorted_times, "nearest": []}
+
+    # No slots in the requested period on this date — offer the 3 nearest
+    # bookable slots (any time of day), searching up to 14 days forward.
+    nearest = []
+    for i in range(14):
+        d = d_obj + timedelta(days=i)
+        d_slots = get_doctors_and_slots_for_date(db, req.clinic_id, d, req.duration, req.doctor_pref)
+        day_times = set()
+        for ds in d_slots:
+            for s in ds['slots']:
+                day_times.add(s.strftime("%Y-%m-%d %H:%M:%S"))
+        for t in sorted(day_times):
+            if t not in nearest:
+                nearest.append(t)
+            if len(nearest) >= 3: break
+        if len(nearest) >= 3: break
+
+    return {"period": period, "range_start": range_start, "range_end": range_end, "times": [], "nearest": nearest}
 
 @app.post("/check-availability")
 def check_availability(req: AvailabilityRequest, db: Session = Depends(get_db)):
