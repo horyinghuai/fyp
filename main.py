@@ -3288,12 +3288,107 @@ async def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(g
 
         db.flush()
 
+        def _find_earliest_slot_for_doctor(doctor_ic, clinic_id, min_dt, exclude_stage_id=None, horizon_days=180):
+            """Earliest DATE (>= min_dt.date()) on which doctor_ic is available
+            and free at the SAME time-of-day as min_dt.time() — e.g. if the
+            original slot was 19/4 3:15pm, only the date moves forward and
+            3:15pm is preserved. Returns None if no such date is found within
+            horizon_days or the doctor has no availability rows at all."""
+            if not doctor_ic:
+                return None
+            avail_rows = db.query(models.DoctorClinicAvailability).filter(
+                models.DoctorClinicAvailability.clinic_id == clinic_id,
+                models.DoctorClinicAvailability.doctor_ic == doctor_ic,
+                models.DoctorClinicAvailability.status == 'active'
+            ).all()
+            if not avail_rows:
+                return None
+
+            by_day: dict = {}
+            for row in avail_rows:
+                if row.day_of_week:
+                    by_day.setdefault(row.day_of_week.lower(), []).append(row)
+
+            preferred_time = min_dt.time()
+            now_dt = datetime.now()
+            start_date = max(min_dt.date(), now_dt.date())
+
+            for offset in range(0, horizon_days + 1):
+                day = start_date + timedelta(days=offset)
+                candidate = datetime.combine(day, preferred_time)
+                if candidate < min_dt or candidate < now_dt:
+                    continue
+                windows = by_day.get(day.strftime("%a").lower(), [])
+                for win in windows:
+                    shift_start = datetime.combine(day, win.start_time)
+                    shift_end = datetime.combine(day, win.end_time)
+                    if shift_start <= candidate and candidate + timedelta(minutes=15) <= shift_end:
+                        conflict_q = (
+                            db.query(models.ApptStage)
+                            .join(models.Appointment)
+                            .filter(
+                                models.Appointment.doctor_ic == doctor_ic,
+                                models.ApptStage.scheduled_time == candidate,
+                                models.ApptStage.status == 'scheduled',
+                            )
+                        )
+                        if exclude_stage_id:
+                            conflict_q = conflict_q.filter(models.ApptStage.id != exclude_stage_id)
+                        if not conflict_q.first():
+                            return candidate
+            return None
+
+        def _reassign_to_doctor_slot(doctor_ic, clinic_id, ideal_dt, exclude_stage_id):
+            """Try to keep the mathematically-calculated ideal_dt (new interval
+            applied) if the selected doctor is actually free at that exact
+            moment. Otherwise fall back to the earliest later date on which the
+            doctor is free at that SAME time-of-day (the original clock time,
+            e.g. 3:15pm, is always preserved — only the date shifts).
+            Appointments with no doctor assigned (ANY) simply keep ideal_dt."""
+            if not doctor_ic or not clinic_id:
+                return ideal_dt
+
+            day_key = ideal_dt.strftime("%a").lower()
+            avail_row = db.query(models.DoctorClinicAvailability).filter(
+                models.DoctorClinicAvailability.clinic_id == clinic_id,
+                models.DoctorClinicAvailability.doctor_ic == doctor_ic,
+                models.DoctorClinicAvailability.day_of_week == day_key,
+                models.DoctorClinicAvailability.status == 'active',
+                models.DoctorClinicAvailability.start_time <= ideal_dt.time(),
+                models.DoctorClinicAvailability.end_time >= (ideal_dt + timedelta(minutes=15)).time(),
+            ).first()
+
+            if avail_row:
+                conflict = (
+                    db.query(models.ApptStage)
+                    .join(models.Appointment)
+                    .filter(
+                        models.Appointment.doctor_ic == doctor_ic,
+                        models.ApptStage.scheduled_time == ideal_dt,
+                        models.ApptStage.status == 'scheduled',
+                        models.ApptStage.id != exclude_stage_id,
+                    )
+                    .first()
+                )
+                if not conflict:
+                    return ideal_dt
+
+            # Same time-of-day as ideal_dt, first free date starting the day after
+            earliest = _find_earliest_slot_for_doctor(
+                doctor_ic, clinic_id, ideal_dt + timedelta(days=1),
+                exclude_stage_id=exclude_stage_id
+            )
+            return earliest if earliest else ideal_dt
+
         now = datetime.now()
         vaccine_name = v.name if v else (data.name.title() if data.name else "")
         affected_appt_ids = set()  # appointments whose scheduled_time actually shifted
         appt_vacs = db.query(models.AppointmentVaccine).filter_by(vaccine_id=v_id).all()
         for av in appt_vacs:
             appt_id = av.appointment_id
+            appt_obj = db.query(models.Appointment).filter_by(id=appt_id).first()
+            doctor_ic = appt_obj.doctor_ic if appt_obj else None
+            appt_clinic_id = appt_obj.clinic_id if appt_obj else None
             stages = db.query(models.ApptStage).filter_by(appointment_id=appt_id).order_by(models.ApptStage.scheduled_time.asc()).all()
             stage_dict = {s.stage_name.lower(): s for s in stages}
             
@@ -3329,10 +3424,15 @@ async def update_vaccine(v_id: int, data: VaccineCreate, db: Session = Depends(g
                 new_date = prev_date + timedelta(days=interval_days)
                 
                 if new_date:
-                    if stage.scheduled_time != new_date:
+                    # Reassign to the selected doctor's earliest actually-available
+                    # slot: keep new_date if the doctor is free right then, else
+                    # fall back to that doctor's earliest open slot from new_date on.
+                    assigned_date = _reassign_to_doctor_slot(doctor_ic, appt_clinic_id, new_date, stage.id)
+
+                    if stage.scheduled_time != assigned_date:
                         affected_appt_ids.add(appt_id)
-                    stage.scheduled_time = new_date
-                    prev_date = new_date
+                    stage.scheduled_time = assigned_date
+                    prev_date = assigned_date
 
         db.commit()
 
